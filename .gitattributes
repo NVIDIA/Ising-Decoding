@@ -1,0 +1,4 @@
+cookbook/images/*.png !text !filter !merge !diff
+cookbook/images/*.jpg !text !filter !merge !diff
+cookbook/images/*.jpeg !text !filter !merge !diff
+cookbook/images/*.gif !text !filter !merge !diff
