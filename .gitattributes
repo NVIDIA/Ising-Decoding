@@ -1,3 +1,5 @@
+# Track large model binaries with Git LFS
+models/*.pt filter=lfs diff=lfs merge=lfs -text
 cookbook/images/*.png filter=lfs diff=lfs merge=lfs -text
 cookbook/images/*.jpg filter=lfs diff=lfs merge=lfs -text
 cookbook/images/*.jpeg filter=lfs diff=lfs merge=lfs -text

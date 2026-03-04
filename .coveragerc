@@ -1,0 +1,12 @@
+# Measure coverage for production code under code/, exclude test code.
+[run]
+source = code
+omit = code/tests/*
+branch = false
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    raise AssertionError
+    raise NotImplementedError

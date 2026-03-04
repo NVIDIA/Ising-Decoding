@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+#==============================================================================#
+# File extensions to be ignored anywhere in the tree.
+#==============================================================================#
+
+# Rendered html files.
+*.html
+
+# Temporary files created by most text editors.
+*~
+
+.vscode/
+.idea/
+
+#==============================================================================#
+# OS / editor artifacts
+#==============================================================================#
+
+.DS_Store
+Thumbs.db
+
+#==============================================================================#
+# Python
+#==============================================================================#
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Venvs
+venv/
+env_stim/
+.venv/
+.venv*/
+.venv_*/
+.conda
+
+# Outputs & logs
+outputs/
+logs/
+/code/ai_model/outputs/**
+
+# Notebooks
+*.ipynb_checkpoints
+
+# Precomputed data
+/frames_data/
+
+# Local dev artifacts
+/EXECUTIVE_SUMMARY.md
+/LATEST_COMMIT_EXPLANATION.md
+/MR_COMMENT_DRAFT.md
+/MR_REVIEW_SUMMARY.md
+/dev_history/
