@@ -1,0 +1,139 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+
+exp_tag: pre-decoder # The shell script always overrides this with "${EXPERIMENT_NAME}"
+output: outputs/${exp_tag} # Main output directory.
+
+hydra: # Hydra config
+  run:
+    dir: ${output}
+  output_subdir: hydra  # Default is .hydra which causes files not being uploaded in W&B.
+
+# The directory to search for checkpoints to continue training.
+resume_dir: ${output}/models
+enable_fp16: false
+enable_bf16: false
+enable_matmul_tf32: true
+enable_cudnn_tf32: true
+enable_cudnn_benchmark: true
+torch_compile: true
+torch_compile_mode: default
+
+load_checkpoint: False # Load checkpoint
+
+code: surface # surface, color, color_msd, pre_decoder_memory_surface
+distance: 9
+n_rounds: 9
+multiple_distances: [13,13]
+multiple_rounds: [13,13]
+use_multiple_patches: False # Set to True to use multiple_distances/multiple_rounds (multi-pair training)
+meas_basis: both # X, Z, or both
+
+workflow: 
+  task: train # train, threshold, plot, sampling
+
+data:
+  generator: torch # Training data generator (Torch-only)
+  timelike_he: True # Enable timelike homological equivalence
+  num_he_cycles: 1 # Number of (spacelike+timelike) HE cycles to apply (default: 1)
+  use_weight2_timelike: False # Enable weight-2 timelike HE (in addition to weight-1)
+  max_passes_w1: 8 # Maximum passes for weight-1 timelike HE convergence (default: 32)
+  max_passes_w2: 4 # Maximum passes for weight-2 timelike HE convergence (default: 32)
+  p_error: null # Physical error rate (fixed) - set to null to use p_min/p_max range instead
+  p_min: 0.001 # Minimum physical error rate (when using random p per batch)
+  p_max: 0.006 # Maximum physical error rate (when using random p per batch)
+  error_mode: circuit_level_surface_custom # Error model (Stim inference)
+  precomputed_frames_dir: /root/pre-decoder/dem_data # Path to DEM bundle dir (H.X/H.Z/p/A). Use precompute_frames.py --dem_output_dir to generate.
+  enable_correlated_pymatching: False # If true, use two-pass correlated MWPM matching (more accurate but ~2.7x slower)
+  code_rotation: XV # Surface code orientation: XV, XH, ZV, ZH (default: XV)
+
+model:
+  version: predecoder_memory_v1 # predecoder_memory_v1 (no skip conections and batch norm), predecoder_memory_v2 (includes skip connections and batch norm)
+  dropout_p: 0.05
+  activation: gelu
+  num_filters: [128, 128, 128, 4]
+  kernel_size: [3, 3, 3, 3] 
+  input_channels: 4  # Will be overwritten in train.py based on shape of trainX
+  out_channels: 4    # Will be overwritten in train.py
+
+datapipe: memory # memory, lattice_surgery  
+data_method: train # train or inference/test
+
+train: # Training configurable parameters
+  num_samples: 262144 # Total training samples per epoch
+  accumulate_steps: 2
+  checkpoint_interval: 1
+  save_every_datasets: 5  # Save checkpoint every N datasets within an epoch (0 = disabled, only save at epoch end)
+  epochs: 100
+val: # Validation configurable parameters
+  num_samples: 65536 # Total validation samples (distributed across all GPUs when using JAX or multi-GPU)
+  threshold: 0.5
+  trials: 1
+optimizer_type: Lion  # Lion or AdamW
+optimizer:
+  lr: 3e-4 # Smaller distances can have larger lr: 2e-4, 1e-4, 7e-5, 5e-5
+  weight_decay: 1e-7
+  beta2: 0.95
+
+lr_scheduler:
+  type: warmup_then_decay  # cosine or warmup_then_decay
+  warmup_steps: 100
+  milestones: [0.25, 0.5, 1.0]  # used only for warmup_then_decay
+  gamma: 0.7 # used only for warmup_then_decay
+  min_lr: 1e-6 # used only for cosine
+
+batch_schedule:
+  enabled: true
+  initial: 1024
+  final: 1024 
+  start_epoch: 1  # After epoch 1 completes, start ramping up batch size
+  end_epoch: 3   # After epoch 3 completes, reach final batch size (linear schedule, multiples of 8)
+
+validation_ler: True
+early_stopping:
+  enabled: true
+  patience: 100
+  
+time_based_early_stopping:
+  enabled: false
+  safety_margin_minutes: 5  # Stop if remaining time < (expected_epoch_time + safety_margin) # Number of epochs
+
+ema:
+  use_ema: true
+  decay: 0.0001 # Try 0.99 and 0.001
+
+test: # Validation configurable parameters
+  num_samples: 65536
+  trials: 1
+  # Override distance/n_rounds for testing (precomputed frames will be loaded from data.precomputed_frames_dir if available)
+  distance: 5  # Set to null to use cfg.distance (or largest from multiple_distances)
+  n_rounds: 5  # Set to null to use cfg.n_rounds (or largest from multiple_rounds)
+  backend: stim # Inference backend: stim|torch
+  p_error: 0.006
+  dataloader:
+    batch_size: 256
+    num_workers: 16
+    persistent_workers: true
+    prefetch_factor: 2
+  sampler:
+    shuffle: false
+    drop_last: false
+  syn_red: full # full, syn_only, S_only
+  th_data: 0.0         # decision threshold for data-qubit channels (0,1)
+  th_syn:  0.0         # decision threshold for syndrome channels (2,3)
+  sampling_mode: threshold  # Options: "threshold" (deterministic) or "temperature" (stochastic)
+  temperature: 0.0          # Temperature for softmax sampling (lower = sharper, higher = more random)
+  temperature_data: null    # Optional: separate temperature for data channels (defaults to temperature)
+  temperature_syn: null     # Optional: separate temperature for syndrome channels (defaults to temperature)
+  per_round: false     # optional: see #2
+  meas_basis_test: both # X, Z, both
+  use_model_checkpoint: -1  # -1 = best model, >=0 = specific checkpoint epoch
+
+# Threshold workflow configuration (used when workflow.task=threshold)
+threshold:
+  # Physical error rates to sweep
+  p_values: [0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008]
+  # Code distances to test
+  distances: [5, 7, 9, 11, 13]
+  # Number of rounds per distance (null = same as distance)
+  n_rounds: null

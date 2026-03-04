@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# Public, single-file config for external users.
+#
+# Users should only edit the fields in this file.
+# Advanced/experimental fields are intentionally omitted and will be populated
+# from internal defaults (and validated to prevent unsupported overrides).
+
+# === Model selection (required) ===
+model_id: 1  # Choose 1, 2, 3, 4, or 5
+
+# === Values for evaluation. Training window is hardcoded to model receptive field. ===
+distance: 7
+n_rounds: 7
+
+# === Workflow ===
+workflow:
+  task: train  # train, inference
+  # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
+
+# === Data (public surface only) ===
+data:
+  # Surface code orientation (public naming): O1, O2, O3, O4
+  code_rotation: O1
+  # Circuit-level noise model (25-parameter). This is the default public noise specification.
+  # The defaults are chosen for p=0.003.
+  noise_model:
+    # State preparation errors (2)
+    p_prep_X: 0.002 # |+> state-prep fails with this probability (apply Z), 2*p/3
+    p_prep_Z: 0.002 # |0> state-prep fails with this probability (apply X), 2*p/3
+    # Measurement errors (2)
+    p_meas_X: 0.002 # Measurement in X-basis fails with this probability (apply Z before measurement), 2*p/3
+    p_meas_Z: 0.002 # Measurement in Z-basis fails with this probability (apply X before measurement), 2*p/3
+    # Idle during CNOT layers / bulk (3)
+    p_idle_cnot_X: 0.001 # p/3
+    p_idle_cnot_Y: 0.001 # p/3
+    p_idle_cnot_Z: 0.001 # p/3
+    # Idle during SPAM window (ancilla prep+reset) on data qubits only (3)
+    p_idle_spam_X: 0.001998 # 2*p/3 - 2*p^2/9
+    p_idle_spam_Y: 0.001998 # 2*p/3 - 2*p^2/9
+    p_idle_spam_Z: 0.001998 # 2*p/3 - 2*p^2/9
+    # CNOT two-qubit errors (15) - keys are p_cnot_{Pauli}{Pauli} excluding II, p/15
+    p_cnot_IX: 0.0002
+    p_cnot_IY: 0.0002
+    p_cnot_IZ: 0.0002
+    p_cnot_XI: 0.0002
+    p_cnot_XX: 0.0002
+    p_cnot_XY: 0.0002
+    p_cnot_XZ: 0.0002
+    p_cnot_YI: 0.0002
+    p_cnot_YX: 0.0002
+    p_cnot_YY: 0.0002
+    p_cnot_YZ: 0.0002
+    p_cnot_ZI: 0.0002
+    p_cnot_ZX: 0.0002
+    p_cnot_ZY: 0.0002
+    p_cnot_ZZ: 0.0002
+

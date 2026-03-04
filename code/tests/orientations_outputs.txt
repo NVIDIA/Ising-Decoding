@@ -1,0 +1,111 @@
+================================================================================
+SURFACE CODE ORIENTATION EXPLORER
+Distance = 3, Rounds = 3
+================================================================================
+
+Legend for code layout:
+  D   = Data qubit
+  [X] = Bulk X-syndrome qubit
+  (x) = Boundary X-syndrome qubit
+  [Z] = Bulk Z-syndrome qubit
+  (z) = Boundary Z-syndrome qubit
+
+Legend for logical operators:
+  ●  = Qubit is part of logical operator
+  ·  = Qubit is not part of logical operator
+
+================================================================================
+ORIENTATION: O1
+================================================================================
+
+CODE LAYOUT:
+      (z)            
+    D     D     D    
+      [X]   [Z]   (x)
+    D     D     D    
+(x)   [Z]   [X]      
+    D     D     D    
+            (z)      
+
+LOGICAL X OPERATOR (lx):
+ ●  ●  ● 
+ ·  ·  · 
+ ·  ·  · 
+
+LOGICAL Z OPERATOR (lz):
+ ●  ·  · 
+ ●  ·  · 
+ ●  ·  · 
+
+================================================================================
+ORIENTATION: O2
+================================================================================
+
+CODE LAYOUT:
+            (x)      
+    D     D     D    
+(z)   [X]   [Z]      
+    D     D     D    
+      [Z]   [X]   (z)
+    D     D     D    
+      (x)            
+
+LOGICAL X OPERATOR (lx):
+ ●  ·  · 
+ ●  ·  · 
+ ●  ·  · 
+
+LOGICAL Z OPERATOR (lz):
+ ●  ●  ● 
+ ·  ·  · 
+ ·  ·  · 
+
+
+================================================================================
+ORIENTATION: O3
+================================================================================
+CODE LAYOUT:
+      (x)            
+    D     D     D    
+      [Z]   [X]   (z)
+    D     D     D    
+(z)   [X]   [Z]      
+    D     D     D    
+            (x)      
+
+LOGICAL X OPERATOR (lx):
+ ●  ·  · 
+ ●  ·  · 
+ ●  ·  · 
+
+LOGICAL Z OPERATOR (lz):
+ ●  ●  ● 
+ ·  ·  · 
+ ·  ·  · 
+
+
+================================================================================
+ORIENTATION: O4
+================================================================================
+
+CODE LAYOUT:
+            (z)      
+    D     D     D    
+(x)   [Z]   [X]      
+    D     D     D    
+      [X]   [Z]   (x)
+    D     D     D    
+      (z)            
+
+LOGICAL X OPERATOR (lx):
+ ●  ●  ● 
+ ·  ·  · 
+ ·  ·  · 
+
+LOGICAL Z OPERATOR (lz):
+ ●  ·  · 
+ ●  ·  · 
+ ●  ·  · 
+
+
+
