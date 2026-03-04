@@ -25,8 +25,11 @@ from workflows.run import _load_model
 from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from training.distributed import DistributedManager
 
-# Tolerance for "LER after <= baseline + tolerance" (allow small numerical noise).
-LER_IMPROVEMENT_TOLERANCE = 5e-5
+# Tolerance for "LER after <= baseline + tolerance".
+# At d=13 with 262k shots and LER ~2e-4, the standard error per basis is
+# ~sqrt(p/N) ≈ 2.8e-5; comparing two independent estimates (before/after)
+# gives combined SE ~4e-5, so 1e-4 is a ~2.5-sigma guard against flakes.
+LER_IMPROVEMENT_TOLERANCE = 1e-4
 
 
 def _run_inference_rtest(distance: int, n_rounds: int):
