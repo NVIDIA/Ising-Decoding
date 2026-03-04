@@ -364,7 +364,8 @@ job artifacts.
 
 ### CI (GitHub Actions)
 
-CI is defined in `.github/workflows/ci.yml` and runs on every push / PR to `main`:
+CI is defined in `.github/workflows/ci.yml` and runs on pushes to `main`,
+`pull-request/*` branches (via copy-pr-bot), merge-group checks, and manual dispatch:
 
 | Job | Runner | What it checks |
 |-----|--------|----------------|
