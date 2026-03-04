@@ -364,10 +364,9 @@ job artifacts.
 
 ### CI (GitHub Actions)
 
-CI is split into two workflows:
-
-**`.github/workflows/ci.yml`** runs on every push to `main`, `pull-request/*`
-branches (via copy-pr-bot), merge-group checks, and manual dispatch:
+CI is defined in `.github/workflows/ci.yml` and runs on pushes to `main`,
+`pull-request/*` branches (via copy-pr-bot), merge-group checks, and manual
+dispatch:
 
 | Job | Runner | What it checks |
 |-----|--------|----------------|
@@ -375,12 +374,5 @@ branches (via copy-pr-bot), merge-group checks, and manual dispatch:
 | `unit-tests` | CPU | Full `unittest discover` suite (GPU tests auto-skip) |
 | `unit-tests-coverage` | CPU | Same suite with `coverage` reporting |
 | `python-compat` | CPU | Import/install check across Python 3.11 / 3.12 / 3.13 |
-
-**`.github/workflows/gpu.yml`** runs on manual dispatch (self-hosted NVIDIA GPU
-runners). Once runners are registered for this repo, uncomment the push trigger
-to run automatically on PRs:
-
-| Job | Runner | What it checks |
-|-----|--------|----------------|
-| `gpu-tests` | GPU | Full test suite with GPU tests enabled |
+| `gpu-tests` | GPU | Full test suite on a self-hosted GPU runner |
 | `smoke-test-gpu` | GPU | Short train + inference end-to-end smoke run |
