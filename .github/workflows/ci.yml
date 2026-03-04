@@ -114,7 +114,7 @@ jobs:
   # GPU jobs (self-hosted NVIDIA runners)
   # ---------------------------------------------------------------------------
   gpu-tests:
-    runs-on: linux-amd64-gpu-h100-latest-1
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
@@ -151,7 +151,7 @@ jobs:
         run: PYTHONPATH=code python3 -m unittest discover -s code/tests -p "test_*.py"
 
   smoke-test-gpu:
-    runs-on: linux-amd64-gpu-h100-latest-1
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     needs: gpu-tests
     container:
       image: ubuntu:22.04
