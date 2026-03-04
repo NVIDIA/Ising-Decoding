@@ -151,7 +151,9 @@ class TestPublicInferenceModelV1(unittest.TestCase):
         self.assertGreaterEqual(ler_z, 0.0)
         self.assertLessEqual(ler_z, LER_BASIS_D9_MAX, msg="LER Z too high")
 
-        _assert_ler_improvement_vs_baseline(self, result)
+        # d=9 LER is ~5-10x higher than d=13, so Monte Carlo variance is
+        # proportionally larger. Use a wider tolerance than the d=13 default.
+        _assert_ler_improvement_vs_baseline(self, result, tolerance=5e-4)
 
 
 if __name__ == "__main__":
