@@ -244,8 +244,9 @@ class TestLERComparison(unittest.TestCase):
         ratio = (ler_no_bd / ler_with_bd) if ler_with_bd > 0 else float("inf")
         print(f"  Improvement: {ratio:.2f}x")
         
-        self.assertLessEqual(ler_with_bd, ler_no_bd,
-                       f"Expected LER with BD <= without BD: {ler_with_bd:.4e} > {ler_no_bd:.4e}")
+        # With NoiseModel, boundary detectors should improve LER
+        self.assertLess(ler_with_bd, ler_no_bd, 
+                       f"Expected LER to improve with BD: {ler_with_bd:.4e} >= {ler_no_bd:.4e}")
 
     def test_ler_improves_with_bd_all_orientations(self):
         """Test LER improves with boundary detectors for all four orientations (short run)."""
