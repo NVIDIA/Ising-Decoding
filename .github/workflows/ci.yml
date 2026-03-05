@@ -89,29 +89,31 @@ jobs:
             htmlcov/
             coverage.xml
 
-  python-compat:
+  inference-tests:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
-        mode: [inference, train]
-    name: "compat / py${{ matrix.python-version }} / ${{ matrix.mode }}"
+    name: "inference / py${{ matrix.python-version }}"
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Check Python compatibility
+      - name: Install dependencies and run tests
         run: bash code/scripts/check_python_compat.sh
         env:
-          MODE: ${{ matrix.mode }}
           PYTHON_BIN: python
-          SKIP_TESTS: "1"
+          MODE: inference
+          SKIP_TESTS: "0"
           PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
   # ---------------------------------------------------------------------------
   # GPU jobs (self-hosted NVIDIA runners)
+  # Full test suite + smoke training/inference, one job per Python version.
   # ---------------------------------------------------------------------------
   gpu-tests:
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
@@ -120,7 +122,12 @@ jobs:
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
-    timeout-minutes: 30
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    name: "gpu / py${{ matrix.python-version }}"
     steps:
       - name: Setup proxy cache
         uses: nv-gha-runners/setup-proxy-cache@main
@@ -130,63 +137,34 @@ jobs:
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
-          git lfs install
-
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_inference.txt
-
-      - name: Verify GPU
-        run: |
-          nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'; print(torch.cuda.get_device_name(0))"
-
-      - name: Run full test suite (CPU + GPU)
-        run: PYTHONPATH=code python3 -m unittest discover -s code/tests -p "test_*.py"
-
-  smoke-test-gpu:
-    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
-    needs: gpu-tests
-    container:
-      image: ubuntu:22.04
-      options: -u root --security-opt seccomp=unconfined --shm-size 16g
-      env:
-        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
-    timeout-minutes: 30
-    steps:
-      - name: Setup proxy cache
-        uses: nv-gha-runners/setup-proxy-cache@main
-        with:
-          enable-apt: true
-
-      - name: Install system dependencies
-        run: |
+          apt-get install -y git git-lfs software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          apt-get install -y \
+            python${{ matrix.python-version }} \
+            python${{ matrix.python-version }}-venv \
+            python${{ matrix.python-version }}-dev
           git lfs install
 
       - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_train.txt
-
       - name: Verify GPU
-        run: |
-          nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+        run: nvidia-smi
+
+      - name: Install dependencies and run tests
+        run: bash code/scripts/check_python_compat.sh
+        env:
+          PYTHON_BIN: python${{ matrix.python-version }}
+          MODE: train
+          SKIP_TESTS: "0"
+          REQUIRE_GPU: "1"
 
       - name: Smoke training + inference
-        run: bash code/scripts/smoke_run.sh
+        run: |
+          source .venv_train_${{ matrix.python-version }}/bin/activate
+          bash code/scripts/smoke_run.sh
         env:
           EXPERIMENT_NAME: ci_smoke
           PREDECODER_TRAIN_SAMPLES: "4096"
