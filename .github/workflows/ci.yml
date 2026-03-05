@@ -136,6 +136,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y git git-lfs software-properties-common
           add-apt-repository -y ppa:deadsnakes/ppa
