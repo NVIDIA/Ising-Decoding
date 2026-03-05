@@ -95,15 +95,7 @@ pip install -r code/requirements_public_inference.txt
    - `models/PreDecoderModelMemory_r9_v1.0.77.pt` (receptive field R=9, checkpoint 77)
    - `models/PreDecoderModelMemory_r13_v1.0.86.pt` (receptive field R=13, checkpoint 86)
 
-   **Package users** receive model files via your distribution channel (e.g. release package or archive), not from this repo. Place the model file so the loader can find it:
-   - Either extract the provided archive into the experiment models folder:
-     ```bash
-     mkdir -p outputs/predecoder_model_1/models
-     tar xzf /path/to/PreDecoderModelMemory_r9_v1.0.77.pt.tar.gz -C outputs/predecoder_model_1/models
-     ```
-   - Or, if your package includes a download URL for the model, set `PREDECODER_MODEL_URL` (or `MODEL_URL`) and run with `EXTRA_PARAMS="+test.use_model_checkpoint=77"`; the loader will download to the experiment models folder when the file is missing.
-
-   **Repository users**: Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
+   Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
 3. Set:
 - `EXPERIMENT_NAME=predecoder_model_1`
