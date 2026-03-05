@@ -119,7 +119,6 @@ jobs:
   # Full test suite + smoke training/inference, one job per Python version.
   # ---------------------------------------------------------------------------
   gpu-tests:
-    if: github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
