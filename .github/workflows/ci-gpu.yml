@@ -82,6 +82,7 @@ jobs:
           REQUIRE_GPU: "1"
 
       - name: Smoke training + inference
+        shell: bash
         run: |
           source .venv_train_${{ matrix.python-version }}/bin/activate
           bash code/scripts/smoke_run.sh
