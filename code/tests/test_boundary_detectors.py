@@ -206,7 +206,7 @@ class TestLERComparison(unittest.TestCase):
     def test_ler_improves_with_bd_noise_model(self):
         """Test that LER improves with boundary detectors when using NoiseModel."""
         noise_model = NoiseModel.from_single_p(0.002)
-        num_samples = _ler_test_samples(50000, 2000)
+        num_samples = _ler_test_samples(50000, 20000)
         
         # Circuit WITHOUT boundary detectors
         mc_no_bd = MemoryCircuit(
@@ -244,9 +244,6 @@ class TestLERComparison(unittest.TestCase):
         ratio = (ler_no_bd / ler_with_bd) if ler_with_bd > 0 else float("inf")
         print(f"  Improvement: {ratio:.2f}x")
         
-        # With NoiseModel, boundary detectors should not make LER worse.
-        # At low sample counts (CI), equal LER is expected since discrete
-        # error counts may coincide; strict improvement requires ~50k samples.
         self.assertLessEqual(ler_with_bd, ler_no_bd,
                        f"Expected LER with BD <= without BD: {ler_with_bd:.4e} > {ler_no_bd:.4e}")
 
