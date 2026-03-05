@@ -12,6 +12,9 @@ name: CI
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -114,6 +117,7 @@ jobs:
   # GPU jobs (self-hosted NVIDIA runners)
   # ---------------------------------------------------------------------------
   gpu-tests:
+    if: github.event_name == 'push' || github.event_name == 'merge_group'
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
