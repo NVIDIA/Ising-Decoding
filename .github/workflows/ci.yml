@@ -18,7 +18,6 @@ on:
   push:
     branches:
       - main
-      - "pull-request/[0-9]+"
   merge_group:
     types:
       - checks_requested
@@ -117,11 +116,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # GPU jobs (self-hosted NVIDIA runners)
   # Full test suite + smoke training/inference, one job per Python version.
-  # Self-hosted runners block pull_request events; GPU CI runs via push to
-  # pull-request/[0-9]+ branches (created by copy-pr-bot) and on main.
   # ---------------------------------------------------------------------------
   gpu-tests:
-    if: github.event_name != 'pull_request'
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
