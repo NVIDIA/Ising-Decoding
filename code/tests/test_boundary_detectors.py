@@ -206,7 +206,7 @@ class TestLERComparison(unittest.TestCase):
     def test_ler_improves_with_bd_noise_model(self):
         """Test that LER improves with boundary detectors when using NoiseModel."""
         noise_model = NoiseModel.from_single_p(0.002)
-        num_samples = _ler_test_samples(50000, 2000)
+        num_samples = _ler_test_samples(50000, 20000)
         
         # Circuit WITHOUT boundary detectors
         mc_no_bd = MemoryCircuit(
