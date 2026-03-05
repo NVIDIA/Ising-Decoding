@@ -46,20 +46,25 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    name: "unit-tests / py${{ matrix.python-version }}"
     steps:
       - uses: actions/checkout@v4
         with:
           lfs: true
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_inference.txt \
-            --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Run tests
-        run: PYTHONPATH=code python -m unittest discover -s code/tests -p "test_*.py"
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies and run tests
+        run: bash code/scripts/check_python_compat.sh
+        env:
+          PYTHON_BIN: python
+          MODE: inference
+          SKIP_TESTS: "0"
+          PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
   unit-tests-coverage:
     runs-on: ubuntu-latest
@@ -91,33 +96,14 @@ jobs:
             htmlcov/
             coverage.xml
 
-  inference-tests:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-    name: "inference / py${{ matrix.python-version }}"
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          lfs: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install dependencies and run tests
-        run: bash code/scripts/check_python_compat.sh
-        env:
-          PYTHON_BIN: python
-          MODE: inference
-          SKIP_TESTS: "0"
-          PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
-
   # ---------------------------------------------------------------------------
   # GPU jobs (self-hosted NVIDIA runners)
   # Full test suite + smoke training/inference, one job per Python version.
+  # NVIDIA self-hosted runners block pull_request events, so GPU jobs only
+  # run on push (to main) and merge_group.
   # ---------------------------------------------------------------------------
   gpu-tests:
+    if: github.event_name != 'pull_request'
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
