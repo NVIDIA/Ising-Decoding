@@ -134,6 +134,28 @@ def _load_model(cfg, dist):
         print(f"🚀 Loading model for task: {cfg.workflow.task}")
     
     _ensure_inference_io_channels(cfg)
+
+    # SafeTensors path: load fp16/fp32 model from SafeTensors file
+    safetensors_path = os.environ.get("PREDECODER_SAFETENSORS_CHECKPOINT", "").strip()
+    if safetensors_path:
+        from export.safetensors_utils import load_safetensors
+        if dist.rank == 0:
+            print(f"Loading model from SafeTensors: {safetensors_path}")
+        model, metadata = load_safetensors(
+            safetensors_path,
+            model_id=getattr(cfg, "model_id", None),
+            device=str(dist.device),
+        )
+        model = torch.compile(model, disable=True)
+        if dist.rank == 0:
+            dtype = metadata.get("quant_format", "fp32")
+            param_count = sum(p.numel() for p in model.parameters())
+            print(f"  dtype: {dtype}")
+            print(f"  Model parameters: {param_count:,}")
+        if metadata.get("quant_format") == "fp16":
+            cfg.enable_fp16 = True
+        return model
+
     model = ModelFactory.create_model(cfg).to(dist.device)
     
     if dist.rank == 0:
