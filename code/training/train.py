@@ -668,6 +668,12 @@ def main(cfg: DictConfig) -> None:
                 cfg.train.epochs = int(epochs_env)
         except Exception:
             pass
+        milestones_env = os.environ.get("PREDECODER_LR_MILESTONES")
+        try:
+            if milestones_env:
+                cfg.lr_scheduler.milestones = [float(x) for x in milestones_env.split(",")]
+        except Exception:
+            pass
 
     if dist.rank == 0:
         print(f"Effective workflow.task: {cfg.workflow.task}")
