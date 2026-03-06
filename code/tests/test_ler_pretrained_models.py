@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Automated LER collection using pre-generated models over multiple p values
 and noise model modes (single-p vs explicit 25p).
@@ -51,7 +50,6 @@ from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from training.distributed import DistributedManager
 from workflows.config_validator import apply_public_defaults_and_model, validate_public_config
 from workflows.run import _load_model
-
 
 _DEFAULT_MODELS = [
     ("PreDecoderModelMemory_r9_v1.0.77.pt", 1),
@@ -168,6 +166,7 @@ def _clone_cfg(cfg):
     """Deep copy an OmegaConf config with resolved values."""
     return OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
 
+
 def _scale_noise_dict(noise_dict: Dict[str, float], scale: float) -> Dict[str, float]:
     """Scale a 25p noise model dict by a factor, clamping to [0, 1]."""
     out = {}
@@ -248,7 +247,8 @@ class TestLERPretrainedModels(unittest.TestCase):
             dist = DistributedManager()
 
             for model_path, checkpoint, inferred_mid in model_entries:
-                model_id = int(env_model_id) if env_model_id else (inferred_mid if inferred_mid else 1)
+                model_id = int(env_model_id
+                              ) if env_model_id else (inferred_mid if inferred_mid else 1)
                 distance = env_distance if env_distance > 0 else 9
                 n_rounds = env_n_rounds if env_n_rounds > 0 else distance
 
@@ -305,7 +305,9 @@ class TestLERPretrainedModels(unittest.TestCase):
                         ler = float(result[basis]["logical error ratio (mean)"])
                         baseline = float(result[basis]["logical error ratio (pymatch mean)"])
                         err = float(result[basis]["logical error ratio (standard error)"])
-                        base_err = float(result[basis]["logical error ratio (pymatch standard error)"])
+                        base_err = float(
+                            result[basis]["logical error ratio (pymatch standard error)"]
+                        )
                         self.assertGreaterEqual(ler, 0.0)
                         self.assertLessEqual(ler, 1.0)
                         self.assertGreaterEqual(baseline, 0.0)
@@ -314,11 +316,14 @@ class TestLERPretrainedModels(unittest.TestCase):
                         self.assertLessEqual(
                             ler,
                             baseline + tol,
-                            msg=f"{basis}: LER after ({ler:.6f}) > baseline ({baseline:.6f}) + {tol:.6f}",
+                            msg=
+                            f"{basis}: LER after ({ler:.6f}) > baseline ({baseline:.6f}) + {tol:.6f}",
                         )
 
                 if dist.rank == 0:
-                    print(f"[LER] model={model_path.name} (checkpoint={checkpoint}, model_id={model_id})")
+                    print(
+                        f"[LER] model={model_path.name} (checkpoint={checkpoint}, model_id={model_id})"
+                    )
                     for mode, p_value, tag, result in results:
                         x = result["X"]
                         z = result["Z"]

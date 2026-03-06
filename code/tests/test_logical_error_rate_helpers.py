@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for evaluation/logical_error_rate: sample_predictions (LER pipeline) and interleave_XZ_residuals (decoder input ordering)."""
 
 import unittest

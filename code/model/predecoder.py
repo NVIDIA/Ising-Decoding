@@ -14,7 +14,9 @@ import torch
 import torch.nn as nn
 from types import SimpleNamespace
 
+
 class ResidualBlock3D(nn.Module):
+
     def __init__(self, channels, kernel_sizes, activation):
         """
         channels: List of 4 ints = [in1, out1, out2, out3]
@@ -24,18 +26,23 @@ class ResidualBlock3D(nn.Module):
         self.activation = activation()  # instantiate once
 
         self.conv1 = nn.Sequential(
-            nn.Conv3d(channels[0], channels[1], kernel_size=kernel_sizes[0], padding=kernel_sizes[0] // 2),
+            nn.Conv3d(
+                channels[0], channels[1], kernel_size=kernel_sizes[0], padding=kernel_sizes[0] // 2
+            ),
             nn.BatchNorm3d(channels[1]),
             self.activation  # instance
         )
         self.conv2 = nn.Sequential(
-            nn.Conv3d(channels[1], channels[2], kernel_size=kernel_sizes[1], padding=kernel_sizes[1] // 2),
+            nn.Conv3d(
+                channels[1], channels[2], kernel_size=kernel_sizes[1], padding=kernel_sizes[1] // 2
+            ),
             nn.BatchNorm3d(channels[2]),
             self.activation  # instance
         )
         self.conv3 = nn.Sequential(
-            nn.Conv3d(channels[2], channels[3], kernel_size=kernel_sizes[2], padding=kernel_sizes[2] // 2),
-            nn.BatchNorm3d(channels[3])
+            nn.Conv3d(
+                channels[2], channels[3], kernel_size=kernel_sizes[2], padding=kernel_sizes[2] // 2
+            ), nn.BatchNorm3d(channels[3])
         )
 
         self.skip = nn.Identity()
@@ -49,7 +56,9 @@ class ResidualBlock3D(nn.Module):
         out = self.conv3(out)
         return self.activation(out + identity)
 
+
 class PreDecoderModelMemory_v1(nn.Module):
+
     def __init__(self, cfg):
         super(PreDecoderModelMemory_v1, self).__init__()
 
@@ -63,7 +72,7 @@ class PreDecoderModelMemory_v1(nn.Module):
 
         assert len(filters) == len(kernel_sizes), \
             "Mismatch: num_filters and kernel_size must be the same length."
-        
+
         # === Configurable input and output channels ===
         input_channels = cfg.model.input_channels
         out_channels = cfg.model.out_channels
@@ -101,10 +110,10 @@ class PreDecoderModelMemory_v1(nn.Module):
 
     def forward(self, x):
         return self.net(x)  # x: (B, 4, T, D, D)
-    
 
 
 class PreDecoderModelMemory_v2(nn.Module):
+
     def __init__(self, cfg):
         super(PreDecoderModelMemory_v2, self).__init__()
 
@@ -130,9 +139,12 @@ class PreDecoderModelMemory_v2(nn.Module):
         self.layers = nn.ModuleList()
         self.layers.append(
             nn.Sequential(
-                nn.Conv3d(in_channels=input_channels, out_channels=filters[0], kernel_size=kernel_sizes[0], padding=kernel_sizes[0] // 2),
-                nn.BatchNorm3d(filters[0]),
-                self.activation_fn
+                nn.Conv3d(
+                    in_channels=input_channels,
+                    out_channels=filters[0],
+                    kernel_size=kernel_sizes[0],
+                    padding=kernel_sizes[0] // 2
+                ), nn.BatchNorm3d(filters[0]), self.activation_fn
             )
         )
 
@@ -176,8 +188,6 @@ class PreDecoderModelMemory_v2(nn.Module):
         return self.final_conv(x)
 
 
-
-    
 # === Define a mock config using SimpleNamespace ===
 def get_mock_config():
     cfg = SimpleNamespace()
@@ -191,6 +201,7 @@ def get_mock_config():
     cfg.model.num_filters = [8, 4, 2]
     cfg.model.kernel_size = [3, 3, 3]
     return cfg
+
 
 # === Mock config for testing ===
 def get_mock_config_v2():
@@ -220,6 +231,7 @@ def test_model_v2():
     assert out.shape == expected_shape, f"❌ Output shape mismatch: expected {expected_shape}, got {out.shape}"
     print("✅ Model v2 test passed. Output shape:", out.shape)
 
+
 # === Run the test ===
 def test_model():
     cfg = get_mock_config()
@@ -235,9 +247,8 @@ def test_model():
         f"Output shape mismatch: expected {expected_shape}, got {output.shape}"
 
     print("✅ Model test passed. Output shape:", output.shape)
-    
+
 
 if __name__ == "__main__":
     test_model()
     test_model_v2()
-

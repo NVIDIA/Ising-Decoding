@@ -23,6 +23,7 @@ from workflows.config_validator import apply_public_defaults_and_model, validate
 
 
 class TestPublicConfig(unittest.TestCase):
+
     def test_registry_receptive_field_formula(self):
         self.assertEqual(compute_receptive_field([3, 3, 3, 3]), 9)
         self.assertEqual(compute_receptive_field([5, 5, 5, 5]), 17)
@@ -56,7 +57,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "train": {"epochs": 1},
+                "train": {
+                    "epochs": 1
+                },
             }
         )
         with self.assertRaises(ValueError):
@@ -81,7 +84,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "data": {"p_min": 0.001},  # forbidden key
+                "data": {
+                    "p_min": 0.001
+                },  # forbidden key
             }
         )
         with self.assertRaises(ValueError):
@@ -93,7 +98,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "data": {"precomputed_frames_dir": "/tmp/frames"},  # hidden in public release
+                "data": {
+                    "precomputed_frames_dir": "/tmp/frames"
+                },  # hidden in public release
             }
         )
         with self.assertRaises(ValueError):
@@ -105,35 +112,37 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "data": {
-                    "noise_model": {
-                        "p_prep_X": 0.001,
-                        "p_prep_Z": 0.001,
-                        "p_meas_X": 0.001,
-                        "p_meas_Z": 0.001,
-                        "p_idle_cnot_X": 0.001,
-                        "p_idle_cnot_Y": 0.001,
-                        "p_idle_cnot_Z": 0.001,
-                        "p_idle_spam_X": 0.001,
-                        "p_idle_spam_Y": 0.001,
-                        "p_idle_spam_Z": 0.001,
-                        "p_cnot_IX": 0.0001,
-                        "p_cnot_IY": 0.0001,
-                        "p_cnot_IZ": 0.0001,
-                        "p_cnot_XI": 0.0001,
-                        "p_cnot_XX": 0.0001,
-                        "p_cnot_XY": 0.0001,
-                        "p_cnot_XZ": 0.0001,
-                        "p_cnot_YI": 0.0001,
-                        "p_cnot_YX": 0.0001,
-                        "p_cnot_YY": 0.0001,
-                        "p_cnot_YZ": 0.0001,
-                        "p_cnot_ZI": 0.0001,
-                        "p_cnot_ZX": 0.0001,
-                        "p_cnot_ZY": 0.0001,
-                        "p_cnot_ZZ": 0.0001,
-                    }
-                },
+                "data":
+                    {
+                        "noise_model":
+                            {
+                                "p_prep_X": 0.001,
+                                "p_prep_Z": 0.001,
+                                "p_meas_X": 0.001,
+                                "p_meas_Z": 0.001,
+                                "p_idle_cnot_X": 0.001,
+                                "p_idle_cnot_Y": 0.001,
+                                "p_idle_cnot_Z": 0.001,
+                                "p_idle_spam_X": 0.001,
+                                "p_idle_spam_Y": 0.001,
+                                "p_idle_spam_Z": 0.001,
+                                "p_cnot_IX": 0.0001,
+                                "p_cnot_IY": 0.0001,
+                                "p_cnot_IZ": 0.0001,
+                                "p_cnot_XI": 0.0001,
+                                "p_cnot_XX": 0.0001,
+                                "p_cnot_XY": 0.0001,
+                                "p_cnot_XZ": 0.0001,
+                                "p_cnot_YI": 0.0001,
+                                "p_cnot_YX": 0.0001,
+                                "p_cnot_YY": 0.0001,
+                                "p_cnot_YZ": 0.0001,
+                                "p_cnot_ZI": 0.0001,
+                                "p_cnot_ZX": 0.0001,
+                                "p_cnot_ZY": 0.0001,
+                                "p_cnot_ZZ": 0.0001,
+                            }
+                    },
             }
         )
         spec = validate_public_config(cfg)
@@ -150,7 +159,10 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "optimizer": {"lr": 1e-4, "beta2": 0.9},  # forbidden key
+                "optimizer": {
+                    "lr": 1e-4,
+                    "beta2": 0.9
+                },  # forbidden key
             }
         )
         with self.assertRaises(ValueError):
@@ -177,7 +189,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "test": {"trials": 7},
+                "test": {
+                    "trials": 7
+                },
             }
         )
         with self.assertRaises(ValueError):
@@ -189,7 +203,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 9,
                 "n_rounds": 9,
-                "val": {"num_samples": 1},
+                "val": {
+                    "num_samples": 1
+                },
             }
         )
         with self.assertRaises(ValueError):
@@ -227,7 +243,9 @@ class TestPublicConfig(unittest.TestCase):
                 "model_id": 1,
                 "distance": 11,
                 "n_rounds": 13,
-                "workflow": {"task": "inference"},
+                "workflow": {
+                    "task": "inference"
+                },
             }
         )
         spec = validate_public_config(cfg)
@@ -275,7 +293,12 @@ class TestPublicConfig(unittest.TestCase):
 
     def test_torch_compile_env_override(self):
         cfg = OmegaConf.create({"model_id": 1, "distance": 9, "n_rounds": 9})
-        with patch.dict("os.environ", {"PREDECODER_TORCH_COMPILE": "0", "PREDECODER_TORCH_COMPILE_MODE": "reduce-overhead"}):
+        with patch.dict(
+            "os.environ", {
+                "PREDECODER_TORCH_COMPILE": "0",
+                "PREDECODER_TORCH_COMPILE_MODE": "reduce-overhead"
+            }
+        ):
             spec = validate_public_config(cfg)
             merged = apply_public_defaults_and_model(cfg, spec)
             self.assertFalse(bool(merged.torch_compile))
@@ -286,12 +309,16 @@ class TestPublicConfig(unittest.TestCase):
         expected = {"O1": "XV", "O2": "XH", "O3": "ZV", "O4": "ZH"}
         for public, internal in expected.items():
             with self.subTest(code_rotation=public):
-                cfg = OmegaConf.create({
-                    "model_id": 1,
-                    "distance": 9,
-                    "n_rounds": 9,
-                    "data": {"code_rotation": public},
-                })
+                cfg = OmegaConf.create(
+                    {
+                        "model_id": 1,
+                        "distance": 9,
+                        "n_rounds": 9,
+                        "data": {
+                            "code_rotation": public
+                        },
+                    }
+                )
                 spec = validate_public_config(cfg)
                 merged = apply_public_defaults_and_model(cfg, spec)
                 self.assertEqual(
@@ -304,12 +331,16 @@ class TestPublicConfig(unittest.TestCase):
         """Internal names XV, XH, ZV, ZH are also accepted (e.g. for compatibility)."""
         for rotation in ["XV", "XH", "ZV", "ZH"]:
             with self.subTest(code_rotation=rotation):
-                cfg = OmegaConf.create({
-                    "model_id": 1,
-                    "distance": 9,
-                    "n_rounds": 9,
-                    "data": {"code_rotation": rotation},
-                })
+                cfg = OmegaConf.create(
+                    {
+                        "model_id": 1,
+                        "distance": 9,
+                        "n_rounds": 9,
+                        "data": {
+                            "code_rotation": rotation
+                        },
+                    }
+                )
                 spec = validate_public_config(cfg)
                 merged = apply_public_defaults_and_model(cfg, spec)
                 self.assertEqual(str(merged.data.code_rotation), rotation)
@@ -317,4 +348,3 @@ class TestPublicConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

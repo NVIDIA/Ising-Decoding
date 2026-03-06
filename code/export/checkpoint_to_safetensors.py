@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Convert a .pt checkpoint to a .safetensors file (fp16 or fp32).
 
@@ -55,9 +54,7 @@ def _load_checkpoint_state_dict(checkpoint_path: str, device: str) -> dict:
             # Assume it is a bare state dict
             state_dict = raw
     else:
-        raise ValueError(
-            f"Unexpected checkpoint format: expected a dict, got {type(raw).__name__}"
-        )
+        raise ValueError(f"Unexpected checkpoint format: expected a dict, got {type(raw).__name__}")
 
     # Strip DDP "module." prefix if present
     fixed = {}
@@ -133,7 +130,7 @@ def main():
     print(f"Saving to: {output_path}")
     save_safetensors(model, str(output_path), model_id=args.model_id, dtype=dtype)
 
-    size_mb = output_path.stat().st_size / (1024 ** 2)
+    size_mb = output_path.stat().st_size / (1024**2)
     print(f"Done. File size: {size_mb:.2f} MB")
 
 

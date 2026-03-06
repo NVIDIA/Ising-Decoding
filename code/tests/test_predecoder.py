@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for model/predecoder: forward pass shape (v1 and v2). Catches breakage from architecture/config changes."""
 
 import unittest
@@ -26,6 +25,7 @@ from model.predecoder import (
 
 
 class TestPreDecoderModelMemoryV1(unittest.TestCase):
+
     def test_forward_shape(self):
         cfg = get_mock_config()
         model = PreDecoderModelMemory_v1(cfg)
@@ -36,6 +36,7 @@ class TestPreDecoderModelMemoryV1(unittest.TestCase):
 
 
 class TestPreDecoderModelMemoryV2(unittest.TestCase):
+
     def test_forward_shape(self):
         cfg = get_mock_config_v2()
         model = PreDecoderModelMemory_v2(cfg)

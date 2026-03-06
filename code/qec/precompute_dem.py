@@ -38,10 +38,10 @@ _CODE_ROOT = Path(__file__).resolve().parents[1]  # .../pre-decoder/code
 if str(_CODE_ROOT) not in sys.path:
     sys.path.insert(0, str(_CODE_ROOT))
 
-
 # =============================================================================
 # Stim parsing helpers (pure python)
 # =============================================================================
+
 
 def extract_cnot_structure_from_stim_text(circuit_string: str) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -95,6 +95,7 @@ def extract_cnot_structure_from_stim_text(circuit_string: str) -> tuple[np.ndarr
 # =============================================================================
 # Torch presampling core (frame_predecoder)
 # =============================================================================
+
 
 def _torch_update_pauli_frame_with_layer(
     frame: torch.Tensor,  # (B, nq, 2) uint8
@@ -206,7 +207,9 @@ def presample_detector_seq_multiround_torch(
     return outs
 
 
-def _torch_measure(frame: torch.Tensor, meas_qubits: np.ndarray, meas_bases: np.ndarray) -> torch.Tensor:
+def _torch_measure(
+    frame: torch.Tensor, meas_qubits: np.ndarray, meas_bases: np.ndarray
+) -> torch.Tensor:
     # frame: (E, nq, 2) uint8, meas_bases: 0=X, 1=Z, do_measurement reads component (1-basis).
     dev = frame.device
     qs = torch.as_tensor(meas_qubits, dtype=torch.long, device=dev).reshape(-1)
@@ -217,7 +220,9 @@ def _torch_measure(frame: torch.Tensor, meas_qubits: np.ndarray, meas_bases: np.
     return torch.where(bases[None, :] == 1, x, z).to(torch.uint8)
 
 
-def _torch_keep_idx(measurements: torch.Tensor, frame: torch.Tensor, data_qubits: np.ndarray) -> torch.Tensor:
+def _torch_keep_idx(
+    measurements: torch.Tensor, frame: torch.Tensor, data_qubits: np.ndarray
+) -> torch.Tensor:
     dev = frame.device
     data_q = torch.as_tensor(data_qubits, dtype=torch.long, device=dev).reshape(-1)
     detected = (measurements.sum(dim=-1) > 0)
@@ -246,6 +251,7 @@ def apply_keep_deferral_to_detectors_torch(
 # =============================================================================
 # Error-basis generation (pure python, converted to torch)
 # =============================================================================
+
 
 def generate_all_errors_local(
     *,
@@ -347,6 +353,7 @@ def replicate_metadata_across_rounds(
 # Timelike map A (dense) from dependency masks (pure numpy)
 # =============================================================================
 
+
 def build_meas_new_masks_from_data_numpy(
     *,
     controls_by_layer: np.ndarray,  # (L,G,2) int32
@@ -432,6 +439,7 @@ def build_dense_A_from_masks(
 # p vector export (single-p marginal; copied from tests/print_bell_multiround_frame.py)
 # =============================================================================
 
+
 def build_single_p_marginal(
     *,
     error_metadata_global: list[tuple[int, int, int, int, str, int]],
@@ -461,7 +469,10 @@ def build_single_p_marginal(
 
     meas_basis_map: dict[tuple[int, int], int] = {}
     for r in range(int(n_rounds)):
-        for q, b in zip(np.array(meas_qubits).reshape(-1).tolist(), np.array(meas_bases).reshape(-1).tolist()):
+        for q, b in zip(
+            np.array(meas_qubits).reshape(-1).tolist(),
+            np.array(meas_bases).reshape(-1).tolist()
+        ):
             meas_basis_map[(r, int(q))] = int(b)
 
     use_nm = noise_model is not None
@@ -476,8 +487,9 @@ def build_single_p_marginal(
         _nm_single["Y"]["idle_spam"] = float(nm.p_idle_spam_Y)
         _nm_single["Z"]["idle_spam"] = float(nm.p_idle_spam_Z)
         _nm_cnot = {}
-        for ab in ["IX", "IY", "IZ", "XI", "XX", "XY", "XZ",
-                    "YI", "YX", "YY", "YZ", "ZI", "ZX", "ZY", "ZZ"]:
+        for ab in [
+            "IX", "IY", "IZ", "XI", "XX", "XY", "XZ", "YI", "YX", "YY", "YZ", "ZI", "ZX", "ZY", "ZZ"
+        ]:
             _nm_cnot[ab] = float(getattr(nm, f"p_cnot_{ab}"))
         p_prep_X = float(nm.p_prep_X)
         p_prep_Z = float(nm.p_prep_Z)
@@ -532,7 +544,9 @@ def build_single_p_marginal(
                         allowed = (et == "Z")
                     else:
                         allowed = (et == "X")
-                    p_err[eidx] = float(p_meas_X if meas_basis == 0 else p_meas_Z) if allowed else 0.0
+                    p_err[eidx] = float(
+                        p_meas_X if meas_basis == 0 else p_meas_Z
+                    ) if allowed else 0.0
                 elif is_data_prep:
                     prep_basis = int(prep_basis_map[(r, q)])
                     if prep_basis == 0:
@@ -540,9 +554,13 @@ def build_single_p_marginal(
                     else:
                         allowed = (et == "X")
                     if is_final_round:
-                        p_err[eidx] = float(p_prep_X if prep_basis == 0 else p_prep_Z) if allowed else 0.0
+                        p_err[eidx] = float(
+                            p_prep_X if prep_basis == 0 else p_prep_Z
+                        ) if allowed else 0.0
                     else:
-                        p_err[eidx] = float(p_prep_X if prep_basis == 0 else p_prep_Z) if allowed else 0.0
+                        p_err[eidx] = float(
+                            p_prep_X if prep_basis == 0 else p_prep_Z
+                        ) if allowed else 0.0
                 elif is_data_meas:
                     if is_final_round:
                         p_err[eidx] = 0.0
@@ -597,6 +615,7 @@ def build_single_p_marginal(
 # End-to-end entrypoint
 # =============================================================================
 
+
 @torch.no_grad()
 def precompute_dem_bundle_surface_code(
     *,
@@ -643,9 +662,10 @@ def precompute_dem_bundle_surface_code(
     xcheck_qubits = np.array(circ.code.xcheck_qubits, dtype=np.int32)
     zcheck_qubits = np.array(circ.code.zcheck_qubits, dtype=np.int32)
     meas_qubits = np.concatenate([xcheck_qubits, zcheck_qubits]).astype(np.int32)
-    meas_bases = np.concatenate([np.zeros(len(xcheck_qubits), np.int32), np.ones(len(zcheck_qubits), np.int32)]).astype(
-        np.int32
-    )
+    meas_bases = np.concatenate(
+        [np.zeros(len(xcheck_qubits), np.int32),
+         np.ones(len(zcheck_qubits), np.int32)]
+    ).astype(np.int32)
 
     # Generate local error basis + metadata.
     errors_local_np, metadata_local = generate_all_errors_local(
@@ -655,7 +675,11 @@ def precompute_dem_bundle_surface_code(
 
     # Single-round frames + keep mask.
     frame_single = presample_frame_single_round_torch(
-        t_total=t_total, nq=nq, controls_by_layer=cnot_circuit, cx_times=cx_times, errors=errors_local
+        t_total=t_total,
+        nq=nq,
+        controls_by_layer=cnot_circuit,
+        cx_times=cx_times,
+        errors=errors_local
     )
     m_local = _torch_measure(frame_single, meas_qubits, meas_bases)
     keep_local = _torch_keep_idx(m_local, frame_single, data_qubits)  # (E_local,)
@@ -683,19 +707,24 @@ def precompute_dem_bundle_surface_code(
             rounds_full = det_nonid
         else:
             prefix = torch.zeros((non_id, origin, nq, 2), dtype=torch.uint8, device=device)
-            tail = det_nonid[:, : (n_rounds - origin), :, :]
+            tail = det_nonid[:, :(n_rounds - origin), :, :]
             rounds_full = torch.cat([prefix, tail], dim=1)
         flat = rounds_full.reshape(non_id, num_detectors, 2)
-        flat_kept = apply_keep_deferral_to_detectors_torch(flat, keep_nonid, origin_round=origin, nq=nq)
+        flat_kept = apply_keep_deferral_to_detectors_torch(
+            flat, keep_nonid, origin_round=origin, nq=nq
+        )
         frames_by_origin.append(flat_kept)
 
     frame_predecoder = torch.cat(
-        [torch.zeros((1, num_detectors, 2), dtype=torch.uint8, device=device)] + frames_by_origin, dim=0
+        [torch.zeros((1, num_detectors, 2), dtype=torch.uint8, device=device)] + frames_by_origin,
+        dim=0
     )
     assert int(frame_predecoder.shape[0]) == int(num_errors_total)
 
     # Export p (single-p marginal)
-    metadata_global = replicate_metadata_across_rounds(metadata_local=metadata_local, n_rounds=n_rounds)
+    metadata_global = replicate_metadata_across_rounds(
+        metadata_local=metadata_local, n_rounds=n_rounds
+    )
     p_err = build_single_p_marginal(
         error_metadata_global=metadata_global,
         t_total=t_total,
@@ -750,7 +779,9 @@ def precompute_dem_bundle_surface_code(
 
         np.savez_compressed(dem_dir / f"{prefix}.X.npz", HX=HX.cpu().numpy().astype(np.uint8))
         np.savez_compressed(dem_dir / f"{prefix}.Z.npz", HZ=HZ.cpu().numpy().astype(np.uint8))
-        np.savez_compressed(dem_dir / f"{prefix}.p.npz", p=p_err, p_nominal=np.array(p_scalar, dtype=np.float32))
+        np.savez_compressed(
+            dem_dir / f"{prefix}.p.npz", p=p_err, p_nominal=np.array(p_scalar, dtype=np.float32)
+        )
         np.savez_compressed(dem_dir / f"{prefix}.A.npz", A=A.astype(np.uint8))
         return dem_dir
 
@@ -764,18 +795,23 @@ def main() -> None:
     ap.add_argument("--n_rounds", "-r", type=int, default=None)
     ap.add_argument("--basis", "-b", type=str, choices=["X", "Z"], required=True)
     ap.add_argument("--rotation", "--rot", type=str, default="XV", choices=["XV", "XH", "ZV", "ZH"])
-    ap.add_argument("--p", type=float, default=0.01, help="Scalar p for exporting single-p marginals")
+    ap.add_argument(
+        "--p", type=float, default=0.01, help="Scalar p for exporting single-p marginals"
+    )
     ap.add_argument("--dem_output_dir", type=str, default=None)
-    ap.add_argument("--no_save", action="store_true", help="Run precompute but do not write any files")
-    ap.add_argument("--device", type=str, default=None, help="e.g. cuda, cuda:0, cpu (default: auto)")
+    ap.add_argument(
+        "--no_save", action="store_true", help="Run precompute but do not write any files"
+    )
+    ap.add_argument(
+        "--device", type=str, default=None, help="e.g. cuda, cuda:0, cpu (default: auto)"
+    )
     args = ap.parse_args()
 
     d = int(args.distance)
     r = int(args.n_rounds) if args.n_rounds is not None else d
     dev = (
-        torch.device(args.device)
-        if args.device is not None
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        torch.device(args.device) if args.device is not None else
+        torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
     precompute_dem_bundle_surface_code(
         distance=d,
@@ -791,4 +827,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

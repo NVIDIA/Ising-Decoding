@@ -18,7 +18,6 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, Optional
 
-
 HASH_EXTENSIONS = {
     ".py",
     ".sh",
@@ -134,7 +133,8 @@ def _iter_files(root: Path) -> Iterable[Path]:
 
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [
-            d for d in dirnames if d not in EXCLUDE_DIRS and not d.startswith(".venv") and d != "venv"
+            d for d in dirnames
+            if d not in EXCLUDE_DIRS and not d.startswith(".venv") and d != "venv"
         ]
         for filename in filenames:
             path = Path(dirpath) / filename
@@ -173,7 +173,9 @@ def _apply_header(path: Path, header: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Add or check SPDX headers.")
-    parser.add_argument("--check", action="store_true", help="Fail if any files are missing headers.")
+    parser.add_argument(
+        "--check", action="store_true", help="Fail if any files are missing headers."
+    )
     parser.add_argument(
         "--root",
         type=Path,

@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 SafeTensors save/load utilities for fp16/fp32 pre-decoder models.
 
@@ -33,12 +32,16 @@ from omegaconf import OmegaConf
 def _build_minimal_cfg(model_id: int):
     """Build a minimal inference config for model_id without a full Hydra setup."""
     spec = get_model_spec(model_id)
-    cfg = OmegaConf.create({
-        "model_id": model_id,
-        "distance": spec.receptive_field,
-        "n_rounds": spec.receptive_field,
-        "data": {"code_rotation": "XV"},
-    })
+    cfg = OmegaConf.create(
+        {
+            "model_id": model_id,
+            "distance": spec.receptive_field,
+            "n_rounds": spec.receptive_field,
+            "data": {
+                "code_rotation": "XV"
+            },
+        }
+    )
     return apply_public_defaults_and_model(cfg, spec)
 
 

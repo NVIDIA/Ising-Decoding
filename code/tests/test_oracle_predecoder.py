@@ -56,7 +56,8 @@ def _build_stab_maps_from_code(code, device: torch.device):
         deg = torch.bincount(rows, minlength=S)
         K = int(deg.max().item())
         if K == 0:
-            return torch.full((S, 1), -1, dtype=torch.long), torch.zeros((S, 1), dtype=torch.bool), deg, 0
+            return torch.full((S, 1), -1,
+                              dtype=torch.long), torch.zeros((S, 1), dtype=torch.bool), deg, 0
         idx = torch.full((S, K), -1, dtype=torch.long)
         msk = torch.zeros((S, K), dtype=torch.bool)
         row_offsets = torch.zeros(S + 1, dtype=torch.long)
@@ -72,8 +73,10 @@ def _build_stab_maps_from_code(code, device: torch.device):
     rotation = code.first_bulk_syndrome_type + code.rotated_type  # e.g. XV, XH
     sx = compute_stabX_to_data_index_map(code.distance, rotation)
     sz = compute_stabZ_to_data_index_map(code.distance, rotation)
-    stab_x = sx.clone().detach().to(torch.long) if torch.is_tensor(sx) else torch.tensor(sx, dtype=torch.long)
-    stab_z = sz.clone().detach().to(torch.long) if torch.is_tensor(sz) else torch.tensor(sz, dtype=torch.long)
+    stab_x = sx.clone().detach().to(torch.long
+                                   ) if torch.is_tensor(sx) else torch.tensor(sx, dtype=torch.long)
+    stab_z = sz.clone().detach().to(torch.long
+                                   ) if torch.is_tensor(sz) else torch.tensor(sz, dtype=torch.long)
     return {
         "Hx_idx": Hx_idx.to(device),
         "Hx_mask": Hx_mask.to(device),
@@ -122,12 +125,10 @@ def _compute_residuals_from_predictions(
     stab_indices_z = maps["stab_z"].to(device=device, dtype=torch.long)
 
     # Syndrome diffs from trainX (grid -> stabilizer order)
-    x_syn_diff = map_grid_to_stabilizer_tensor(
-        trainX[:, 0].to(device), stab_indices_x
-    ).to(torch.int32)
-    z_syn_diff = map_grid_to_stabilizer_tensor(
-        trainX[:, 1].to(device), stab_indices_z
-    ).to(torch.int32)
+    x_syn_diff = map_grid_to_stabilizer_tensor(trainX[:, 0].to(device),
+                                               stab_indices_x).to(torch.int32)
+    z_syn_diff = map_grid_to_stabilizer_tensor(trainX[:, 1].to(device),
+                                               stab_indices_z).to(torch.int32)
     n_x, n_z = x_syn_diff.shape[1], z_syn_diff.shape[1]
 
     # Use trainY as predictions (binarize)
@@ -157,20 +158,14 @@ def _compute_residuals_from_predictions(
     R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
     if T > 1:
         R_X[:, :, 1:] = (
-            x_syn_diff[:, :, 1:]
-            + syn_x_flat[:, :, 1:]
-            + syn_x_flat[:, :, :-1]
-            + S_X[:, :, 1:]
+            x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] + S_X[:, :, 1:]
         ) & 1
 
     R_Z = torch.empty_like(z_syn_diff, dtype=torch.uint8)
     R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
     if T > 1:
         R_Z[:, :, 1:] = (
-            z_syn_diff[:, :, 1:]
-            + syn_z_flat[:, :, 1:]
-            + syn_z_flat[:, :, :-1]
-            + S_Z[:, :, 1:]
+            z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] + S_Z[:, :, 1:]
         ) & 1
 
     return R_X, R_Z
@@ -342,9 +337,11 @@ def _compute_pre_L_and_gt_obs(
     z_final = z_cum[:, -1, :]
     x_final = x_cum[:, -1, :]
     if basis == "X":
-        gt_obs = (torch.einsum("ld,bd->b", Lx.to(torch.float32), z_final.to(torch.float32)) % 2).to(torch.int64)
+        gt_obs = (torch.einsum("ld,bd->b", Lx.to(torch.float32), z_final.to(torch.float32)) %
+                  2).to(torch.int64)
     else:
-        gt_obs = (torch.einsum("ld,bd->b", Lz.to(torch.float32), x_final.to(torch.float32)) % 2).to(torch.int64)
+        gt_obs = (torch.einsum("ld,bd->b", Lz.to(torch.float32), x_final.to(torch.float32)) %
+                  2).to(torch.int64)
     return pre_L, gt_obs
 
 
@@ -386,8 +383,12 @@ class TestOraclePreDecoder(unittest.TestCase):
         gen = self._make_generator("X")
         trainX, trainY = gen.generate_batch(batch_size=8)
         R_X, R_Z = _compute_residuals_from_predictions(
-            trainX, trainY,
-            self.distance, self.code_rotation, "X", self.device,
+            trainX,
+            trainY,
+            self.distance,
+            self.code_rotation,
+            "X",
+            self.device,
             code=gen.code,
         )
         _assert_residuals_zero_oracle(R_X, R_Z, "X")
@@ -397,8 +398,12 @@ class TestOraclePreDecoder(unittest.TestCase):
         gen = self._make_generator("Z")
         trainX, trainY = gen.generate_batch(batch_size=8)
         R_X, R_Z = _compute_residuals_from_predictions(
-            trainX, trainY,
-            self.distance, self.code_rotation, "Z", self.device,
+            trainX,
+            trainY,
+            self.distance,
+            self.code_rotation,
+            "Z",
+            self.device,
             code=gen.code,
         )
         _assert_residuals_zero_oracle(R_X, R_Z, "Z")
@@ -410,8 +415,12 @@ class TestOraclePreDecoder(unittest.TestCase):
             for _ in range(3):
                 trainX, trainY = gen.generate_batch(batch_size=4)
                 R_X, R_Z = _compute_residuals_from_predictions(
-                    trainX, trainY,
-                    self.distance, self.code_rotation, basis, self.device,
+                    trainX,
+                    trainY,
+                    self.distance,
+                    self.code_rotation,
+                    basis,
+                    self.device,
                     code=gen.code,
                 )
                 _assert_residuals_zero_oracle(R_X, R_Z, basis)
@@ -431,13 +440,14 @@ class TestOraclePreDecoder(unittest.TestCase):
         """
         basis = "X"
         gen = self._make_generator(basis)
-        trainX, trainY, meas_old, x_cum, z_cum = gen.generate_batch(
-            batch_size=8, return_aux=True
-        )
+        trainX, trainY, meas_old, x_cum, z_cum = gen.generate_batch(batch_size=8, return_aux=True)
         # Stim circuit with boundary detectors (same params as eval pipeline)
         mem_circuit = MemoryCircuit(
             self.distance,
-            0.01, 0.01, 0.01, 0.007,
+            0.01,
+            0.01,
+            0.01,
+            0.007,
             self.n_rounds,
             basis,
             code_rotation=self.code_rotation,
@@ -456,15 +466,22 @@ class TestOraclePreDecoder(unittest.TestCase):
         obs_from_stim = np.asarray(dets_and_obs[:, -num_obs:], dtype=np.uint8)
 
         pre_L, gt_obs = _compute_pre_L_and_gt_obs(
-            trainY, x_cum, z_cum,
-            self.distance, self.code_rotation, basis, self.device,
+            trainY,
+            x_cum,
+            z_cum,
+            self.distance,
+            self.code_rotation,
+            basis,
+            self.device,
         )
         gt_obs_np = gt_obs.cpu().numpy().reshape(-1, num_obs)
 
         # Sanity: observables from our frame (via circuit-order meas) should match gt_obs
         np.testing.assert_array_equal(
-            obs_from_stim, gt_obs_np,
-            err_msg="Observables from Stim converter should match frame-derived gt_obs (measurement order)."
+            obs_from_stim,
+            gt_obs_np,
+            err_msg=
+            "Observables from Stim converter should match frame-derived gt_obs (measurement order)."
         )
 
         det_model = stim_circuit.detector_error_model(
@@ -478,7 +495,8 @@ class TestOraclePreDecoder(unittest.TestCase):
         pre_L_np = pre_L.cpu().numpy().reshape(-1, num_obs)
         final_L = (pre_L_np + pred_obs) % 2
         np.testing.assert_array_equal(
-            final_L, gt_obs_np,
+            final_L,
+            gt_obs_np,
             err_msg="Oracle: final_L (pre_L + PyMatching on zero residual) should equal gt_obs."
         )
 

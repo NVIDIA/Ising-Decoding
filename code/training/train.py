@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Training module for quantum error correction pre-decoder.
 
@@ -45,8 +44,8 @@ except Exception:  # pragma: no cover - optional for training logs
 from training.distributed import DistributedManager
 
 from training.utils import (
-    load_checkpoint, save_checkpoint, create_directory,
-    should_stop_due_to_time, compare_receptive_field_with_window_data
+    load_checkpoint, save_checkpoint, create_directory, should_stop_due_to_time,
+    compare_receptive_field_with_window_data
 )
 from model.factory import ModelFactory
 
@@ -63,12 +62,9 @@ from evaluation.metrics import (
 
 # Load mapping functions for the data
 from qec.surface_code.data_mapping import (
-    compute_stabX_to_data_index_map,
-    compute_stabZ_to_data_index_map,
-    normalized_weight_mapping_Xstab_memory,
-    normalized_weight_mapping_Zstab_memory,
-    reshape_Xstabilizers_to_grid_vectorized,
-    reshape_Zstabilizers_to_grid_vectorized
+    compute_stabX_to_data_index_map, compute_stabZ_to_data_index_map,
+    normalized_weight_mapping_Xstab_memory, normalized_weight_mapping_Zstab_memory,
+    reshape_Xstabilizers_to_grid_vectorized, reshape_Zstabilizers_to_grid_vectorized
 )
 
 
@@ -89,7 +85,8 @@ def _missing_dem_artifacts(frames_dir, distance, n_rounds, bases):
 
 
 def resolve_precomputed_frames_dir(precomputed_frames_dir, distance, n_rounds, meas_basis, rank):
-    bases_needed = ["X", "Z"] if str(meas_basis).lower() in ("both", "mixed") else [str(meas_basis).upper()]
+    bases_needed = ["X", "Z"
+                   ] if str(meas_basis).lower() in ("both", "mixed") else [str(meas_basis).upper()]
     if _missing_dem_artifacts(precomputed_frames_dir, distance, n_rounds, bases_needed):
         if int(rank) == 0:
             print(
@@ -121,23 +118,23 @@ def get_current_per_device_batch_size(epoch, cfg):
     end_epoch = cfg.batch_schedule.end_epoch
     initial = cfg.batch_schedule.initial
     final = cfg.batch_schedule.final
-    
+
     # Before start_epoch completes, use initial batch size
     if epoch <= start_epoch:
         return initial
-    
+
     # After end_epoch completes, use final batch size
     if epoch > end_epoch:
         return final
-    
+
     # Linear interpolation between start_epoch and end_epoch
     # epoch is current epoch (0-indexed), we ramp during epochs (start_epoch+1) to end_epoch
     progress = (epoch - start_epoch) / max(1, end_epoch - start_epoch)
     raw_batch_size = initial + (final - initial) * progress
-    
+
     # Round to nearest multiple of 8 for nice GPU utilization
     batch_size = int(round(raw_batch_size / 8) * 8)
-    
+
     # Clamp to valid range
     return max(min(batch_size, final), initial)
 
@@ -172,26 +169,28 @@ def get_curriculum_batch_sizes(cfg, epoch, num_pairs):
     between initial_batch and final_batch over the scheduled epoch range.
     """
     curriculum = getattr(cfg, 'curriculum_schedule', None)
-    
+
     if curriculum is None or not getattr(curriculum, 'enabled', False):
         return None
-    
+
     pairs_config = getattr(curriculum, 'pairs', None)
     if pairs_config is None or len(pairs_config) != num_pairs:
-        print(f"[Curriculum] Warning: pairs config length ({len(pairs_config) if pairs_config else 0}) "
-              f"!= num_pairs ({num_pairs}). Falling back to global batch_schedule.")
+        print(
+            f"[Curriculum] Warning: pairs config length ({len(pairs_config) if pairs_config else 0}) "
+            f"!= num_pairs ({num_pairs}). Falling back to global batch_schedule."
+        )
         return None
-    
+
     end_epoch = getattr(curriculum, 'end_epoch', 10)
     progress = min(max(epoch / max(1, end_epoch), 0.0), 1.0)
-    
+
     batch_sizes = []
     for pair_cfg in pairs_config:
         initial = pair_cfg.get('initial_batch', 64)
         final = pair_cfg.get('final_batch', 64)
         batch_size = int(initial + (final - initial) * progress)
         batch_sizes.append(max(batch_size, 1))
-    
+
     return batch_sizes
 
 
@@ -204,17 +203,19 @@ def calculate_curriculum_steps_per_epoch(batch_sizes, num_samples, world_size):
     samples_per_cycle = sum(bs * 2 * world_size for bs in batch_sizes)
     num_cycles = math.ceil(num_samples / samples_per_cycle)
     total_steps = num_cycles * steps_per_cycle
-    
+
     return total_steps, samples_per_cycle, num_cycles
 
 
-def validation_step(generator, model, num_samples, batch_size, device, enable_fp16, enable_bf16=False, rank=0):
+def validation_step(
+    generator, model, num_samples, batch_size, device, enable_fp16, enable_bf16=False, rank=0
+):
     """Validation using on-the-fly data generation."""
     loss_fn = torch.nn.BCEWithLogitsLoss()
     running_vloss = 0.0
     data_gen_s = 0.0
     model_s = 0.0
-    
+
     if isinstance(batch_size, (list, tuple)):
         num_batches, samples_per_cycle, num_cycles = calculate_curriculum_steps_per_epoch(
             batch_size, num_samples, world_size=1
@@ -223,11 +224,13 @@ def validation_step(generator, model, num_samples, batch_size, device, enable_fp
     else:
         num_batches = (num_samples + batch_size - 1) // batch_size
         curriculum_mode = False
-    
+
     val_start_time = time.time()
     if rank == 0:
         if curriculum_mode:
-            print(f"[Validation] Starting validation with generator, {num_batches} batches (curriculum mode)...")
+            print(
+                f"[Validation] Starting validation with generator, {num_batches} batches (curriculum mode)..."
+            )
         else:
             print(f"[Validation] Starting validation with generator, {num_batches} batches...")
         # Explicitly state whether the validation generator is using a noise model.
@@ -239,7 +242,8 @@ def validation_step(generator, model, num_samples, batch_size, device, enable_fp
             sim_z = getattr(generator, "sim_Z", None)
             sim = getattr(generator, "sim", None)
             sims = [s for s in (sim_x, sim_z, sim) if s is not None]
-            use_nm = bool(getattr(generator, "noise_model", None)) or any(getattr(s, "noise_model", None) is not None for s in sims)
+            use_nm = bool(getattr(generator, "noise_model", None)
+                         ) or any(getattr(s, "noise_model", None) is not None for s in sims)
             if use_nm:
                 nm = None
                 for s in sims:
@@ -279,19 +283,21 @@ def validation_step(generator, model, num_samples, batch_size, device, enable_fp
                         print(f"p∈[{generator.sim.p_min:.6f}, {generator.sim.p_max:.6f}]")
                 else:
                     print(f"[Validation] Using Torch generator (p from precomputed DEM)")
-    
+
     with torch.no_grad():
         for step in range(num_batches):
             val_step = 10000 + step
             t_gen_start = time.perf_counter()
             trainX, trainY = generator.generate_batch(step=val_step, batch_size=batch_size)
             data_gen_s += time.perf_counter() - t_gen_start
-            
+
             if step < 8 and rank == 0 and hasattr(generator, 'get_current_pair'):
                 d, r = generator.get_current_pair(val_step)
                 basis = 'X' if (val_step % 2 == 0) else 'Z'
-                print(f"[Val Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}")
-            
+                print(
+                    f"[Val Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
+                )
+
             if enable_fp16:
                 trainX = trainX.half()
                 trainY = trainY.half()
@@ -300,32 +306,39 @@ def validation_step(generator, model, num_samples, batch_size, device, enable_fp
                 trainY = trainY.to(torch.bfloat16)
             trainX = trainX.to(device, non_blocking=True)
             trainY = trainY.to(device, non_blocking=True)
-            
+
             if enable_fp16:
                 autocast_dtype = torch.float16
             elif enable_bf16:
                 autocast_dtype = torch.bfloat16
             else:
                 autocast_dtype = torch.float32
-                
+
             t_model_start = time.perf_counter()
             with autocast(device_type='cuda', dtype=autocast_dtype):
                 outputs = model(trainX)
                 loss = loss_fn(outputs, trainY)
             model_s += time.perf_counter() - t_model_start
-            
+
             running_vloss += loss.item()
-    
+
     avg_vloss = running_vloss / num_batches
     val_time = time.time() - val_start_time
-    
+
     if rank == 0:
         time_per_batch = val_time / num_batches
-        print(f"[Validation] Completed {num_batches} batches in {val_time:.1f}s "
-              f"({time_per_batch*1000:.1f}ms/batch), avg_vloss={avg_vloss:.5f}")
+        print(
+            f"[Validation] Completed {num_batches} batches in {val_time:.1f}s "
+            f"({time_per_batch*1000:.1f}ms/batch), avg_vloss={avg_vloss:.5f}"
+        )
         print(f"[Validation Timing] data_gen={data_gen_s:.2f}s, model={model_s:.2f}s")
-    
-    return avg_vloss, {"data_gen_s": data_gen_s, "model_s": model_s, "num_batches": num_batches, "total_s": val_time}
+
+    return avg_vloss, {
+        "data_gen_s": data_gen_s,
+        "model_s": model_s,
+        "num_batches": num_batches,
+        "total_s": val_time
+    }
 
 
 def train_epoch(
@@ -352,20 +365,20 @@ def train_epoch(
     """Training epoch using on-the-fly data generation."""
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction='sum')
     gradient_clipping_counter = 0
-    
+
     epoch_start_time = time.time()
     last_log_time = epoch_start_time
     data_gen_s = 0.0
     model_s = 0.0
-    
+
     if rank == 0:
         print(f"train_epoch: Starting {steps_per_epoch} batches...")
-    
+
     running_loss = 0.0
     last_loss = 0.0
     epoch_total_loss = 0.0
     accumulated_samples = 0
-    
+
     for step in range(steps_per_epoch):
         if rank == 0 and (step < 2 or step % 200 == 0):
             current_time = time.time()
@@ -382,10 +395,12 @@ def train_epoch(
                     f"ETA: {remaining:.1f}s{warmup_note}"
                 )
             else:
-                print(f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | Elapsed: {elapsed:.1f}s")
+                print(
+                    f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | Elapsed: {elapsed:.1f}s"
+                )
             if step % 200 == 0 and step > 0:
                 last_log_time = current_time
-        
+
         global_step_for_gen = cumulative_steps_before_epoch + step
         t_gen_start = time.perf_counter()
         trainX, trainY = generator.generate_batch(step=global_step_for_gen, batch_size=batch_size)
@@ -394,8 +409,10 @@ def train_epoch(
         if step < 8 and rank == 0 and hasattr(generator, 'get_current_pair'):
             d, r = generator.get_current_pair(global_step_for_gen)
             basis = 'X' if (global_step_for_gen % 2 == 0) else 'Z'
-            print(f"[Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}")
-        
+            print(
+                f"[Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
+            )
+
         if enable_fp16:
             trainX = trainX.half()
             trainY = trainY.half()
@@ -404,78 +421,92 @@ def train_epoch(
             trainY = trainY.to(torch.bfloat16)
         trainX = trainX.to(device, non_blocking=True)
         trainY = trainY.to(device, non_blocking=True)
-        
+
         if (enable_fp16 or enable_bf16) and step < 2:
             if rank == 0:
                 dtype_name = "float16" if enable_fp16 else "bfloat16"
-                print(f"[Precision Check] trainX dtype: {trainX.dtype}, trainY dtype: {trainY.dtype}")
-        
+                print(
+                    f"[Precision Check] trainX dtype: {trainX.dtype}, trainY dtype: {trainY.dtype}"
+                )
+
         if enable_fp16:
             autocast_dtype = torch.float16
         elif enable_bf16:
             autocast_dtype = torch.bfloat16
         else:
             autocast_dtype = torch.float32
-        
+
         current_batch_size = trainX.shape[0]
-        
+
         t_model_start = time.perf_counter()
         with autocast(device_type='cuda', dtype=autocast_dtype):
             outputs = model(trainX)
             loss = loss_fn(outputs, trainY)
-        
+
         scaler.scale(loss).backward()
         accumulated_samples += current_batch_size
-        
+
         if (step + 1) % accumulate_steps == 0:
             scaler.unscale_(optimizer)
-            
+
             for param in model.parameters():
                 if param.grad is not None:
                     param.grad.div_(accumulated_samples)
-            
+
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             if grad_norm > 1.0:
                 gradient_clipping_counter += 1
-            
+
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
             scheduler.step()
-            
+
             if use_ema and ema_model is not None:
                 with torch.no_grad():
                     for ema_param, param in zip(ema_model.parameters(), model.parameters()):
                         if ema_param.dtype.is_floating_point:
-                            ema_param.data.mul_(ema_decay).add_(param.data.to(ema_param.dtype), alpha=1.0 - ema_decay)
-            
+                            ema_param.data.mul_(ema_decay).add_(
+                                param.data.to(ema_param.dtype), alpha=1.0 - ema_decay
+                            )
+
             global_step += 1
             accumulated_samples = 0
         model_s += time.perf_counter() - t_model_start
-        
+
         num_elements = outputs.numel()
         batch_loss_mean = loss.item() / num_elements
         running_loss += batch_loss_mean
         epoch_total_loss += batch_loss_mean
-        
+
         if (step + 1) % accumulate_steps == 0:
             last_loss = running_loss / accumulate_steps
             if rank == 0:
                 if tb_writer is not None:
                     tb_writer.add_scalar('Loss/train_step', last_loss, global_step)
-                    tb_writer.add_scalar('LearningRate/train', scheduler.get_last_lr()[0], global_step)
+                    tb_writer.add_scalar(
+                        'LearningRate/train',
+                        scheduler.get_last_lr()[0], global_step
+                    )
             running_loss = 0.0
-    
+
     avg_loss = epoch_total_loss / steps_per_epoch
-    
+
     total_time = time.time() - epoch_start_time
     if rank == 0:
         time_per_batch = total_time / steps_per_epoch
-        print(f"train_epoch: Completed {steps_per_epoch} batches in {total_time:.1f}s "
-              f"({time_per_batch*1000:.1f}ms/batch), avg_loss={avg_loss:.5f}")
+        print(
+            f"train_epoch: Completed {steps_per_epoch} batches in {total_time:.1f}s "
+            f"({time_per_batch*1000:.1f}ms/batch), avg_loss={avg_loss:.5f}"
+        )
         print(f"[Train Timing] data_gen={data_gen_s:.2f}s, model={model_s:.2f}s")
-    
-    return avg_loss, global_step, {"data_gen_s": data_gen_s, "model_s": model_s, "steps": steps_per_epoch, "total_s": total_time}
+
+    return avg_loss, global_step, {
+        "data_gen_s": data_gen_s,
+        "model_s": model_s,
+        "steps": steps_per_epoch,
+        "total_s": total_time
+    }
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
@@ -490,7 +521,7 @@ def main(cfg: DictConfig) -> None:
     logging.getLogger('torch._inductor.select_algorithm').setLevel(logging.ERROR)
     logging.getLogger('torch._inductor').setLevel(logging.ERROR)
     logging.getLogger('torch._dynamo').setLevel(logging.ERROR)
-    
+
     # Set TF32 flags
     torch.backends.cuda.matmul.allow_tf32 = cfg.enable_matmul_tf32
     torch.backends.cudnn.allow_tf32 = cfg.enable_cudnn_tf32
@@ -509,22 +540,22 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize distributed manager
     custom_timeout = int(os.environ.get('CUSTOM_DIST_TIMEOUT', 600))
-    
+
     try:
         import torch.distributed as torch_dist
         original_init_process_group = torch_dist.init_process_group
-        
+
         def init_process_group_with_timeout(*args, **kwargs):
             if 'timeout' not in kwargs:
                 from datetime import timedelta
                 kwargs['timeout'] = timedelta(seconds=custom_timeout)
             return original_init_process_group(*args, **kwargs)
-        
+
         torch_dist.init_process_group = init_process_group_with_timeout
         DistributedManager.initialize()
         dist = DistributedManager()
         torch_dist.init_process_group = original_init_process_group
-        
+
     except Exception as e:
         print(f"⚠️  Could not apply custom timeout: {e}")
         DistributedManager.initialize()
@@ -534,20 +565,24 @@ def main(cfg: DictConfig) -> None:
     if dist.rank == 0 and not torch.cuda.is_available():
         print("ERROR: Training requires a GPU. CUDA is not available.")
         print("  - Check: python3 -c \"import torch; print(torch.cuda.is_available())\"")
-        print("  - Ensure PyTorch is installed with CUDA (e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121)")
-        print("  - Free GPU: run code/scripts/free_gpu.sh to list or kill other processes using the GPU.")
+        print(
+            "  - Ensure PyTorch is installed with CUDA (e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121)"
+        )
+        print(
+            "  - Free GPU: run code/scripts/free_gpu.sh to list or kill other processes using the GPU."
+        )
         raise RuntimeError("Training requires a GPU; CUDA is not available.")
 
     # Job timing broadcast
     job_start_timestamp = None
     job_start_datetime = None
     job_time_limit_seconds = None
-    
+
     if dist.rank == 0:
         job_start_timestamp = os.getenv('JOB_START_TIMESTAMP')
         job_start_datetime = os.getenv('JOB_START_DATETIME')
         job_time_limit = os.getenv('JOB_TIME_LIMIT')
-        
+
         if not job_start_timestamp:
             try:
                 with open('job_start_timestamp.txt', 'r') as f:
@@ -558,7 +593,7 @@ def main(cfg: DictConfig) -> None:
                     job_time_limit = f.read().strip()
             except FileNotFoundError:
                 pass
-        
+
         if job_start_timestamp:
             job_start_timestamp = float(job_start_timestamp)
             if job_time_limit:
@@ -569,7 +604,7 @@ def main(cfg: DictConfig) -> None:
                         job_time_limit_seconds = hours * 3600 + minutes * 60 + seconds
                 except ValueError:
                     pass
-    
+
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         timing_data = torch.zeros(2, dtype=torch.float64, device=dist.device)
         if dist.rank == 0 and job_start_timestamp is not None:
@@ -577,9 +612,11 @@ def main(cfg: DictConfig) -> None:
             timing_data[1] = job_time_limit_seconds if job_time_limit_seconds is not None else 0.0
         torch.distributed.broadcast(timing_data, src=0)
         if dist.rank != 0:
-            job_start_timestamp = float(timing_data[0].item()) if timing_data[0].item() != 0.0 else None
-            job_time_limit_seconds = int(timing_data[1].item()) if timing_data[1].item() != 0.0 else None
-    
+            job_start_timestamp = float(timing_data[0].item()
+                                       ) if timing_data[0].item() != 0.0 else None
+            job_time_limit_seconds = int(timing_data[1].item()
+                                        ) if timing_data[1].item() != 0.0 else None
+
     if job_start_timestamp is not None:
         cfg.job_start_timestamp = job_start_timestamp
         cfg.job_start_datetime = job_start_datetime
@@ -640,12 +677,14 @@ def main(cfg: DictConfig) -> None:
             f"(base={base_samples_8gpu:,} @ world_size=8; detected world_size={ws}, using {ws_eff})"
         )
         print(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
-    
+
     print(f"Rank {dist.rank} running on {dist.device}")
     if torch.cuda.is_available() and dist.rank == 0:
         mem_alloc = torch.cuda.memory_allocated(dist.device) / 2**20
         mem_reserved = torch.cuda.memory_reserved(dist.device) / 2**20
-        print(f"[GPU] {dist.device} in use (allocated: {mem_alloc:.1f} MiB, reserved: {mem_reserved:.1f} MiB)")
+        print(
+            f"[GPU] {dist.device} in use (allocated: {mem_alloc:.1f} MiB, reserved: {mem_reserved:.1f} MiB)"
+        )
 
     # Configure QEC metrics (LER, syndrome density)
     configure_metrics(rank=dist.rank)
@@ -655,24 +694,24 @@ def main(cfg: DictConfig) -> None:
         print("=" * 80)
         print("🚀 Using Torch Generator for on-the-fly data generation")
         print("=" * 80)
-    
+
     from data.generator_torch import QCDataGeneratorTorch
-    
+
     # Generate random base seed on rank 0, broadcast to all
     import random
     if dist.rank == 0:
         base_seed = random.randint(0, 2**31 - 1)
     else:
         base_seed = 0
-    
+
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         seed_tensor = torch.tensor([base_seed], dtype=torch.int64, device=dist.device)
         torch.distributed.broadcast(seed_tensor, src=0)
         base_seed = int(seed_tensor.item())
-    
+
     if dist.rank == 0:
         print(f"🎲 Random base seed for this session: {base_seed}")
-    
+
     # Get p settings
     p_error_value = getattr(cfg.data, 'p_error', None)
     p_min_value = getattr(cfg.data, 'p_min', 0.001)
@@ -684,7 +723,8 @@ def main(cfg: DictConfig) -> None:
     noise_model_train_obj = None
     if noise_model_cfg is not None:
         from qec.noise_model import NoiseModel
-        nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True) if hasattr(noise_model_cfg, "items") else noise_model_cfg
+        nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True
+                                        ) if hasattr(noise_model_cfg, "items") else noise_model_cfg
         # Allow configs to specify `noise_model: null`
         if nm_dict is not None:
             noise_model_user_obj = NoiseModel.from_config_dict(dict(nm_dict))
@@ -710,7 +750,9 @@ def main(cfg: DictConfig) -> None:
             scale = 1.0
             if max_group < min_group_total:
                 scale = float(min_group_total / max_group)
-                scaled = {k: float(v) * scale for k, v in noise_model_user_obj.to_config_dict().items()}
+                scaled = {
+                    k: float(v) * scale for k, v in noise_model_user_obj.to_config_dict().items()
+                }
                 noise_model_train_obj = NoiseModel.from_config_dict(scaled)
             else:
                 noise_model_train_obj = noise_model_user_obj
@@ -745,17 +787,23 @@ def main(cfg: DictConfig) -> None:
                         f"[Train] noise_model sparsity guard: max_group={max_group:.6g} < {min_group_total:.1e}; "
                         f"scaling training noise_model by {scale:.6g} (evaluation uses user noise_model as-is)."
                     )
-                    print(f"[Train] sparsity guard adjustments: lr*=0.75 -> {float(cfg.optimizer.lr):.6g}, "
-                          f"val.num_samples={int(cfg.val.num_samples):,}, test.num_samples={int(cfg.test.num_samples):,}")
+                    print(
+                        f"[Train] sparsity guard adjustments: lr*=0.75 -> {float(cfg.optimizer.lr):.6g}, "
+                        f"val.num_samples={int(cfg.val.num_samples):,}, test.num_samples={int(cfg.test.num_samples):,}"
+                    )
                 else:
                     print(
                         f"[Train] noise_model sparsity guard: max_group={max_group:.6g} >= {min_group_total:.1e}; "
                         "no scaling applied."
                     )
-                print(f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}")
+                print(
+                    f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"
+                )
                 print(f"[Train] noise_model (user) summary: {noise_model_user_obj!r}")
                 if scale != 1.0:
-                    print(f"[Train] noise_model (training, scaled) summary: {noise_model_train_obj!r}")
+                    print(
+                        f"[Train] noise_model (training, scaled) summary: {noise_model_train_obj!r}"
+                    )
                 print(
                     "[Train] noise_model idle semantics: "
                     "bulk/CNOT-layer idles use p_idle_cnot_*, "
@@ -773,21 +821,20 @@ def main(cfg: DictConfig) -> None:
             print("[Train] noise_model: null (using legacy single-p / p-range sampling)")
     elif dist.rank == 0:
         print("[Train] noise_model: (missing in config) (using legacy single-p / p-range sampling)")
-    
+
     # Check for multi-patch mode
     use_multiple_patches = getattr(cfg.data, 'use_multiple_patches', False)
     multi_d = getattr(cfg, 'multiple_distances', None)
     multi_r = getattr(cfg, 'multiple_rounds', None)
-    
+
     def is_list_like(obj):
         return obj is not None and hasattr(obj, '__len__') and hasattr(obj, '__getitem__')
-    
+
     use_multi_pairs = (
-        use_multiple_patches and
-        is_list_like(multi_d) and is_list_like(multi_r) and
+        use_multiple_patches and is_list_like(multi_d) and is_list_like(multi_r) and
         len(multi_d) == len(multi_r) and len(multi_d) > 0
     )
-    
+
     # Get HE settings
     timelike_he = getattr(cfg.data, 'timelike_he', False)
     num_he_cycles = getattr(cfg.data, 'num_he_cycles', 1)
@@ -798,11 +845,13 @@ def main(cfg: DictConfig) -> None:
     precomputed_frames_dir = resolve_precomputed_frames_dir(
         precomputed_frames_dir, cfg.distance, cfg.n_rounds, cfg.meas_basis, dist.rank
     )
-    
+
     if use_multi_pairs:
         # Torch-only: no multi-pair support yet; fall back to single pair
         if dist.rank == 0:
-            print("[Train] Note: multi_pairs not yet supported in Torch generator; using single pair mode")
+            print(
+                "[Train] Note: multi_pairs not yet supported in Torch generator; using single pair mode"
+            )
         train_generator = None
         val_generator = None
     else:
@@ -851,7 +900,7 @@ def main(cfg: DictConfig) -> None:
     test_timelike_he = getattr(cfg.test, 'timelike_he', timelike_he)
     test_num_he_cycles = getattr(cfg.test, 'num_he_cycles', num_he_cycles)
     test_max_passes = getattr(cfg.test, 'max_passes_w1', max_passes)
-    
+
     if test_distance_override is not None and test_rounds_override is not None:
         test_d, test_r = int(test_distance_override), int(test_rounds_override)
     elif use_multi_pairs:
@@ -859,7 +908,7 @@ def main(cfg: DictConfig) -> None:
         test_d, test_r = int(multi_d[largest_idx]), int(multi_r[largest_idx])
     else:
         test_d, test_r = cfg.distance, cfg.n_rounds
-    
+
     # Determine if we can reuse val_generator for testing
     test_matches_training = False
     if not use_multi_pairs and test_d == cfg.distance and test_r == cfg.n_rounds:
@@ -869,12 +918,13 @@ def main(cfg: DictConfig) -> None:
             if int(d) == test_d and int(r) == test_r:
                 test_matches_training = True
                 break
-    
+
     # Test generator (Stim-based evaluation path)
     test_generator = None
 
     if dist.rank == 0:
         print("✅ Torch generator initialized successfully (Stim simulation + PyMatching decoding)")
+
         def _print_gen(name, g):
             if g is None:
                 print(f"[Train] {name}: <none>")
@@ -889,7 +939,9 @@ def main(cfg: DictConfig) -> None:
             drift_en = bool(getattr(g, "_noise_model_drift_enabled", False))
             drift_frac = getattr(g, "_noise_model_drift_frac", None)
             drift_s = f", drift=±{float(drift_frac):.3f}" if drift_en and drift_frac is not None else ""
-            print(f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, noise_model={'yes' if has_nm else 'no'}{drift_s}")
+            print(
+                f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, noise_model={'yes' if has_nm else 'no'}{drift_s}"
+            )
 
         _print_gen("train_generator", train_generator)
         _print_gen("val_generator", val_generator)
@@ -903,7 +955,7 @@ def main(cfg: DictConfig) -> None:
 
     # Create model
     base_model = ModelFactory.create_model(cfg).to(dist.device)
-    
+
     if cfg.enable_fp16:
         base_model = base_model.half()
     elif getattr(cfg, 'enable_bf16', False):
@@ -975,7 +1027,7 @@ def main(cfg: DictConfig) -> None:
             summary_input = summary_input.half()
         elif getattr(cfg, 'enable_bf16', False):
             summary_input = summary_input.to(torch.bfloat16)
-        
+
         if torchinfo is None:
             if dist.rank == 0:
                 print("Model summary skipped (torchinfo not installed).")
@@ -1013,7 +1065,7 @@ def main(cfg: DictConfig) -> None:
     effective_num_samples = cfg.train.num_samples
     if dist.rank == 0:
         print(f"Calculating total_steps with {effective_num_samples:,} samples per epoch")
-    
+
     total_steps = 0
     for epoch in range(cfg.train.epochs):
         per_device_bs = get_current_per_device_batch_size(epoch, cfg)
@@ -1036,12 +1088,13 @@ def main(cfg: DictConfig) -> None:
         f"Warm-up steps ({cfg.lr_scheduler.warmup_steps}) must be less than total training steps ({total_steps})"
 
     scheduler = get_lr_scheduler(cfg, optimizer, total_steps)
-    
+
     if dist.rank == 0:
         print(f"Learning Rate Scheduler: {cfg.lr_scheduler.type}, Total steps: {total_steps:,}")
 
     # Initialize scaler
-    use_grad_scaler = cfg.enable_fp16 and torch.cuda.is_available() and torch.get_default_dtype() != torch.float16
+    use_grad_scaler = cfg.enable_fp16 and torch.cuda.is_available() and torch.get_default_dtype(
+    ) != torch.float16
     scaler = torch.amp.GradScaler('cuda', enabled=use_grad_scaler)
 
     # TensorBoard writer
@@ -1091,10 +1144,18 @@ def main(cfg: DictConfig) -> None:
     best_vloss = 1_000_000.0
     use_ler_for_early_stopping = getattr(cfg, 'validation_ler', False)
     try:
-        checkpoint_files = [f for f in os.listdir(best_model_path) if f.endswith('.pt') and 'checkpoint' in f]
+        checkpoint_files = [
+            f for f in os.listdir(best_model_path) if f.endswith('.pt') and 'checkpoint' in f
+        ]
         if checkpoint_files:
-            latest_checkpoint = max(checkpoint_files, key=lambda f: os.path.getmtime(os.path.join(best_model_path, f)))
-            checkpoint_dict = torch.load(os.path.join(best_model_path, latest_checkpoint), map_location="cpu", weights_only=False)
+            latest_checkpoint = max(
+                checkpoint_files, key=lambda f: os.path.getmtime(os.path.join(best_model_path, f))
+            )
+            checkpoint_dict = torch.load(
+                os.path.join(best_model_path, latest_checkpoint),
+                map_location="cpu",
+                weights_only=False
+            )
             if 'metadata' in checkpoint_dict and 'best_vloss' in checkpoint_dict['metadata']:
                 saved_using_ler = checkpoint_dict['metadata'].get('using_ler', False)
                 # Only restore best_vloss if the metric type matches (both LER or both loss)
@@ -1109,7 +1170,9 @@ def main(cfg: DictConfig) -> None:
                     if dist.rank == 0:
                         old_metric = "LER" if saved_using_ler else "validation loss"
                         new_metric = "LER" if use_ler_for_early_stopping else "validation loss"
-                        print(f"[Checkpoint] Metric type changed ({old_metric} → {new_metric}), resetting best metric")
+                        print(
+                            f"[Checkpoint] Metric type changed ({old_metric} → {new_metric}), resetting best metric"
+                        )
     except Exception:
         pass
 
@@ -1120,7 +1183,7 @@ def main(cfg: DictConfig) -> None:
     for epoch in range(init_epoch, cfg.train.epochs):
         epoch_start_time = time.time()
         epoch_number = epoch
-        
+
         if should_stop_due_to_time(cfg, epoch_times, epoch, dist.rank):
             break
 
@@ -1132,8 +1195,10 @@ def main(cfg: DictConfig) -> None:
 
         # Get batch sizes
         num_pairs = len(multi_d) if use_multi_pairs else 1
-        curriculum_batch_sizes = get_curriculum_batch_sizes(cfg, epoch, num_pairs) if use_multi_pairs else None
-        
+        curriculum_batch_sizes = get_curriculum_batch_sizes(
+            cfg, epoch, num_pairs
+        ) if use_multi_pairs else None
+
         if curriculum_batch_sizes is not None:
             steps_per_epoch, samples_per_cycle, num_cycles = calculate_curriculum_steps_per_epoch(
                 curriculum_batch_sizes, effective_num_samples, dist.world_size
@@ -1145,11 +1210,15 @@ def main(cfg: DictConfig) -> None:
             accumulate_steps = cfg.train.accumulate_steps
             effective_batch_size = per_device_batch_size * accumulate_steps * dist.world_size
             steps_per_epoch = effective_num_samples // effective_batch_size
-            
+
             if dist.rank == 0:
-                print(f"[Epoch {epoch_number}] Effective batch size = per_device × accumulate_steps × world_size")
-                print(f"[Epoch {epoch_number}] Effective batch size: {effective_batch_size} "
-                      f"({per_device_batch_size} × {accumulate_steps} × {dist.world_size})")
+                print(
+                    f"[Epoch {epoch_number}] Effective batch size = per_device × accumulate_steps × world_size"
+                )
+                print(
+                    f"[Epoch {epoch_number}] Effective batch size: {effective_batch_size} "
+                    f"({per_device_batch_size} × {accumulate_steps} × {dist.world_size})"
+                )
                 # Log batch size to TensorBoard
                 if writer is not None:
                     writer.add_scalar("BatchSize", effective_batch_size, epoch_number)
@@ -1167,7 +1236,7 @@ def main(cfg: DictConfig) -> None:
         barrier_s = 0.0
 
         model.train(True)
-        
+
         if epoch == init_epoch:
             cumulative_steps = 0
 
@@ -1193,16 +1262,17 @@ def main(cfg: DictConfig) -> None:
             global_step=global_step,
             accumulate_steps=accumulate_steps,
         )
-        train_total_s = float(train_timing.get("total_s", 0.0)) if train_timing else (time.perf_counter() - t_train_start)
-        
+        train_total_s = float(train_timing.get("total_s", 0.0)
+                             ) if train_timing else (time.perf_counter() - t_train_start)
+
         cumulative_steps += steps_per_epoch
 
         model.eval()
         model_to_eval = ema_model if cfg.ema.use_ema else model
         model_for_ckpt = model_to_eval.module if isinstance(model_to_eval, DDP) else model_to_eval
-        
+
         val_samples_per_gpu = cfg.val.num_samples // dist.world_size
-        
+
         t_val_start = time.perf_counter()
         avg_vloss, val_timing = validation_step(
             generator=val_generator,
@@ -1214,7 +1284,8 @@ def main(cfg: DictConfig) -> None:
             enable_bf16=getattr(cfg, 'enable_bf16', False),
             rank=dist.rank
         )
-        val_total_s = float(val_timing.get("total_s", 0.0)) if val_timing else (time.perf_counter() - t_val_start)
+        val_total_s = float(val_timing.get("total_s", 0.0)
+                           ) if val_timing else (time.perf_counter() - t_val_start)
 
         # Synchronize losses
         if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -1222,7 +1293,7 @@ def main(cfg: DictConfig) -> None:
             t = torch.tensor([avg_loss], device=dist.device)
             torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
             avg_loss = float(t.item())
-            
+
             v = torch.tensor([avg_vloss], device=dist.device)
             torch.distributed.all_reduce(v, op=torch.distributed.ReduceOp.AVG)
             avg_vloss = float(v.item())
@@ -1260,27 +1331,40 @@ def main(cfg: DictConfig) -> None:
                 else:
                     t_sdr_start = time.perf_counter()
                     syndrome_density_reduction = compute_syndrome_density(
-                        model=model_to_eval, device=dist.device, dist=dist, cfg=cfg,
-                        generator=None, rank=dist.rank,
+                        model=model_to_eval,
+                        device=dist.device,
+                        dist=dist,
+                        cfg=cfg,
+                        generator=None,
+                        rank=dist.rank,
                     )
                     sdr_s = time.perf_counter() - t_sdr_start
                 # If multi-pair dict, reduce to a single scalar for logging (average over pairs).
-                if isinstance(syndrome_density_reduction, dict) and len(syndrome_density_reduction) > 0:
-                    syndrome_density_reduction = sum(syndrome_density_reduction.values()) / len(syndrome_density_reduction)
+                if isinstance(syndrome_density_reduction,
+                              dict) and len(syndrome_density_reduction) > 0:
+                    syndrome_density_reduction = sum(syndrome_density_reduction.values()
+                                                    ) / len(syndrome_density_reduction)
 
                 # Average SDR across ranks for clean TensorBoard curves.
-                if syndrome_density_reduction is not None and torch.distributed.is_available() and torch.distributed.is_initialized():
-                    sd_tensor = torch.tensor([float(syndrome_density_reduction)], device=dist.device)
+                if syndrome_density_reduction is not None and torch.distributed.is_available(
+                ) and torch.distributed.is_initialized():
+                    sd_tensor = torch.tensor(
+                        [float(syndrome_density_reduction)], device=dist.device
+                    )
                     torch.distributed.all_reduce(sd_tensor, op=torch.distributed.ReduceOp.AVG)
                     syndrome_density_reduction = float(sd_tensor.item())
 
                 t_ler_start = time.perf_counter()
                 ler_result = compute_validation_ler(
-                    model=model_to_eval, device=dist.device, dist=dist, cfg=cfg,
-                    generator=None, rank=dist.rank,
+                    model=model_to_eval,
+                    device=dist.device,
+                    dist=dist,
+                    cfg=cfg,
+                    generator=None,
+                    rank=dist.rank,
                 )
                 ler_s = time.perf_counter() - t_ler_start
-                
+
                 if isinstance(ler_result, tuple):
                     # (validation_ler, ler_reduction_factor, pymatching_speedup_avg)
                     if len(ler_result) >= 1:
@@ -1290,18 +1374,27 @@ def main(cfg: DictConfig) -> None:
                     if len(ler_result) >= 3:
                         pymatching_speedup_avg = ler_result[2]
                 elif isinstance(ler_result, dict):
-                    ler_values = [v[0] for v in ler_result.values() if isinstance(v, tuple) and len(v) >= 1 and v[0] is not None]
+                    ler_values = [
+                        v[0]
+                        for v in ler_result.values()
+                        if isinstance(v, tuple) and len(v) >= 1 and v[0] is not None
+                    ]
                     validation_ler = sum(ler_values) / len(ler_values) if ler_values else None
-                    speedups = [v[2] for v in ler_result.values() if isinstance(v, tuple) and len(v) >= 3 and v[2] is not None]
+                    speedups = [
+                        v[2]
+                        for v in ler_result.values()
+                        if isinstance(v, tuple) and len(v) >= 3 and v[2] is not None
+                    ]
                     pymatching_speedup_avg = sum(speedups) / len(speedups) if speedups else None
                 else:
                     validation_ler = ler_result
-                
-                if validation_ler is not None and torch.distributed.is_available() and torch.distributed.is_initialized():
+
+                if validation_ler is not None and torch.distributed.is_available(
+                ) and torch.distributed.is_initialized():
                     ler_tensor = torch.tensor([validation_ler], device=dist.device)
                     torch.distributed.all_reduce(ler_tensor, op=torch.distributed.ReduceOp.AVG)
                     validation_ler = float(ler_tensor.item())
-                
+
             finally:
                 cfg.distance, cfg.n_rounds = orig_cfg_distance, orig_cfg_n_rounds
         elif use_ler_for_early_stopping and dist.rank == 0:
@@ -1313,7 +1406,9 @@ def main(cfg: DictConfig) -> None:
         if dist.rank == 0:
             if use_ler_for_early_stopping and validation_ler is not None:
                 _sdr_str = f" SDR {syndrome_density_reduction:.4f}" if syndrome_density_reduction is not None else ""
-                print(f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f} LER {validation_ler:.6f}{_sdr_str}")
+                print(
+                    f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f} LER {validation_ler:.6f}{_sdr_str}"
+                )
             else:
                 print(f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f}")
             dem_timing = None
@@ -1327,8 +1422,10 @@ def main(cfg: DictConfig) -> None:
                 train_model_s = float(train_timing.get("model_s", 0.0)) if train_timing else 0.0
                 val_data_s = float(val_timing.get("data_gen_s", 0.0)) if val_timing else 0.0
                 val_model_s = float(val_timing.get("model_s", 0.0)) if val_timing else 0.0
-                dem_build_s = float(dem_timing.get("dem_build_s", 0.0)) if isinstance(dem_timing, dict) else 0.0
-                dem_decode_s = float(dem_timing.get("dem_decode_s", 0.0)) if isinstance(dem_timing, dict) else 0.0
+                dem_build_s = float(dem_timing.get("dem_build_s", 0.0)
+                                   ) if isinstance(dem_timing, dict) else 0.0
+                dem_decode_s = float(dem_timing.get("dem_decode_s", 0.0)
+                                    ) if isinstance(dem_timing, dict) else 0.0
                 total_bucket_s = train_data_s + train_model_s + val_data_s + val_model_s + dem_build_s + dem_decode_s
                 if total_bucket_s > 0:
                     pct = lambda s: 100.0 * s / total_bucket_s
@@ -1336,13 +1433,16 @@ def main(cfg: DictConfig) -> None:
                     pct = lambda s: 0.0
                 print(
                     "[Epoch Timing] train_data_gen={:.2f}s train_model={:.2f}s "
-                    "val_data_gen={:.2f}s val_model={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s".format(
-                        train_data_s, train_model_s, val_data_s, val_model_s, dem_build_s, dem_decode_s
+                    "val_data_gen={:.2f}s val_model={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s".
+                    format(
+                        train_data_s, train_model_s, val_data_s, val_model_s, dem_build_s,
+                        dem_decode_s
                     )
                 )
                 print(
                     "[Epoch Timing %] train_data_gen={:.1f}% train_model={:.1f}% "
-                    "val_data_gen={:.1f}% val_model={:.1f}% dem_build={:.2f}% dem_decode={:.2f}%".format(
+                    "val_data_gen={:.1f}% val_model={:.1f}% dem_build={:.2f}% dem_decode={:.2f}%".
+                    format(
                         pct(train_data_s), pct(train_model_s), pct(val_data_s), pct(val_model_s),
                         pct(dem_build_s), pct(dem_decode_s)
                     )
@@ -1350,29 +1450,39 @@ def main(cfg: DictConfig) -> None:
                 if ler_s > 0:
                     ler_other_s = max(ler_s - (dem_build_s + dem_decode_s), 0.0)
                     print(
-                        "[Epoch LER Timing] total={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s other={:.2f}s".format(
-                            ler_s, dem_build_s, dem_decode_s, ler_other_s
-                        )
+                        "[Epoch LER Timing] total={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s other={:.2f}s"
+                        .format(ler_s, dem_build_s, dem_decode_s, ler_other_s)
                     )
-            
+
             # Log Loss to TensorBoard
             if writer is not None:
-                writer.add_scalars("Loss", {"Training": avg_loss, "Validation": avg_vloss}, epoch_number)
-                
+                writer.add_scalars(
+                    "Loss", {
+                        "Training": avg_loss,
+                        "Validation": avg_vloss
+                    }, epoch_number
+                )
+
                 # Log LER to TensorBoard (important evaluation metric)
                 if validation_ler is not None:
                     writer.add_scalar("Metrics/LER", validation_ler, epoch_number)
                     if ler_reduction_factor is not None:
-                        writer.add_scalar("Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number)
+                        writer.add_scalar(
+                            "Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number
+                        )
 
                 # Log PyMatching decode speedup (baseline / after pre-decoder), avg across X/Z
                 if pymatching_speedup_avg is not None:
-                    writer.add_scalar("Metrics/PyMatching_Speedup", float(pymatching_speedup_avg), epoch_number)
+                    writer.add_scalar(
+                        "Metrics/PyMatching_Speedup", float(pymatching_speedup_avg), epoch_number
+                    )
 
                 # Log syndrome density reduction (SDR) as an auxiliary metric (requested for visibility).
                 if syndrome_density_reduction is not None:
-                    writer.add_scalar("Metrics/SDR", float(syndrome_density_reduction), epoch_number)
-                
+                    writer.add_scalar(
+                        "Metrics/SDR", float(syndrome_density_reduction), epoch_number
+                    )
+
                 writer.flush()
         log_s = time.perf_counter() - t_log_start
 
@@ -1390,7 +1500,7 @@ def main(cfg: DictConfig) -> None:
         if current_metric < best_vloss:
             best_vloss = current_metric
             epochs_since_best = 0
-            
+
             if dist.rank == 0:
                 t_ckpt_best = time.perf_counter()
                 save_checkpoint(
@@ -1410,11 +1520,15 @@ def main(cfg: DictConfig) -> None:
                 ckpt_best_s = time.perf_counter() - t_ckpt_best
         elif current_metric >= best_vloss:
             epochs_since_best += 1
-            
+
             if cfg.early_stopping.enabled and epochs_since_best >= cfg.early_stopping.patience:
-                print(f"Early stopping triggered after {cfg.early_stopping.patience} epochs without improvement.")
+                print(
+                    f"Early stopping triggered after {cfg.early_stopping.patience} epochs without improvement."
+                )
                 with open(to_absolute_path(early_stoping_path), "w") as f:
-                    f.write(f"Early stopping at epoch {epoch_number} with best metric {best_vloss:.6f}\n")
+                    f.write(
+                        f"Early stopping at epoch {epoch_number} with best metric {best_vloss:.6f}\n"
+                    )
                 break
 
         # Log early stopping metrics to TensorBoard
@@ -1428,7 +1542,9 @@ def main(cfg: DictConfig) -> None:
         epoch_times.append(epoch_duration)
 
         if dist.rank == 0:
-            print(f"[{timestamp}] Best metric {best_vloss:.6f}, Epochs since best: {epochs_since_best}, Epoch time {epoch_duration/60:.1f}m")
+            print(
+                f"[{timestamp}] Best metric {best_vloss:.6f}, Epochs since best: {epochs_since_best}, Epoch time {epoch_duration/60:.1f}m"
+            )
 
         gc.collect()
         if torch.cuda.is_available():
@@ -1452,8 +1568,8 @@ def main(cfg: DictConfig) -> None:
         if dist.rank == 0:
             epoch_wall_s = time.perf_counter() - epoch_wall_start
             measured_sum = (
-                train_total_s + val_total_s + loss_sync_s + gc_s + sdr_s + ler_s +
-                ckpt_best_s + ckpt_periodic_s + barrier_s + log_s
+                train_total_s + val_total_s + loss_sync_s + gc_s + sdr_s + ler_s + ckpt_best_s +
+                ckpt_periodic_s + barrier_s + log_s
             )
             overhead_s = max(epoch_wall_s - measured_sum, 0.0)
             if epoch_wall_s > 0:
@@ -1470,10 +1586,12 @@ def main(cfg: DictConfig) -> None:
             )
             print(
                 "[Epoch Wall %] train={:.1f}% val={:.1f}% sync={:.1f}% gc={:.1f}% sdr={:.1f}% ler={:.1f}% "
-                "ckpt_best={:.1f}% ckpt_periodic={:.1f}% barrier={:.1f}% log={:.1f}% overhead={:.1f}%".format(
-                    pct_wall(train_total_s), pct_wall(val_total_s), pct_wall(loss_sync_s), pct_wall(gc_s),
-                    pct_wall(sdr_s), pct_wall(ler_s), pct_wall(ckpt_best_s), pct_wall(ckpt_periodic_s),
-                    pct_wall(barrier_s), pct_wall(log_s), pct_wall(overhead_s)
+                "ckpt_best={:.1f}% ckpt_periodic={:.1f}% barrier={:.1f}% log={:.1f}% overhead={:.1f}%"
+                .format(
+                    pct_wall(train_total_s), pct_wall(val_total_s), pct_wall(loss_sync_s),
+                    pct_wall(gc_s), pct_wall(sdr_s), pct_wall(ler_s), pct_wall(ckpt_best_s),
+                    pct_wall(ckpt_periodic_s), pct_wall(barrier_s), pct_wall(log_s),
+                    pct_wall(overhead_s)
                 )
             )
 

@@ -8,7 +8,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Precompute DEM bundles (H, p, A) for MemoryCircuitTorch.
 
@@ -134,14 +133,15 @@ def main() -> None:
     if len(args.n_rounds) == 1 and len(args.distance) > 1:
         args.n_rounds = args.n_rounds * len(args.distance)
     if len(args.n_rounds) != len(args.distance):
-        print("Error: Number of --n_rounds values must match --distance values (or be a single value)")
+        print(
+            "Error: Number of --n_rounds values must match --distance values (or be a single value)"
+        )
         sys.exit(1)
 
     verbose = not args.quiet
     device = (
-        torch.device(args.device)
-        if args.device is not None
-        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        torch.device(args.device) if args.device is not None else
+        torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
     internal_rot = _normalize_rotation(args.rotation)
 
@@ -173,7 +173,9 @@ def main() -> None:
                 )
                 output_dirs.add(str(dem_dir))
             except Exception as e:
-                print(f"\n✗ Error precomputing d={d}, r={r}, basis={basis}, rotation={args.rotation}: {e}")
+                print(
+                    f"\n✗ Error precomputing d={d}, r={r}, basis={basis}, rotation={args.rotation}: {e}"
+                )
                 import traceback
                 traceback.print_exc()
 

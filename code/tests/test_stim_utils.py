@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for qec.surface_code.stim_utils (REPEAT unfolding, add_instruction)."""
 
 import sys
@@ -22,6 +21,7 @@ from qec.surface_code import stim_utils
 
 
 class TestUnfoldRepeatInstruction(unittest.TestCase):
+
     def test_no_repeat_returns_unchanged(self):
         lines = ["R 0 1", "H 0", "M 0"]
         out = stim_utils.unfold_repeat_instruction(lines[:], ignore_detectors=True)
@@ -55,6 +55,7 @@ class TestUnfoldRepeatInstruction(unittest.TestCase):
 
 
 class TestAddInstruction(unittest.TestCase):
+
     def test_single_qubit_gate(self):
         import numpy as np
         flips = {"X": np.array([0, 2])}
