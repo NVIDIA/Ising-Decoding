@@ -63,30 +63,30 @@ def should_stop_due_to_time(cfg, epoch_times, current_epoch, rank=0):
     """
     if not hasattr(cfg, 'time_based_early_stopping') or not cfg.time_based_early_stopping.enabled:
         return False
-        
+
     if not hasattr(cfg, 'job_start_timestamp') or not hasattr(cfg, 'job_time_limit_seconds'):
         return False
-        
+
     if not cfg.job_time_limit_seconds:
         return False
-        
+
     # Calculate elapsed time since job started
     current_time = time.time()
     elapsed_time = current_time - cfg.job_start_timestamp
     remaining_time = cfg.job_time_limit_seconds - elapsed_time
-    
+
     # Estimate next epoch time based on recent epochs
     if len(epoch_times) == 0:
         return False  # No data yet
-    
+
     # Use average of recent epochs (up to last 3) for prediction
     recent_epochs = epoch_times[-3:] if len(epoch_times) >= 3 else epoch_times
     estimated_next_epoch_time = sum(recent_epochs) / len(recent_epochs)
-    
+
     # Add safety margin
     safety_margin_seconds = cfg.time_based_early_stopping.safety_margin_minutes * 60
     required_time = estimated_next_epoch_time + safety_margin_seconds
-    
+
     if remaining_time < required_time:
         if rank == 0:
             print(f"\n⏰ TIME-BASED EARLY STOPPING TRIGGERED:")
@@ -97,7 +97,7 @@ def should_stop_due_to_time(cfg, epoch_times, current_epoch, rank=0):
             print(f"   Required time: {required_time/60:.1f} minutes")
             print(f"   Stopping before epoch {current_epoch + 1} to avoid timeout\n")
         return True
-    
+
     return False
 
 
@@ -107,13 +107,13 @@ def compare_receptive_field_with_window_data(cfg):
     for k in cfg.model.kernel_size:
         R += k
     R -= len(cfg.model.kernel_size)
-    
+
     window_size = min(cfg.distance, cfg.n_rounds)
-    
+
     if R > window_size:
-        print("#"*50)
+        print("#" * 50)
         print(f"WARNING: Receptive field {R} is larger than window size {window_size}")
-        print("#"*50)
+        print("#" * 50)
 
 
 """
@@ -125,6 +125,7 @@ def dict_to_device(state_dict, device):
     return new_state_dict
 """
 
+
 def dict_to_device(batch, device):
     out = {}
     for k, v in batch.items():
@@ -133,6 +134,7 @@ def dict_to_device(batch, device):
         else:
             out[k] = v
     return out
+
 
 def _get_checkpoint_filename(
     path: str,
@@ -186,15 +188,11 @@ def _get_checkpoint_filename(
             )
     manager = DistributedManager()
     model_parallel_rank = (
-        manager.group_rank("model_parallel")
-        if "model_parallel" in manager.group_names
-        else 0
+        manager.group_rank("model_parallel") if "model_parallel" in manager.group_names else 0
     )
 
     # Input file name
-    checkpoint_filename = str(
-        Path(path).resolve() / f"{base_name}.{model_parallel_rank}"
-    )
+    checkpoint_filename = str(Path(path).resolve() / f"{base_name}.{model_parallel_rank}")
 
     # File extension for Modulus models or PyTorch models
     file_extension = ".mdlus" if model_type == "mdlus" else ".pt"
@@ -207,9 +205,7 @@ def _get_checkpoint_filename(
     else:
         file_names = [
             Path(fname).name
-            for fname in glob.glob(
-                checkpoint_filename + "*" + file_extension, recursive=False
-            )
+            for fname in glob.glob(checkpoint_filename + "*" + file_extension, recursive=False)
         ]
 
         if len(file_names) > 0:
@@ -217,14 +213,11 @@ def _get_checkpoint_filename(
             # This is the most likely line to error since it will fail with
             # invalid checkpoint names
             file_idx = [
-                int(
-                    re.sub(
-                        f"^{base_name}.{model_parallel_rank}.|" + file_extension,
-                        "",
-                        fname,
-                    )
-                )
-                for fname in file_names
+                int(re.sub(
+                    f"^{base_name}.{model_parallel_rank}.|" + file_extension,
+                    "",
+                    fname,
+                )) for fname in file_names
             ]
             file_idx.sort()
             # If we are saving index by 1 to get the next free file name
@@ -239,9 +232,7 @@ def _get_checkpoint_filename(
     return checkpoint_filename
 
 
-def _unique_model_names(
-    models: List[torch.nn.Module],
-) -> Dict[str, torch.nn.Module]:
+def _unique_model_names(models: List[torch.nn.Module],) -> Dict[str, torch.nn.Module]:
     """Util to clean model names and index if repeat names, will also strip DDP wrappers
     if they exist.
 
@@ -283,6 +274,7 @@ def _unique_model_names(
 
     return output_dict
 
+
 def save_checkpoint(
     path: str,
     models: Union[torch.nn.Module, List[torch.nn.Module], None] = None,
@@ -321,7 +313,8 @@ def save_checkpoint(
     # Create checkpoint directory if it does not exist
     if not Path(path).is_dir():
         checkpoint_logging.warning(
-            f"Output directory {path} does not exist, will " "attempt to create"
+            f"Output directory {path} does not exist, will "
+            "attempt to create"
         )
         Path(path).mkdir(parents=True, exist_ok=True)
 
@@ -366,9 +359,7 @@ def save_checkpoint(
         checkpoint_dict["static_capture_state_dict"] = _StaticCapture.state_dict()
 
     # Output file name
-    output_filename = _get_checkpoint_filename(
-        path, index=epoch, saving=True, model_type="pt"
-    )
+    output_filename = _get_checkpoint_filename(path, index=epoch, saving=True, model_type="pt")
     if epoch is not None:
         checkpoint_dict["epoch"] = epoch
     if metadata:
@@ -430,7 +421,9 @@ def load_checkpoint(
             )
         has_any_model_file = any(p.exists() for p in expected_model_files)
         if not has_any_training_ckpt and not has_any_model_file:
-            checkpoint_logging.info(f"No checkpoints found in {path}; starting fresh (skipping load).")
+            checkpoint_logging.info(
+                f"No checkpoints found in {path}; starting fresh (skipping load)."
+            )
             return 0, 0
 
         for name, model in models.items():

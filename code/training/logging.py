@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Minimal logging helpers to replace physicsnemo.launch.logging.
 """
@@ -18,6 +17,7 @@ import logging
 
 
 class PythonLogger:
+
     def __init__(self, name: str) -> None:
         self._logger = logging.getLogger(name)
         if not self._logger.handlers:

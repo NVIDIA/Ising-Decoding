@@ -42,10 +42,16 @@ class TestStaticCapture(unittest.TestCase):
 
     def test_load_state_dict(self):
         from training.capture import _StaticCapture
-        _StaticCapture.load_state_dict({
-            "amp_scalers": {"k": 1},
-            "amp_scaler_checkpoints": {"k": 2},
-        })
+        _StaticCapture.load_state_dict(
+            {
+                "amp_scalers": {
+                    "k": 1
+                },
+                "amp_scaler_checkpoints": {
+                    "k": 2
+                },
+            }
+        )
         d = _StaticCapture.state_dict()
         self.assertEqual(d["amp_scalers"], {"k": 1})
         self.assertEqual(d["amp_scaler_checkpoints"], {"k": 2})

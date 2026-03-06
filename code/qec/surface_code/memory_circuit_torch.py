@@ -79,16 +79,26 @@ class MemoryCircuitTorch:
         self.timelike_he = bool(timelike_he)
         self.num_he_cycles = int(num_he_cycles)
         self.max_passes_w1 = int(max_passes_w1)
-        self.device = device if device is not None else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device if device is not None else torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
 
         # Circuit metadata.
         first_bulk, rot = self.code_rotation[0], self.code_rotation[1]
         self.code = SurfaceCode(
-            self.distance, first_bulk_syndrome_type=first_bulk, rotated_type=("V" if rot == "V" else "H")
+            self.distance,
+            first_bulk_syndrome_type=first_bulk,
+            rotated_type=("V" if rot == "V" else "H")
         )
-        self.data_qubits = torch.as_tensor(self.code.data_qubits, dtype=torch.long, device=self.device)
-        self.xcheck_qubits = torch.as_tensor(self.code.xcheck_qubits, dtype=torch.long, device=self.device)
-        self.zcheck_qubits = torch.as_tensor(self.code.zcheck_qubits, dtype=torch.long, device=self.device)
+        self.data_qubits = torch.as_tensor(
+            self.code.data_qubits, dtype=torch.long, device=self.device
+        )
+        self.xcheck_qubits = torch.as_tensor(
+            self.code.xcheck_qubits, dtype=torch.long, device=self.device
+        )
+        self.zcheck_qubits = torch.as_tensor(
+            self.code.zcheck_qubits, dtype=torch.long, device=self.device
+        )
         self.nq = int(len(self.code.all_qubits))
 
         self.meas_qubits = torch.cat([self.xcheck_qubits, self.zcheck_qubits], dim=0)
@@ -107,7 +117,9 @@ class MemoryCircuitTorch:
             self.A = (A.to(device=self.device, dtype=torch.uint8) if A is not None else None)
         else:
             if precomputed_frames_dir is None:
-                raise ValueError("Provide either precomputed_frames_dir or in-memory H/p (and optional A).")
+                raise ValueError(
+                    "Provide either precomputed_frames_dir or in-memory H/p (and optional A)."
+                )
             d = Path(precomputed_frames_dir)
             prefix = f"surface_d{self.distance}_r{self.n_rounds}_{self.basis}_frame_predecoder"
             hx_path = d / f"{prefix}.X.npz"
@@ -132,36 +144,43 @@ class MemoryCircuitTorch:
             p_arr = np.asarray(p_arr).reshape(-1)
             hx = hx if hx.shape[1] == errors else hx.T
             hz = hz if hz.shape[1] == errors else hz.T
-            self.H = torch.from_numpy(np.concatenate([hx, hz], axis=0)).to(self.device, dtype=torch.uint8)
+            self.H = torch.from_numpy(np.concatenate([hx, hz],
+                                                     axis=0)).to(self.device, dtype=torch.uint8)
             self.p = torch.from_numpy(p_arr).to(self.device, dtype=torch.float32)
             self.A = (
-                torch.from_numpy(np.asarray(_npz1(A_path), dtype=np.uint8)).to(self.device, dtype=torch.uint8)
-                if A_path
-                else None
+                torch.from_numpy(np.asarray(_npz1(A_path), dtype=np.uint8)
+                                ).to(self.device, dtype=torch.uint8) if A_path else None
             )
 
         # HE caches (built once).
         self.parity_X = torch.tensor(self.code.hx, dtype=torch.uint8, device=self.device)
         self.parity_Z = torch.tensor(self.code.hz, dtype=torch.uint8, device=self.device)
-        self.cache_X_sp = build_spacelike_he_cache(self.parity_X, distance=self.distance, device=self.device)
-        self.cache_Z_sp = build_spacelike_he_cache(self.parity_Z, distance=self.distance, device=self.device)
+        self.cache_X_sp = build_spacelike_he_cache(
+            self.parity_X, distance=self.distance, device=self.device
+        )
+        self.cache_Z_sp = build_spacelike_he_cache(
+            self.parity_Z, distance=self.distance, device=self.device
+        )
         self.cache_X_tl = build_timelike_he_cache(self.parity_X)
         self.cache_Z_tl = build_timelike_he_cache(self.parity_Z)
 
         # Weight maps for trainX presence channels.
         self.w_mapXgrid = (
-            normalized_weight_mapping_Xstab_memory(self.distance, rotation=self.code_rotation)
-            .reshape(self.distance, self.distance)
-            .to(self.device)
+            normalized_weight_mapping_Xstab_memory(self.distance, rotation=self.code_rotation
+                                                  ).reshape(self.distance,
+                                                            self.distance).to(self.device)
         )
         self.w_mapZgrid = (
-            normalized_weight_mapping_Zstab_memory(self.distance, rotation=self.code_rotation)
-            .reshape(self.distance, self.distance)
-            .to(self.device)
+            normalized_weight_mapping_Zstab_memory(self.distance, rotation=self.code_rotation
+                                                  ).reshape(self.distance,
+                                                            self.distance).to(self.device)
         )
 
     def generate_batch(
-        self, *, batch_size: int, return_aux: bool = False
+        self,
+        *,
+        batch_size: int,
+        return_aux: bool = False
     ) -> Union[
         tuple[torch.Tensor, torch.Tensor],
         tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
@@ -171,14 +190,18 @@ class MemoryCircuitTorch:
         (meas_old, x_cum, z_cum) for building Stim dets_and_obs (e.g. oracle + PyMatching test).
         """
         frames_xz = dem_sampling(self.H, self.p, int(batch_size))  # (B, 2*num_detectors)
-        meas_old = measure_from_stacked_frames(frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq)  # (B, R, m)
-        meas_new = timelike_syndromes(frames_xz, self.A, meas_old) if self.A is not None else meas_old.clone()
+        meas_old = measure_from_stacked_frames(
+            frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq
+        )  # (B, R, m)
+        meas_new = timelike_syndromes(frames_xz, self.A,
+                                      meas_old) if self.A is not None else meas_old.clone()
 
         # Cumulative data-qubit frames (B, R, D2) from stacked [X|Z] blocks.
         D = frames_xz.shape[1] // 2
-        idx_data = (torch.arange(self.n_rounds, device=self.device)[:, None] * self.nq + self.data_qubits[None, :]).reshape(
-            -1
-        )
+        idx_data = (
+            torch.arange(self.n_rounds, device=self.device)[:, None] * self.nq +
+            self.data_qubits[None, :]
+        ).reshape(-1)
         x_cum = frames_xz[:, :D].index_select(1, idx_data).reshape(batch_size, self.n_rounds, -1)
         z_cum = frames_xz[:, D:].index_select(1, idx_data).reshape(batch_size, self.n_rounds, -1)
 
@@ -218,7 +241,8 @@ class MemoryCircuitTorch:
             return (trainX, trainY, meas_old, x_cum, z_cum)
         return (trainX, trainY)
 
-    def _format_for_model(self, x_diff, z_diff, meas_old, meas_new) -> tuple[torch.Tensor, torch.Tensor]:
+    def _format_for_model(self, x_diff, z_diff, meas_old,
+                          meas_new) -> tuple[torch.Tensor, torch.Tensor]:
         B, R, D2 = x_diff.shape
         D = self.distance
         num_x = int(self.xcheck_qubits.numel())
@@ -233,28 +257,24 @@ class MemoryCircuitTorch:
         s1z = s1z.transpose(1, 2)
 
         x_syn_g = (
-            reshape_Xstabilizers_to_grid_vectorized(x_syn, D, rotation=self.code_rotation)
-            .reshape(B, D, D, R)
-            .permute(0, 3, 1, 2)
-            .contiguous()
+            reshape_Xstabilizers_to_grid_vectorized(x_syn, D, rotation=self.code_rotation
+                                                   ).reshape(B, D, D, R).permute(0, 3, 1,
+                                                                                 2).contiguous()
         )
         z_syn_g = (
-            reshape_Zstabilizers_to_grid_vectorized(z_syn, D, rotation=self.code_rotation)
-            .reshape(B, D, D, R)
-            .permute(0, 3, 1, 2)
-            .contiguous()
+            reshape_Zstabilizers_to_grid_vectorized(z_syn, D, rotation=self.code_rotation
+                                                   ).reshape(B, D, D, R).permute(0, 3, 1,
+                                                                                 2).contiguous()
         )
         s1x_g = (
-            reshape_Xstabilizers_to_grid_vectorized(s1x, D, rotation=self.code_rotation)
-            .reshape(B, D, D, R)
-            .permute(0, 3, 1, 2)
-            .contiguous()
+            reshape_Xstabilizers_to_grid_vectorized(s1x, D, rotation=self.code_rotation
+                                                   ).reshape(B, D, D, R).permute(0, 3, 1,
+                                                                                 2).contiguous()
         )
         s1z_g = (
-            reshape_Zstabilizers_to_grid_vectorized(s1z, D, rotation=self.code_rotation)
-            .reshape(B, D, D, R)
-            .permute(0, 3, 1, 2)
-            .contiguous()
+            reshape_Zstabilizers_to_grid_vectorized(s1z, D, rotation=self.code_rotation
+                                                   ).reshape(B, D, D, R).permute(0, 3, 1,
+                                                                                 2).contiguous()
         )
 
         x_err = x_diff.reshape(B, R, D, D)
@@ -273,10 +293,15 @@ class MemoryCircuitTorch:
             x_pres[:, -1] = 0
             x_syn_g[:, -1] = 0
 
-        trainX = torch.stack([x_syn_g.float(), z_syn_g.float(), x_pres.float(), z_pres.float()], dim=1).contiguous()
-        trainY = torch.stack([z_err.float(), x_err.float(), s1x_g.float(), s1z_g.float()], dim=1).contiguous()
+        trainX = torch.stack(
+            [x_syn_g.float(), z_syn_g.float(),
+             x_pres.float(), z_pres.float()], dim=1
+        ).contiguous()
+        trainY = torch.stack([z_err.float(),
+                              x_err.float(),
+                              s1x_g.float(),
+                              s1z_g.float()], dim=1).contiguous()
         return trainX, trainY
 
 
 __all__ = ["MemoryCircuitTorch"]
-

@@ -76,12 +76,26 @@ class TestW2Compile(unittest.TestCase):
         min_t_x, min_t_z = 0, 0
         compiled_w2 = _get_compiled_w2_loop(max_t, min_t_x, min_t_z, num_passes)
         xw, zw, szw, sxw = compiled_w2(
-            x_work.clone(), z_work.clone(), sz_work.clone(), sx_work.clone(),
-            pf_Z, prs_Z,
-            q1, q2, anti_idx_X, anti_valid_X, prs_anti_X,
-            pf_X, prs_X,
-            q1, q2, anti_idx_Z, anti_valid_Z, prs_anti_Z,
-            num_z_t, num_x_t,
+            x_work.clone(),
+            z_work.clone(),
+            sz_work.clone(),
+            sx_work.clone(),
+            pf_Z,
+            prs_Z,
+            q1,
+            q2,
+            anti_idx_X,
+            anti_valid_X,
+            prs_anti_X,
+            pf_X,
+            prs_X,
+            q1,
+            q2,
+            anti_idx_Z,
+            anti_valid_Z,
+            prs_anti_Z,
+            num_z_t,
+            num_x_t,
         )
         torch.cuda.synchronize()
         self.assertEqual(xw.shape, (B, Q, T))

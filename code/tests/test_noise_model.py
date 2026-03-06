@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Statistical tests for the 25-parameter NoiseModel (Stim-based).
 
@@ -40,6 +39,7 @@ from qec.surface_code.data_mapping import (
     reshape_Zstabilizers_to_grid_vectorized,
 )
 
+
 def _shots_fast() -> int:
     return int(os.environ.get("NOISEMODEL_FAST_SHOTS", "10000"))
 
@@ -68,8 +68,10 @@ def _compute_density_from_trainX_np(trainX_np: np.ndarray) -> dict:
     x_den_t = x_pres.sum(axis=(0, 2, 3)).astype(np.float64)
     z_den_t = z_pres.sum(axis=(0, 2, 3)).astype(np.float64)
 
-    x_num_t = (x_syn.astype(np.int32) * x_pres.astype(np.int32)).sum(axis=(0, 2, 3)).astype(np.float64)
-    z_num_t = (z_syn.astype(np.int32) * z_pres.astype(np.int32)).sum(axis=(0, 2, 3)).astype(np.float64)
+    x_num_t = (x_syn.astype(np.int32) * x_pres.astype(np.int32)).sum(axis=(0, 2, 3)
+                                                                    ).astype(np.float64)
+    z_num_t = (z_syn.astype(np.int32) * z_pres.astype(np.int32)).sum(axis=(0, 2, 3)
+                                                                    ).astype(np.float64)
 
     # Avoid divide-by-zero (shouldn't happen, but keep robust)
     x_den_t = np.maximum(x_den_t, 1.0)
@@ -94,7 +96,9 @@ def _noise_model_from_p(p: float) -> NoiseModel:
     return NoiseModel.from_config_dict(_single_p_mapping(p))
 
 
-def _stim_trainX_np(distance: int, n_rounds: int, basis: str, noise_model: NoiseModel | None) -> np.ndarray:
+def _stim_trainX_np(
+    distance: int, n_rounds: int, basis: str, noise_model: NoiseModel | None
+) -> np.ndarray:
     """Build Stim circuit -> sample measurements -> compute syndrome diffs -> map to trainX grid (inference masking)."""
     basis = basis.upper()
     code_rotation = "XV"
@@ -104,13 +108,30 @@ def _stim_trainX_np(distance: int, n_rounds: int, basis: str, noise_model: Noise
     if noise_model is None:
         p = 0.01
         spam_error = 2.0 * p / 3.0
-        circ = MemoryCircuit(distance=distance, idle_error=p, sqgate_error=p, tqgate_error=p, spam_error=spam_error,
-                             n_rounds=n_rounds, basis=basis, code_rotation=code_rotation)
+        circ = MemoryCircuit(
+            distance=distance,
+            idle_error=p,
+            sqgate_error=p,
+            tqgate_error=p,
+            spam_error=spam_error,
+            n_rounds=n_rounds,
+            basis=basis,
+            code_rotation=code_rotation
+        )
     else:
         # Use max-prob as a safe placeholder for scalar slots.
         p = float(noise_model.get_max_probability())
-        circ = MemoryCircuit(distance=distance, idle_error=p, sqgate_error=p, tqgate_error=p, spam_error=p,
-                             n_rounds=n_rounds, basis=basis, code_rotation=code_rotation, noise_model=noise_model)
+        circ = MemoryCircuit(
+            distance=distance,
+            idle_error=p,
+            sqgate_error=p,
+            tqgate_error=p,
+            spam_error=p,
+            n_rounds=n_rounds,
+            basis=basis,
+            code_rotation=code_rotation,
+            noise_model=noise_model
+        )
     circ.set_error_rates()
 
     meas = stim.Circuit(circ.circuit).compile_sampler().sample(shots=_shots_fast())
@@ -150,12 +171,28 @@ def _stim_trainX_np(distance: int, n_rounds: int, basis: str, noise_model: Noise
     z_syn_mapped = reshape_Zstabilizers_to_grid_vectorized(z_syn_t, D, rotation=code_rotation)
 
     # (B, D*D, T) -> (B, T, D, D)
-    x_syn_grid = x_syn_mapped.reshape(B, D, D, n_rounds).permute(0, 3, 1, 2).contiguous().cpu().numpy().astype(np.float32)
-    z_syn_grid = z_syn_mapped.reshape(B, D, D, n_rounds).permute(0, 3, 1, 2).contiguous().cpu().numpy().astype(np.float32)
+    x_syn_grid = x_syn_mapped.reshape(B, D, D,
+                                      n_rounds).permute(0, 3, 1,
+                                                        2).contiguous().cpu().numpy().astype(
+                                                            np.float32
+                                                        )
+    z_syn_grid = z_syn_mapped.reshape(B, D, D,
+                                      n_rounds).permute(0, 3, 1,
+                                                        2).contiguous().cpu().numpy().astype(
+                                                            np.float32
+                                                        )
 
     # Presence maps (weights) + masking consistent with datapipe_stim
-    w_mapX = normalized_weight_mapping_Xstab_memory(D, code_rotation).reshape(D, D).cpu().numpy().astype(np.float32)
-    w_mapZ = normalized_weight_mapping_Zstab_memory(D, code_rotation).reshape(D, D).cpu().numpy().astype(np.float32)
+    w_mapX = normalized_weight_mapping_Xstab_memory(D,
+                                                    code_rotation).reshape(D,
+                                                                           D).cpu().numpy().astype(
+                                                                               np.float32
+                                                                           )
+    w_mapZ = normalized_weight_mapping_Zstab_memory(D,
+                                                    code_rotation).reshape(D,
+                                                                           D).cpu().numpy().astype(
+                                                                               np.float32
+                                                                           )
     x_present = np.broadcast_to(w_mapX[None, None, :, :], (B, n_rounds, D, D)).copy()
     z_present = np.broadcast_to(w_mapZ[None, None, :, :], (B, n_rounds, D, D)).copy()
 
@@ -194,7 +231,9 @@ def _random_noise_model(seed: int, scale: float = 0.01) -> NoiseModel:
     p_idle_spam_Z = float(scale * rng.uniform(0.1, 1.0))
 
     # CNOT components around scale (each ~ scale/15 * [0.2, 3.0])
-    cnot_probs = {f"p_cnot_{k}": float((scale / 15.0) * rng.uniform(0.2, 3.0)) for k in CNOT_ERROR_TYPES}
+    cnot_probs = {
+        f"p_cnot_{k}": float((scale / 15.0) * rng.uniform(0.2, 3.0)) for k in CNOT_ERROR_TYPES
+    }
 
     return NoiseModel(
         p_prep_X=p_prep_X,
@@ -212,6 +251,7 @@ def _random_noise_model(seed: int, scale: float = 0.01) -> NoiseModel:
 
 
 class TestNoiseModel(unittest.TestCase):
+
     def test_noise_model_roundtrip_and_invariants(self):
         p = 0.01
         nm = _noise_model_from_p(p)
@@ -231,15 +271,29 @@ class TestNoiseModel(unittest.TestCase):
         D = 5
         T = 5
         nm = NoiseModel(
-            p_prep_X=0.01, p_prep_Z=0.02,
-            p_meas_X=0.01, p_meas_Z=0.02,
-            p_idle_cnot_X=0.003, p_idle_cnot_Y=0.002, p_idle_cnot_Z=0.004,
-            p_idle_spam_X=0.003, p_idle_spam_Y=0.002, p_idle_spam_Z=0.004,
+            p_prep_X=0.01,
+            p_prep_Z=0.02,
+            p_meas_X=0.01,
+            p_meas_Z=0.02,
+            p_idle_cnot_X=0.003,
+            p_idle_cnot_Y=0.002,
+            p_idle_cnot_Z=0.004,
+            p_idle_spam_X=0.003,
+            p_idle_spam_Y=0.002,
+            p_idle_spam_Z=0.004,
             **{f"p_cnot_{k}": (0.0005 if k != "ZZ" else 0.001) for k in CNOT_ERROR_TYPES}
         )
-        circ = MemoryCircuit(distance=D, idle_error=nm.get_max_probability(), sqgate_error=nm.get_max_probability(),
-                             tqgate_error=nm.get_max_probability(), spam_error=nm.get_max_probability(),
-                             n_rounds=T, basis="X", noise_model=nm, code_rotation="XV")
+        circ = MemoryCircuit(
+            distance=D,
+            idle_error=nm.get_max_probability(),
+            sqgate_error=nm.get_max_probability(),
+            tqgate_error=nm.get_max_probability(),
+            spam_error=nm.get_max_probability(),
+            n_rounds=T,
+            basis="X",
+            noise_model=nm,
+            code_rotation="XV"
+        )
         circ.set_error_rates()
 
         lines = circ.circuit.split("\n")
@@ -262,8 +316,11 @@ class TestNoiseModel(unittest.TestCase):
                     pauli2_after_repeat += 1
 
         self.assertGreater(pauli2_in_repeat, 0, "Expected PAULI_CHANNEL_2 inside stabilizer rounds")
-        self.assertEqual(pauli2_after_repeat, 0, "Expected NO CNOT noise instructions in logical-measurement section")
+        self.assertEqual(
+            pauli2_after_repeat, 0,
+            "Expected NO CNOT noise instructions in logical-measurement section"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

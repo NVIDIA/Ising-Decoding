@@ -20,6 +20,7 @@ from evaluation.metrics import _safe_ratio
 
 
 class TestMetricsSafeRatio(unittest.TestCase):
+
     def test_safe_ratio_zero_over_zero_is_one(self):
         self.assertEqual(_safe_ratio(0, 0), 1.0)
         self.assertEqual(_safe_ratio(0.0, 0.0), 1.0)
@@ -34,4 +35,3 @@ class TestMetricsSafeRatio(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

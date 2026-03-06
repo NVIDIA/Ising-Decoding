@@ -37,16 +37,26 @@ class TestW2Verify(unittest.TestCase):
         d, R = 5, 5
         H, p = _make_dem_artifacts(distance=d, n_rounds=R, rotation="XV", num_errors=64, seed=42)
         gen = MemoryCircuitTorch(
-            distance=d, n_rounds=R, basis="X", code_rotation="XV",
-            timelike_he=True, num_he_cycles=1, max_passes_w1=8,
+            distance=d,
+            n_rounds=R,
+            basis="X",
+            code_rotation="XV",
+            timelike_he=True,
+            num_he_cycles=1,
+            max_passes_w1=8,
             use_weight2_timelike=False,
-            device=torch.device("cpu"), H=H, p=p, A=None,
+            device=torch.device("cpu"),
+            H=H,
+            p=p,
+            A=None,
         )
         B = 128
         D2 = d * d
         num_z = gen.parity_Z.shape[0]
         pZ_f = gen.parity_Z.float()
-        cache_X = build_weight2_timelike_cache(gen.parity_X, gen.parity_Z, d, "X", torch.device("cpu"))
+        cache_X = build_weight2_timelike_cache(
+            gen.parity_X, gen.parity_Z, d, "X", torch.device("cpu")
+        )
         torch.manual_seed(42)
         for trial in range(3):
             x_err = (torch.rand(B, D2, 2) > 0.85).float()
@@ -63,10 +73,19 @@ class TestW2Verify(unittest.TestCase):
         d, R = 5, 5
         H, p = _make_dem_artifacts(distance=d, n_rounds=R, rotation="XV", num_errors=64, seed=42)
         gen_w2 = MemoryCircuitTorch(
-            distance=d, n_rounds=R, basis="X", code_rotation="XV",
-            timelike_he=True, num_he_cycles=1, max_passes_w1=8,
-            use_weight2_timelike=True, max_passes_w2=4,
-            device=torch.device("cpu"), H=H, p=p, A=None,
+            distance=d,
+            n_rounds=R,
+            basis="X",
+            code_rotation="XV",
+            timelike_he=True,
+            num_he_cycles=1,
+            max_passes_w1=8,
+            use_weight2_timelike=True,
+            max_passes_w2=4,
+            device=torch.device("cpu"),
+            H=H,
+            p=p,
+            A=None,
         )
         B = 128
         torch.manual_seed(100)

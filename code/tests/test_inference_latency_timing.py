@@ -18,6 +18,7 @@ from evaluation.logical_error_rate import _time_single_shot_latency_stim
 
 
 class _FakeMatcher:
+
     def __init__(self) -> None:
         self.calls = []
 
@@ -27,6 +28,7 @@ class _FakeMatcher:
 
 
 class TestInferenceLatencyTiming(unittest.TestCase):
+
     def test_time_single_shot_latency_scales_per_round(self) -> None:
         matcher = _FakeMatcher()
         baseline = np.zeros((5, 4), dtype=np.uint8)

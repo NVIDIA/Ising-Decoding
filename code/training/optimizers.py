@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Optimizer and learning rate scheduler implementations.
 """
@@ -188,7 +187,8 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
         def cosine_with_warmup(current_step):
             if current_step < warmup_steps:
                 return float(current_step) / float(max(1, warmup_steps))
-            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            progress = float(current_step -
+                             warmup_steps) / float(max(1, total_steps - warmup_steps))
             cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
             return cosine_decay * (1.0 - min_lr_ratio) + min_lr_ratio
 
@@ -196,5 +196,3 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
 
     else:
         raise ValueError(f"Unknown lr_scheduler.type: {cfg.lr_scheduler.type}")
-
-

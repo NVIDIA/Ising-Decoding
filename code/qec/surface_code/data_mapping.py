@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Surface code stabilizer-to-data qubit mappings and weight functions.
 
@@ -61,7 +60,9 @@ def _compute_stabX_to_data_XV(distance):
     return stab_to_data_index_map
 
 
-def _compute_stab_to_data_from_parity_X_boundary_aware(parity_matrix: torch.Tensor, distance: int) -> torch.Tensor:
+def _compute_stab_to_data_from_parity_X_boundary_aware(
+    parity_matrix: torch.Tensor, distance: int
+) -> torch.Tensor:
     """
     Compute X stabilizer-to-data mapping from parity matrix with BOUNDARY-AWARE selection.
     
@@ -79,11 +80,11 @@ def _compute_stab_to_data_from_parity_X_boundary_aware(parity_matrix: torch.Tens
     """
     num_stabs = parity_matrix.shape[0]
     stab_to_data = torch.empty(num_stabs, dtype=torch.int32)
-    
+
     for stab_idx in range(num_stabs):
         support = torch.nonzero(parity_matrix[stab_idx], as_tuple=True)[0].tolist()
         positions = [(idx // distance, idx % distance, idx) for idx in support]
-        
+
         if len(support) == 2:  # Boundary stabilizer
             rows = [p[0] for p in positions]
             if rows[0] == rows[1]:  # Horizontal pair (top or bottom boundary)
@@ -96,13 +97,15 @@ def _compute_stab_to_data_from_parity_X_boundary_aware(parity_matrix: torch.Tens
                 positions.sort(key=lambda x: x[0])  # Sort by row ascending (TOP)
         else:  # Bulk stabilizer → top-left
             positions.sort(key=lambda x: (x[0], x[1]))
-        
+
         stab_to_data[stab_idx] = positions[0][2]
-    
+
     return stab_to_data
 
 
-def _compute_stab_to_data_from_parity_Z_boundary_aware(parity_matrix: torch.Tensor, distance: int) -> torch.Tensor:
+def _compute_stab_to_data_from_parity_Z_boundary_aware(
+    parity_matrix: torch.Tensor, distance: int
+) -> torch.Tensor:
     """
     Compute Z stabilizer-to-data mapping from parity matrix with BOUNDARY-AWARE selection.
     
@@ -120,11 +123,11 @@ def _compute_stab_to_data_from_parity_Z_boundary_aware(parity_matrix: torch.Tens
     """
     num_stabs = parity_matrix.shape[0]
     stab_to_data = torch.empty(num_stabs, dtype=torch.int32)
-    
+
     for stab_idx in range(num_stabs):
         support = torch.nonzero(parity_matrix[stab_idx], as_tuple=True)[0].tolist()
         positions = [(idx // distance, idx % distance, idx) for idx in support]
-        
+
         if len(support) == 2:  # Boundary stabilizer
             cols = [p[1] for p in positions]
             if cols[0] == cols[1]:  # Vertical pair (left or right boundary)
@@ -137,13 +140,15 @@ def _compute_stab_to_data_from_parity_Z_boundary_aware(parity_matrix: torch.Tens
                 positions.sort(key=lambda x: -x[1])  # Sort by col descending (RIGHT)
         else:  # Bulk stabilizer → top-right
             positions.sort(key=lambda x: (x[0], -x[1]))
-        
+
         stab_to_data[stab_idx] = positions[0][2]
-    
+
     return stab_to_data
 
 
-def _compute_stab_to_data_from_parity_topleft(parity_matrix: torch.Tensor, distance: int) -> torch.Tensor:
+def _compute_stab_to_data_from_parity_topleft(
+    parity_matrix: torch.Tensor, distance: int
+) -> torch.Tensor:
     """
     DEPRECATED: Use _compute_stab_to_data_from_parity_X_boundary_aware instead.
     Kept for backward compatibility reference only.
@@ -151,7 +156,9 @@ def _compute_stab_to_data_from_parity_topleft(parity_matrix: torch.Tensor, dista
     return _compute_stab_to_data_from_parity_X_boundary_aware(parity_matrix, distance)
 
 
-def _compute_stab_to_data_from_parity_topright(parity_matrix: torch.Tensor, distance: int) -> torch.Tensor:
+def _compute_stab_to_data_from_parity_topright(
+    parity_matrix: torch.Tensor, distance: int
+) -> torch.Tensor:
     """
     DEPRECATED: Use _compute_stab_to_data_from_parity_Z_boundary_aware instead.
     Kept for backward compatibility reference only.
@@ -184,7 +191,7 @@ def compute_stabX_to_data_index_map(distance, rotation='XV'):
         # For other orientations, compute from parity matrix with boundary-aware selection
         from qec.surface_code.memory_circuit import SurfaceCode
         first_bulk = rotation[0]  # 'X' or 'Z'
-        rotated = rotation[1]     # 'V' or 'H'
+        rotated = rotation[1]  # 'V' or 'H'
         code = SurfaceCode(distance, first_bulk_syndrome_type=first_bulk, rotated_type=rotated)
         hx = torch.tensor(code.hx, dtype=torch.int32)
         return _compute_stab_to_data_from_parity_X_boundary_aware(hx, distance)
@@ -203,7 +210,7 @@ def _normalized_weight_mapping_Xstab_XV(distance):
     out = torch.zeros(distance * distance)
 
     for rr in range(rows):
-        for cc in range(cols):        
+        for cc in range(cols):
             if rr % 2 == 0:
                 if cc == cols - 1:
                     out[data_qubit_index] = 0.5
@@ -256,7 +263,9 @@ def _normalized_weight_mapping_Xstab_XH(distance):
     return out
 
 
-def _compute_normalized_weight_from_parity(parity_matrix: torch.Tensor, stab_to_data: torch.Tensor, distance: int) -> torch.Tensor:
+def _compute_normalized_weight_from_parity(
+    parity_matrix: torch.Tensor, stab_to_data: torch.Tensor, distance: int
+) -> torch.Tensor:
     """
     Compute normalized weights from parity matrix and stab-to-data mapping.
     
@@ -272,13 +281,13 @@ def _compute_normalized_weight_from_parity(parity_matrix: torch.Tensor, stab_to_
     """
     num_stabs = parity_matrix.shape[0]
     out = torch.zeros(distance * distance)
-    
+
     for stab_idx in range(num_stabs):
         support_size = parity_matrix[stab_idx].sum().item()
         data_idx = int(stab_to_data[stab_idx])
         # Boundary stabilizers have 2 qubits, bulk have 4
         out[data_idx] = 0.5 if support_size == 2 else 1.0
-    
+
     return out
 
 
@@ -301,13 +310,13 @@ def normalized_weight_mapping_Xstab_memory(distance, rotation='XV'):
         # For other orientations, compute from parity matrix using TOP-LEFT selection
         from qec.surface_code.memory_circuit import SurfaceCode
         first_bulk = rotation[0]  # 'X' or 'Z'
-        rotated = rotation[1]     # 'V' or 'H'
+        rotated = rotation[1]  # 'V' or 'H'
         code = SurfaceCode(distance, first_bulk_syndrome_type=first_bulk, rotated_type=rotated)
         hx = torch.tensor(code.hx, dtype=torch.int32)
         stab_to_data = _compute_stab_to_data_from_parity_topleft(hx, distance)
         return _compute_normalized_weight_from_parity(hx, stab_to_data, distance)
     else:
-        raise ValueError(f"Invalid rotation '{rotation}'. Must be one of: XV, XH, ZV, ZH") 
+        raise ValueError(f"Invalid rotation '{rotation}'. Must be one of: XV, XH, ZV, ZH")
 
 
 def compute_data_to_stabX_index_map(distance, rotation='XV'):
@@ -322,7 +331,7 @@ def compute_data_to_stabX_index_map(distance, rotation='XV'):
         rotation: Code rotation ('XV', 'XH', 'ZV', 'ZH'). Default 'XV' for backward compatibility.
     """
     stab_to_data_index_map = compute_stabX_to_data_index_map(distance, rotation)
-    
+
     data_to_stab_index_map = [-1] * (distance * distance)  # Default -1 for positions not used
     for stab_idx, data_idx in enumerate(stab_to_data_index_map):
         data_to_stab_index_map[data_idx] = stab_idx
@@ -426,7 +435,7 @@ def compute_stabZ_to_data_index_map(distance, rotation='XV'):
         # For other orientations, compute from parity matrix with boundary-aware selection
         from qec.surface_code.memory_circuit import SurfaceCode
         first_bulk = rotation[0]  # 'X' or 'Z'
-        rotated = rotation[1]     # 'V' or 'H'
+        rotated = rotation[1]  # 'V' or 'H'
         code = SurfaceCode(distance, first_bulk_syndrome_type=first_bulk, rotated_type=rotated)
         hz = torch.tensor(code.hz, dtype=torch.int32)
         return _compute_stab_to_data_from_parity_Z_boundary_aware(hz, distance)
@@ -517,7 +526,7 @@ def normalized_weight_mapping_Zstab_memory(distance, rotation='XV'):
         # For other orientations, compute from parity matrix using TOP-RIGHT selection
         from qec.surface_code.memory_circuit import SurfaceCode
         first_bulk = rotation[0]  # 'X' or 'Z'
-        rotated = rotation[1]     # 'V' or 'H'
+        rotated = rotation[1]  # 'V' or 'H'
         code = SurfaceCode(distance, first_bulk_syndrome_type=first_bulk, rotated_type=rotated)
         hz = torch.tensor(code.hz, dtype=torch.int32)
         stab_to_data = _compute_stab_to_data_from_parity_topright(hz, distance)
@@ -538,7 +547,7 @@ def compute_data_to_stabZ_index_map(distance, rotation='XV'):
         rotation: Code rotation ('XV', 'XH', 'ZV', 'ZH'). Default 'XV' for backward compatibility.
     """
     stab_to_data_index_map = compute_stabZ_to_data_index_map(distance, rotation)
-    
+
     data_to_stab_index_map = [-1] * (distance * distance)  # Default -1 for positions not used
     for stab_idx, data_idx in enumerate(stab_to_data_index_map):
         data_to_stab_index_map[data_idx] = stab_idx
@@ -546,13 +555,17 @@ def compute_data_to_stabZ_index_map(distance, rotation='XV'):
     return data_to_stab_index_map
 
 
-def map_grid_to_stabilizer_tensor(grid_tensor: torch.Tensor, stab_indices: torch.Tensor) -> torch.Tensor:
+def map_grid_to_stabilizer_tensor(
+    grid_tensor: torch.Tensor, stab_indices: torch.Tensor
+) -> torch.Tensor:
     """
     Maps grid-shaped data (B, T, D, D) → (B, num_stabs, T)
     """
     B, T, D, _ = grid_tensor.shape
     flat_grid = grid_tensor.reshape(B, T, D * D)  # Shape: (B, T, D²)
-    stab_tensor = torch.index_select(flat_grid, dim=2, index=stab_indices)  # Shape: (B, T, num_stabs)
+    stab_tensor = torch.index_select(
+        flat_grid, dim=2, index=stab_indices
+    )  # Shape: (B, T, num_stabs)
     return stab_tensor.permute(0, 2, 1).contiguous()  # Shape: (B, num_stabs, T)
 
 
@@ -575,8 +588,11 @@ def reshape_Xstabilizers_to_grid_vectorized(stab_tensor, distance, rotation='XV'
         squeeze_output = False
 
     B, num_stabs, T = stab_tensor.shape
-    idx_map = torch.as_tensor(compute_stabX_to_data_index_map(distance, rotation),
-                          dtype=torch.long, device=stab_tensor.device)
+    idx_map = torch.as_tensor(
+        compute_stabX_to_data_index_map(distance, rotation),
+        dtype=torch.long,
+        device=stab_tensor.device
+    )
 
     out = torch.zeros(B, distance * distance, T, device=stab_tensor.device, dtype=stab_tensor.dtype)
     out[:, idx_map, :] = stab_tensor
@@ -602,8 +618,11 @@ def reshape_Zstabilizers_to_grid_vectorized(stab_tensor, distance, rotation='XV'
         squeeze_output = False
 
     B, num_stabs, T = stab_tensor.shape
-    idx_map = torch.as_tensor(compute_stabZ_to_data_index_map(distance, rotation),
-                          dtype=torch.long, device=stab_tensor.device)
+    idx_map = torch.as_tensor(
+        compute_stabZ_to_data_index_map(distance, rotation),
+        dtype=torch.long,
+        device=stab_tensor.device
+    )
 
     out = torch.zeros(B, distance * distance, T, device=stab_tensor.device, dtype=stab_tensor.dtype)
     out[:, idx_map, :] = stab_tensor
@@ -615,14 +634,14 @@ def construct_X_stab_Parity_check_Mat(distance):
     Constructs the H_X stabilizer parity check matrix for the surface code.
     """
     m = (distance**2 - 1) // 2  # number of stabilizers
-    n = distance**2             # number of qubits
+    n = distance**2  # number of qubits
     colLen = (distance + 1) // 2
     H = torch.zeros((m, n))
 
     q1 = 0
     q2 = distance
     stabCount = 0
-    for rows in range(distance-1):
+    for rows in range(distance - 1):
         for cols in range(colLen):
             if rows % 2 == 0:
                 if cols == colLen - 1:
@@ -635,8 +654,8 @@ def construct_X_stab_Parity_check_Mat(distance):
                     # Weight-4 X stabilizer
                     H[stabCount, q1] = 1
                     H[stabCount, q2] = 1
-                    H[stabCount, q1+1] = 1
-                    H[stabCount, q2+1] = 1
+                    H[stabCount, q1 + 1] = 1
+                    H[stabCount, q2 + 1] = 1
                     q1 += 2
                     q2 += 2
             else:
@@ -650,8 +669,8 @@ def construct_X_stab_Parity_check_Mat(distance):
                     # Weight-4 X stabilizer
                     H[stabCount, q1] = 1
                     H[stabCount, q2] = 1
-                    H[stabCount, q1+1] = 1
-                    H[stabCount, q2+1] = 1
+                    H[stabCount, q1 + 1] = 1
+                    H[stabCount, q2 + 1] = 1
                     q1 += 2
                     q2 += 2
             stabCount += 1
@@ -663,7 +682,7 @@ def construct_Z_stab_Parity_check_Mat(distance):
     Constructs the H_Z stabilizer parity check matrix for the surface code.
     """
     m = (distance**2 - 1) // 2  # number of stabilizers
-    n = distance**2             # number of qubits
+    n = distance**2  # number of qubits
 
     colLen = distance - 1
     rowLen = (distance + 1) // 2
@@ -686,8 +705,8 @@ def construct_Z_stab_Parity_check_Mat(distance):
                     # Weight-4 Z stabilizer
                     H[stabCount, q1] = 1
                     H[stabCount, q2] = 1
-                    H[stabCount, q1+distance] = 1
-                    H[stabCount, q2+distance] = 1
+                    H[stabCount, q1 + distance] = 1
+                    H[stabCount, q2 + distance] = 1
 
                     q1 = q1Top + 1
                     q2 = q1 + 1
@@ -695,10 +714,10 @@ def construct_Z_stab_Parity_check_Mat(distance):
                     # Weight-4 Z stabilizer
                     H[stabCount, q1] = 1
                     H[stabCount, q2] = 1
-                    H[stabCount, q1+distance] = 1
-                    H[stabCount, q2+distance] = 1
-                    q1 += 2*distance
-                    q2 += 2*distance
+                    H[stabCount, q1 + distance] = 1
+                    H[stabCount, q2 + distance] = 1
+                    q1 += 2 * distance
+                    q2 += 2 * distance
             else:
                 if (rows == rowLen - 1):
                     H[stabCount, q1] = 1
@@ -710,12 +729,11 @@ def construct_Z_stab_Parity_check_Mat(distance):
                     # Weight-4 Z stabilizer
                     H[stabCount, q1] = 1
                     H[stabCount, q2] = 1
-                    H[stabCount, q1+distance] = 1
-                    H[stabCount, q2+distance] = 1
-                    q1 += 2*distance
-                    q2 += 2*distance
+                    H[stabCount, q1 + distance] = 1
+                    H[stabCount, q2 + distance] = 1
+                    q1 += 2 * distance
+                    q2 += 2 * distance
 
             stabCount += 1
 
     return H
-

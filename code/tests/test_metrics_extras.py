@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for evaluation.metrics (configure_metrics, _extract_reduction_factor)."""
 
 import sys
@@ -22,6 +21,7 @@ from evaluation.metrics import configure_metrics, _extract_reduction_factor
 
 
 class TestConfigureMetrics(unittest.TestCase):
+
     def test_configure_metrics_returns_two_callables(self):
         a, b = configure_metrics(rank=0)
         self.assertIsNotNone(a)
@@ -33,6 +33,7 @@ class TestConfigureMetrics(unittest.TestCase):
 
 
 class TestExtractReductionFactor(unittest.TestCase):
+
     def test_extract_from_dict_stim_x_z(self):
         result = {"stim": {"reduction factor (X)": 2.0, "reduction factor (Z)": 4.0}}
         self.assertEqual(_extract_reduction_factor(result), 3.0)

@@ -110,7 +110,8 @@ def _assert_ler_improvement_vs_baseline(self, result, tolerance: float = LER_IMP
         self.assertLessEqual(
             ler_after,
             ler_baseline + tolerance,
-            msg=f"{basis}: LER after ({ler_after:.6f}) > baseline ({ler_baseline:.6f}) + {tolerance}",
+            msg=
+            f"{basis}: LER after ({ler_after:.6f}) > baseline ({ler_baseline:.6f}) + {tolerance}",
         )
 
 
