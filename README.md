@@ -109,6 +109,28 @@ WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_ru
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
 `outputs/<EXPERIMENT_NAME>/run.log`.
 
+### Converting .pt checkpoints to SafeTensors (post-training)
+
+Pre-trained models are distributed as `.pt` checkpoints. When you need a `.safetensors` file (e.g. for inference or tooling that expects SafeTensors), use the export script:
+
+**Convert a .pt checkpoint to a .safetensors file (fp16 or fp32):**
+
+```bash
+PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
+    --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \
+    --model-id 1 [--fp16]
+```
+
+Output is written next to the checkpoint (e.g. `PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors`). Use the result for inference by setting `PREDECODER_SAFETENSORS_CHECKPOINT`:
+
+```bash
+PREDECODER_SAFETENSORS_CHECKPOINT=models/PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors \
+PREDECODER_INFERENCE_NUM_SAMPLES=65650 WORKFLOW=inference DISTANCE=9 N_ROUNDS=9 \
+EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
+```
+
+For model 4 (r13), use `--model-id 4` and a matching r13 `.pt` checkpoint (e.g. `PreDecoderModelMemory_r13_v1.0.86.pt`), then set `DISTANCE=13 N_ROUNDS=13`.
+
 ### GPU selection
 
 - **Defaults**: if you do not set `CUDA_VISIBLE_DEVICES` or `GPUS`, all GPUs are used.

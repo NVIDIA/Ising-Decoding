@@ -11,10 +11,18 @@
 """
 Convert a .pt checkpoint to a .safetensors file (fp16 or fp32).
 
+Post-processing after training: pre-trained models are in .pt format; use this script
+when you need to provide them in SafeTensors format (e.g. for inference or downstream tools).
+
 Usage:
     PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \\
-        --checkpoint models/PreDecoderModelMemory_v1.0.94.pt \\
+        --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \\
         --model-id 1 [--fp16]
+
+Then run inference with:
+    PREDECODER_SAFETENSORS_CHECKPOINT=models/PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors \\
+    WORKFLOW=inference DISTANCE=9 N_ROUNDS=9 EXPERIMENT_NAME=predecoder_model_1 \\
+    bash code/scripts/local_run.sh
 """
 
 from __future__ import annotations

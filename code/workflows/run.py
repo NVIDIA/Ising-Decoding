@@ -240,8 +240,19 @@ def _load_model(cfg, dist):
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
             checkpoint_dir = os.path.join(project_root, checkpoint_dir)
         
-        # Construct checkpoint filename: PreDecoderModelMemory_v1.0.{checkpoint}.pt
-        checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
+        # Resolve checkpoint file: prefer any PreDecoderModelMemory_* ending with .0.{checkpoint}.pt
+        # (e.g. PreDecoderModelMemory_r9_v1.0.77.pt or PreDecoderModelMemory_v1.0.77.pt)
+        target_suffix = f".0.{use_checkpoint}.pt"
+        checkpoint_filename = None
+        try:
+            for f in os.listdir(checkpoint_dir):
+                if f.startswith("PreDecoderModelMemory_") and f.endswith(target_suffix):
+                    checkpoint_filename = f
+                    break
+        except OSError:
+            pass
+        if checkpoint_filename is None:
+            checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
         model_path = os.path.join(checkpoint_dir, checkpoint_filename)
         
         if dist.rank == 0:
