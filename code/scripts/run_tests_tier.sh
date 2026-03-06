@@ -46,7 +46,7 @@ case "${TIER}" in
   *)
     echo "Usage: $0 short|mid|long" >&2
     echo "  short  - Unit/integration tests (pre-merge, required)" >&2
-    echo "  mid    - Extended smoke train+inference (~5-10 min, GPU)" >&2
+    echo "  mid    - Extended train+inference with LER check (~5-10 min, GPU)" >&2
     echo "  long   - Full orientation matrix (30 min+, on-demand)" >&2
     exit 1
     ;;

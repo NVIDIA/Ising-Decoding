@@ -71,7 +71,7 @@ bash code/scripts/smoke_run.sh
 | Job | Runtime | What it validates |
 |-----|---------|-------------------|
 | `statistical-noise-model` | ~15 min | 100k+ shot noise model tests (`RUN_SLOW=1`) |
-| `orientation-inference` | ~30-60 min | Multi-orientation inference (O1–O4); completion only, no LER threshold |
+| `orientation-inference` | ~30-60 min | Multi-orientation inference (O1–O4); asserts 4 LER output blocks, no numeric threshold |
 | `ler-regression` | ~30-60 min | LER quality at d=9 and d=13 with pre-trained models |
 | `full-epoch-training` | ~30-60 min | 1 epoch with 2M samples; asserts validation LER ≤ threshold |
 

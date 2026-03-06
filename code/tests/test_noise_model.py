@@ -16,8 +16,8 @@ Key conventions enforced by this test module:
 - Apply inference-style masking for comparisons:
   - Mask the non-basis syndrome type at round 0 and also at the last round.
 - Provide two tiers:
-  - Fast smoke tests (~10k shots)
-  - Slow statistically-significant tests (>=100k shots) gated by RUN_SLOW=1
+  - Fast tier (~10k shots)
+  - Slow tier (>=100k shots) gated by RUN_SLOW=1
 """
 
 import os

@@ -124,8 +124,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Multi-orientation inference (~30-60 min)
-  # Runs inference over all 4 surface code orientations (O1-O4). Validates
-  # that the pipeline completes; no per-orientation LER threshold in this job.
+  # Runs inference over all 4 surface code orientations (O1-O4). Asserts
+  # completion and that LER output was produced for all 4 (no numeric threshold).
   # ---------------------------------------------------------------------------
   orientation-inference:
     needs: check-for-changes
@@ -174,10 +174,17 @@ jobs:
           . .venv/bin/activate
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
-      - name: Multi-orientation inference (O1–O4)
+      - name: Multi-orientation inference (O1–O4) with LER output check
         run: |
           . .venv/bin/activate
-          ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh
+          ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh 2>&1 | tee /tmp/orient_inference.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # Require LER output from all 4 orientations (each inference run prints "LER - Avg")
+          count=$(grep -c "LER - Avg" /tmp/orient_inference.log || true)
+          if [ "$count" -lt 4 ]; then
+            echo "Expected at least 4 LER output blocks (one per orientation), got $count"
+            exit 1
+          fi
         env:
           EXPERIMENT_NAME: ci_orient
           PREDECODER_INFERENCE_NUM_SAMPLES: "1024"

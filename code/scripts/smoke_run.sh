@@ -14,7 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-smoke}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-short}"
 CONFIG_NAME="${CONFIG_NAME:-config_public}"
 
 # Short training overrides (timing mode in train.py)
