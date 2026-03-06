@@ -45,7 +45,10 @@ def main():
 
     matches = LER_PATTERN.findall(content)
     if not matches:
-        print("[check_ler_from_log] No '[LER Validation] Logical error rate: X.XXXXX' line found.", file=sys.stderr)
+        print(
+            "[check_ler_from_log] No '[LER Validation] Logical error rate: X.XXXXX' line found.",
+            file=sys.stderr
+        )
         sys.exit(1)
 
     ler = float(matches[-1])

@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 GPU-specific unit tests.
 
@@ -46,7 +45,9 @@ class TestDemSamplingGPU(unittest.TestCase):
         from qec.dem_sampling import dem_sampling
 
         num_detectors, num_errors, batch = 10, 20, 8
-        H = torch.randint(0, 2, (2 * num_detectors, num_errors), dtype=torch.uint8, device=self.device)
+        H = torch.randint(
+            0, 2, (2 * num_detectors, num_errors), dtype=torch.uint8, device=self.device
+        )
         p = (torch.rand(num_errors, device=self.device) * 0.01)
         frames = dem_sampling(H, p, batch)
         self.assertEqual(frames.device.type, "cuda")
@@ -57,7 +58,9 @@ class TestDemSamplingGPU(unittest.TestCase):
         from qec.dem_sampling import measure_from_stacked_frames
 
         batch, n_rounds, nq, num_meas = 4, 3, 5, 4
-        frames_xz = torch.randint(0, 2, (batch, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device)
+        frames_xz = torch.randint(
+            0, 2, (batch, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device
+        )
         meas_qubits = torch.tensor([0, 1, 2, 3], dtype=torch.long, device=self.device)
         meas_bases = torch.tensor([0, 0, 1, 1], dtype=torch.long, device=self.device)
         meas = measure_from_stacked_frames(frames_xz, meas_qubits, meas_bases, nq)
@@ -68,9 +71,15 @@ class TestDemSamplingGPU(unittest.TestCase):
         from qec.dem_sampling import timelike_syndromes
 
         batch, n_rounds, num_meas, nq = 4, 3, 4, 5
-        A = torch.randint(0, 2, (n_rounds * num_meas, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device)
-        meas_old = torch.randint(0, 2, (batch, n_rounds, num_meas), dtype=torch.uint8, device=self.device)
-        frames_xz = torch.randint(0, 2, (batch, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device)
+        A = torch.randint(
+            0, 2, (n_rounds * num_meas, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device
+        )
+        meas_old = torch.randint(
+            0, 2, (batch, n_rounds, num_meas), dtype=torch.uint8, device=self.device
+        )
+        frames_xz = torch.randint(
+            0, 2, (batch, 2 * n_rounds * nq), dtype=torch.uint8, device=self.device
+        )
         meas_new = timelike_syndromes(frames_xz, A, meas_old)
         self.assertEqual(meas_new.device.type, "cuda")
         self.assertEqual(meas_new.shape, meas_old.shape)
@@ -93,14 +102,25 @@ class TestMemoryCircuitTorchGPU(unittest.TestCase):
         from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
 
         artifacts = precompute_dem_bundle_surface_code(
-            distance=self.distance, n_rounds=self.n_rounds, basis=basis,
-            code_rotation="XV", p_scalar=0.004, dem_output_dir=None,
-            device=self.device, export=False, return_artifacts=True,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=basis,
+            code_rotation="XV",
+            p_scalar=0.004,
+            dem_output_dir=None,
+            device=self.device,
+            export=False,
+            return_artifacts=True,
         )
         return MemoryCircuitTorch(
-            distance=self.distance, n_rounds=self.n_rounds, basis=basis,
-            code_rotation="XV", H=artifacts["H"], p=artifacts["p"],
-            A=artifacts.get("A"), device=self.device,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=basis,
+            code_rotation="XV",
+            H=artifacts["H"],
+            p=artifacts["p"],
+            A=artifacts.get("A"),
+            device=self.device,
         )
 
     def test_generate_batch_X_on_cuda(self):
@@ -130,14 +150,25 @@ class TestMemoryCircuitTorchGPU(unittest.TestCase):
         from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
 
         artifacts = precompute_dem_bundle_surface_code(
-            distance=self.distance, n_rounds=self.n_rounds, basis="X",
-            code_rotation="XV", p_scalar=0.004, dem_output_dir=None,
-            device=self.device, export=False, return_artifacts=True,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis="X",
+            code_rotation="XV",
+            p_scalar=0.004,
+            dem_output_dir=None,
+            device=self.device,
+            export=False,
+            return_artifacts=True,
         )
         gen = MemoryCircuitTorch(
-            distance=self.distance, n_rounds=self.n_rounds, basis="X",
-            code_rotation="XV", timelike_he=False,
-            H=artifacts["H"], p=artifacts["p"], A=artifacts.get("A"),
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis="X",
+            code_rotation="XV",
+            timelike_he=False,
+            H=artifacts["H"],
+            p=artifacts["p"],
+            A=artifacts.get("A"),
             device=self.device,
         )
         trainX, trainY = gen.generate_batch(batch_size=4)
@@ -160,8 +191,12 @@ class TestQCDataGeneratorTorchGPU(unittest.TestCase):
         from data.generator_torch import QCDataGeneratorTorch
 
         gen = QCDataGeneratorTorch(
-            distance=3, n_rounds=3, p_error=0.004, measure_basis="both",
-            device=self.device, base_seed=42,
+            distance=3,
+            n_rounds=3,
+            p_error=0.004,
+            measure_basis="both",
+            device=self.device,
+            base_seed=42,
         )
         trainX, trainY = gen.generate_batch(step=0, batch_size=4)
         self.assertEqual(trainX.device.type, "cuda")
@@ -172,8 +207,12 @@ class TestQCDataGeneratorTorchGPU(unittest.TestCase):
         from data.generator_torch import QCDataGeneratorTorch
 
         gen = QCDataGeneratorTorch(
-            distance=3, n_rounds=3, p_error=0.004, measure_basis="X",
-            device=self.device, base_seed=42,
+            distance=3,
+            n_rounds=3,
+            p_error=0.004,
+            measure_basis="X",
+            device=self.device,
+            base_seed=42,
         )
         trainX, trainY = gen.generate_batch(step=0, batch_size=4)
         self.assertEqual(trainX.device.type, "cuda")
@@ -183,7 +222,10 @@ class TestQCDataGeneratorTorchGPU(unittest.TestCase):
         from data.generator_torch import QCDataGeneratorTorch
 
         gen = QCDataGeneratorTorch(
-            distance=3, n_rounds=3, p_error=0.004, measure_basis="X",
+            distance=3,
+            n_rounds=3,
+            p_error=0.004,
+            measure_basis="X",
             base_seed=42,
         )
         self.assertEqual(gen.device.type, "cuda")
@@ -273,7 +315,7 @@ class TestHEKernelGPU(unittest.TestCase):
         cache_X = build_spacelike_he_cache(parity_X, distance=self.distance, device=self.device)
         cache_Z = build_spacelike_he_cache(parity_Z, distance=self.distance, device=self.device)
 
-        B, D2, R = 4, self.distance ** 2, self.n_rounds
+        B, D2, R = 4, self.distance**2, self.n_rounds
         num_x = parity_X.shape[0]
         z_cum = torch.randint(0, 2, (B, R, D2), dtype=torch.float32, device=self.device)
         x_cum = torch.randint(0, 2, (B, R, D2), dtype=torch.float32, device=self.device)
@@ -283,11 +325,21 @@ class TestHEKernelGPU(unittest.TestCase):
         trainX_z = torch.randint(0, 2, (B, R, num_x), dtype=torch.float32, device=self.device)
 
         z_diff, x_diff, s1s2x_out, s1s2z_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            parity_Z, parity_X,
-            self.distance, 1, 8, "X", True,
-            trainX_x=trainX_x, trainX_z=trainX_z,
-            cache_Z_spacelike=cache_Z, cache_X_spacelike=cache_X,
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            parity_Z,
+            parity_X,
+            self.distance,
+            1,
+            8,
+            "X",
+            True,
+            trainX_x=trainX_x,
+            trainX_z=trainX_z,
+            cache_Z_spacelike=cache_Z,
+            cache_X_spacelike=cache_X,
         )
         for t in (z_diff, x_diff, s1s2x_out, s1s2z_out):
             self.assertEqual(t.device.type, "cuda")
@@ -306,7 +358,7 @@ class TestHEKernelGPU(unittest.TestCase):
         cache_X = build_spacelike_he_cache(parity_X, distance=self.distance, device=self.device)
         cache_Z = build_spacelike_he_cache(parity_Z, distance=self.distance, device=self.device)
 
-        B, D2, R = 8, self.distance ** 2, self.n_rounds
+        B, D2, R = 8, self.distance**2, self.n_rounds
         num_x = parity_X.shape[0]
         torch.manual_seed(42)
         z_cum = (torch.rand(B, R, D2, device=self.device) > 0.9).float()
@@ -317,11 +369,21 @@ class TestHEKernelGPU(unittest.TestCase):
         trainX_z = (torch.rand(B, R, num_x, device=self.device) > 0.8).float()
 
         z_diff, x_diff, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum.clone(), x_cum.clone(), s1s2x.clone(), s1s2z.clone(),
-            parity_Z, parity_X,
-            self.distance, 1, 32, "X", True,
-            trainX_x=trainX_x, trainX_z=trainX_z,
-            cache_Z_spacelike=cache_Z, cache_X_spacelike=cache_X,
+            z_cum.clone(),
+            x_cum.clone(),
+            s1s2x.clone(),
+            s1s2z.clone(),
+            parity_Z,
+            parity_X,
+            self.distance,
+            1,
+            32,
+            "X",
+            True,
+            trainX_x=trainX_x,
+            trainX_z=trainX_z,
+            cache_Z_spacelike=cache_Z,
+            cache_X_spacelike=cache_X,
         )
         w_before = z_cum.sum() + x_cum.sum()
         w_after = z_diff.sum() + x_diff.sum()
@@ -344,14 +406,25 @@ class TestOraclePreDecoderGPU(unittest.TestCase):
 
         for basis in ("X", "Z"):
             artifacts = precompute_dem_bundle_surface_code(
-                distance=distance, n_rounds=n_rounds, basis=basis,
-                code_rotation="XV", p_scalar=0.01, dem_output_dir=None,
-                device=device, export=False, return_artifacts=True,
+                distance=distance,
+                n_rounds=n_rounds,
+                basis=basis,
+                code_rotation="XV",
+                p_scalar=0.01,
+                dem_output_dir=None,
+                device=device,
+                export=False,
+                return_artifacts=True,
             )
             gen = MemoryCircuitTorch(
-                distance=distance, n_rounds=n_rounds, basis=basis,
-                code_rotation="XV", H=artifacts["H"], p=artifacts["p"],
-                A=artifacts.get("A"), device=device,
+                distance=distance,
+                n_rounds=n_rounds,
+                basis=basis,
+                code_rotation="XV",
+                H=artifacts["H"],
+                p=artifacts["p"],
+                A=artifacts.get("A"),
+                device=device,
             )
             trainX, trainY = gen.generate_batch(batch_size=16)
 
@@ -376,15 +449,19 @@ class TestGPUMemoryAndConsistency(unittest.TestCase):
 
         device = torch.device("cuda")
         gen = QCDataGeneratorTorch(
-            distance=3, n_rounds=3, p_error=0.004, measure_basis="both",
-            device=device, base_seed=42,
+            distance=3,
+            n_rounds=3,
+            p_error=0.004,
+            measure_basis="both",
+            device=device,
+            base_seed=42,
         )
         torch.cuda.reset_peak_memory_stats()
         for step in range(20):
             trainX, trainY = gen.generate_batch(step=step, batch_size=32)
             del trainX, trainY
 
-        peak_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+        peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
         # d=3 batches of 32 should stay well under 512 MiB
         self.assertLess(peak_mb, 512, f"Peak GPU memory {peak_mb:.1f} MiB seems too high")
 
