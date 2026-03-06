@@ -124,7 +124,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Multi-orientation inference (~30-60 min)
-  # Inference over all 4 surface code orientations (O1-O4) with moderate shots.
+  # Runs inference over all 4 surface code orientations (O1-O4). Validates
+  # that the pipeline completes; no per-orientation LER threshold in this job.
   # ---------------------------------------------------------------------------
   orientation-inference:
     needs: check-for-changes
@@ -173,7 +174,7 @@ jobs:
           . .venv/bin/activate
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
-      - name: Inference over all orientations (O1-O4)
+      - name: Multi-orientation inference (O1–O4)
         run: |
           . .venv/bin/activate
           ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh
@@ -290,10 +291,12 @@ jobs:
           . .venv/bin/activate
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
-      - name: Full 1-epoch training + inference
+      - name: Full 1-epoch training + inference with LER validation
         run: |
           . .venv/bin/activate
-          bash code/scripts/smoke_run.sh
+          bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_full_epoch.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          python code/scripts/check_ler_from_log.py /tmp/ci_full_epoch.log --max-ler 0.1
         env:
           EXPERIMENT_NAME: ci_full_epoch
           PREDECODER_TRAIN_SAMPLES: "2097152"

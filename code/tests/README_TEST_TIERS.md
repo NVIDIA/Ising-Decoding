@@ -22,22 +22,22 @@ bash code/scripts/run_tests_tier.sh short
 
 CI uses the same discovery pattern; no per-file registration.
 
-**CI jobs:** `unit-tests`, `unit-tests-coverage`, `gpu-tests` (in `.github/workflows/ci.yml`).
+**CI jobs:** `unit-tests`, `unit-tests-coverage` (in `ci.yml`); `gpu-tests` (in `ci-gpu.yml`). GPU job runs short training + inference and asserts validation LER is below threshold.
 
 ---
 
 ## Tier 2: Mid (~5-10 minutes, pre-merge GPU)
 
 - **Runtime:** On the order of 5-10 minutes (depends on GPU hardware).
-- **When:** Run in CI on every push/PR, after the smoke test passes. Requires GPU.
-- **Purpose:** Sanity-check that training converges and inference works with larger sample
-  counts than the minimal smoke test. Catches regressions that need more than a few
-  hundred samples to surface (e.g. training instability, LER order of magnitude).
+- **When:** Run in CI on main only (after `gpu-tests` pass). Requires GPU.
+- **Purpose:** Extended training + inference with LER check (32k samples, 2 epochs).
+  Asserts validation LER is below threshold; catches regressions that need more
+  samples to surface (e.g. training instability).
 
 **Typical contents:**
 
-- Extended smoke: 2 epochs, 32k training samples, 4k val/test samples.
-- Training + inference end-to-end with the public config.
+- Mid-tier run: 2 epochs, 32k training samples, 4k val/test samples.
+- Training + inference end-to-end with LER validation.
 
 **How to run:**
 
@@ -54,7 +54,7 @@ PREDECODER_TRAIN_EPOCHS=2 \
 bash code/scripts/smoke_run.sh
 ```
 
-**CI job:** `mid-gpu-tests` (in `.github/workflows/ci.yml`).
+**CI job:** `mid-gpu-tests` (in `ci-gpu.yml`).
 
 ---
 
@@ -71,9 +71,9 @@ bash code/scripts/smoke_run.sh
 | Job | Runtime | What it validates |
 |-----|---------|-------------------|
 | `statistical-noise-model` | ~15 min | 100k+ shot noise model tests (`RUN_SLOW=1`) |
-| `orientation-inference` | ~30-60 min | Inference over all 4 orientations (O1-O4) |
+| `orientation-inference` | ~30-60 min | Multi-orientation inference (O1–O4); completion only, no LER threshold |
 | `ler-regression` | ~30-60 min | LER quality at d=9 and d=13 with pre-trained models |
-| `full-epoch-training` | ~30-60 min | 1 epoch with 2M samples + LER validation |
+| `full-epoch-training` | ~30-60 min | 1 epoch with 2M samples; asserts validation LER ≤ threshold |
 
 **How to run locally:**
 
@@ -98,6 +98,6 @@ specify a comma-separated list of job names to run a subset (e.g.
 
 | Tier | Runtime | When | CI file | Purpose |
 |------|---------|------|---------|---------|
-| Short | < few min | Pre-merge | `ci.yml` | Correctness; required for merge |
-| Mid | ~5-10 min | Pre-merge (GPU) | `ci.yml` | Extended smoke; training convergence |
+| Short | < few min | Pre-merge | `ci.yml`, `ci-gpu.yml` | Correctness + LER check; required for merge |
+| Mid | ~5-10 min | Post-merge (GPU) | `ci-gpu.yml` | Extended training + LER check |
 | Long | 30 min - hours | Daily / on-demand | `long-running-tests.yml` | Full matrix; regression / benchmark |

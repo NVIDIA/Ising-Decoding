@@ -35,7 +35,7 @@ export PREDECODER_INFERENCE_NUM_WORKERS="${PREDECODER_INFERENCE_NUM_WORKERS:-0}"
 TRAIN_EXTRA_PARAMS="${TRAIN_EXTRA_PARAMS:-}"
 INFER_EXTRA_PARAMS="${INFER_EXTRA_PARAMS:-}"
 
-echo "=== Smoke: short training ==="
+echo "=== Short training ==="
 EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
 CONFIG_NAME="${CONFIG_NAME}" \
 WORKFLOW=train \
@@ -43,7 +43,7 @@ GPUS=1 \
 EXTRA_PARAMS="${TRAIN_EXTRA_PARAMS}" \
 bash "${REPO_ROOT}/code/scripts/local_run.sh"
 
-echo "=== Smoke: short inference ==="
+echo "=== Short inference ==="
 EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
 CONFIG_NAME="${CONFIG_NAME}" \
 WORKFLOW=inference \
