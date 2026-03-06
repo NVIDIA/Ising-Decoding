@@ -100,7 +100,7 @@ def find_best_model(path, *, rank: int = 0):
     model_files = []
     
     for filename in os.listdir(path):
-        if not filename.startswith("PreDecoderModelMemory_"):
+        if not filename.startswith("PreDecoderModelMemory_v1"):
             continue
         try:
             value = float(filename.split(".")[2])  # Gets epoch number
@@ -119,7 +119,7 @@ def find_best_model(path, *, rank: int = 0):
             print(f"  {marker} {filename} (epoch {epoch})")
     
     if best_file is None:
-        raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory files found in {path}")
+        raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory_v1 files found in {path}")
     
     best_model_path = path + "/" + best_file
     if rank == 0:
@@ -134,6 +134,28 @@ def _load_model(cfg, dist):
         print(f"🚀 Loading model for task: {cfg.workflow.task}")
     
     _ensure_inference_io_channels(cfg)
+
+    # SafeTensors path: load fp16/fp32 model from SafeTensors file
+    safetensors_path = os.environ.get("PREDECODER_SAFETENSORS_CHECKPOINT", "").strip()
+    if safetensors_path:
+        from export.safetensors_utils import load_safetensors
+        if dist.rank == 0:
+            print(f"Loading model from SafeTensors: {safetensors_path}")
+        model, metadata = load_safetensors(
+            safetensors_path,
+            model_id=getattr(cfg, "model_id", None),
+            device=str(dist.device),
+        )
+        model = torch.compile(model, disable=True)
+        if dist.rank == 0:
+            dtype = metadata.get("quant_format", "fp32")
+            param_count = sum(p.numel() for p in model.parameters())
+            print(f"  dtype: {dtype}")
+            print(f"  Model parameters: {param_count:,}")
+        if metadata.get("quant_format") == "fp16":
+            cfg.enable_fp16 = True
+        return model
+
     model = ModelFactory.create_model(cfg).to(dist.device)
     
     if dist.rank == 0:
@@ -205,17 +227,8 @@ def _load_model(cfg, dist):
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
             checkpoint_dir = os.path.join(project_root, checkpoint_dir)
         
-        target_suffix = f".0.{use_checkpoint}.pt"
-        checkpoint_filename = None
-        try:
-            for f in os.listdir(checkpoint_dir):
-                if f.startswith("PreDecoderModelMemory_") and f.endswith(target_suffix):
-                    checkpoint_filename = f
-                    break
-        except OSError:
-            pass
-        if checkpoint_filename is None:
-            checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
+        # Construct checkpoint filename: PreDecoderModelMemory_v1.0.{checkpoint}.pt
+        checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
         model_path = os.path.join(checkpoint_dir, checkpoint_filename)
         
         if dist.rank == 0:
