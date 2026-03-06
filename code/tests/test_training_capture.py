@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for training.capture (_StaticCapture)."""
 
 import sys
@@ -22,6 +21,7 @@ from training.capture import _StaticCapture
 
 
 class TestStaticCapture(unittest.TestCase):
+
     def test_state_dict_empty(self):
         _StaticCapture.load_state_dict({"amp_scalers": {}, "amp_scaler_checkpoints": {}})
         d = _StaticCapture.state_dict()

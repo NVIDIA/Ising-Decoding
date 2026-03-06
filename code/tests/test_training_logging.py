@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for training.logging (PythonLogger)."""
 
 import sys
@@ -22,6 +21,7 @@ from training.logging import PythonLogger
 
 
 class TestPythonLogger(unittest.TestCase):
+
     def test_init_and_info(self):
         log = PythonLogger("test_training_logging")
         log.info("info message")

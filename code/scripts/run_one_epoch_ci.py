@@ -45,7 +45,9 @@ def main():
     }
 
     cmd = [
-        sys.executable, "-u", str(CODE_DIR / "workflows" / "run.py"),
+        sys.executable,
+        "-u",
+        str(CODE_DIR / "workflows" / "run.py"),
         "--config-name=config_pre_decoder_memory_surface_model_1_d9",
         "workflow.task=train",
         f"exp_tag=ci_one_epoch",
@@ -62,7 +64,9 @@ def main():
     stream_logs = os.environ.get("PREDECODER_STREAM_LOGS", "0") == "1"
     print(f"[run_one_epoch_ci] Running 1 epoch (QUICK=10, ~5-10 min)...")
     if stream_logs:
-        print("[run_one_epoch_ci] Logs streaming (PREDECODER_STREAM_LOGS=1). LER check after completion.")
+        print(
+            "[run_one_epoch_ci] Logs streaming (PREDECODER_STREAM_LOGS=1). LER check after completion."
+        )
         lines = []
         proc = subprocess.Popen(
             cmd,

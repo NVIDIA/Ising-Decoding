@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Stim-based datapipe for inference.
 
@@ -46,9 +45,9 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         code_rotation='XV',  # <--- NEW: surface code orientation
         noise_model=None,  # Optional explicit NoiseModel (overrides p_error when provided)
     ):
-        self.distance      = int(distance)
-        self.n_rounds      = max(int(n_rounds), 1)
-        self.num_samples   = int(num_samples)
+        self.distance = int(distance)
+        self.n_rounds = max(int(n_rounds), 1)
+        self.num_samples = int(num_samples)
         self.measure_basis = str(measure_basis).upper()
         self.code_rotation = code_rotation.upper() if code_rotation else 'XV'
 
@@ -57,8 +56,12 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
 
         D = self.distance
         # (1,1,D,D) as torch
-        self.w_mapXgrid = normalized_weight_mapping_Xstab_memory(D, self.code_rotation).reshape(D, D).unsqueeze(0).unsqueeze(0)
-        self.w_mapZgrid = normalized_weight_mapping_Zstab_memory(D, self.code_rotation).reshape(D, D).unsqueeze(0).unsqueeze(0)
+        self.w_mapXgrid = normalized_weight_mapping_Xstab_memory(D, self.code_rotation).reshape(
+            D, D
+        ).unsqueeze(0).unsqueeze(0)
+        self.w_mapZgrid = normalized_weight_mapping_Zstab_memory(D, self.code_rotation).reshape(
+            D, D
+        ).unsqueeze(0).unsqueeze(0)
 
         self.stabX_to_data_idx = compute_stabX_to_data_index_map(self.distance, self.code_rotation)
         self.stabZ_to_data_idx = compute_stabZ_to_data_index_map(self.distance, self.code_rotation)
@@ -114,16 +117,19 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             meas_X = self.circ_X.stim_circuit.compile_sampler().sample(shots=self.nX)
             # drop final D*D data-qubit measurements and reshape to (shots, n_rounds, D^2-1)
             self.meas_X = (
-                torch.from_numpy(meas_X[..., :-(D*D)]).to(torch.uint8)
-                .view(self.nX, self.n_rounds, D*D - 1).contiguous()
+                torch.from_numpy(meas_X[..., :-(D * D)]
+                                ).to(torch.uint8).view(self.nX, self.n_rounds,
+                                                       D * D - 1).contiguous()
             )
-            
+
             converter_X = self.circ_X.stim_circuit.compile_m2d_converter()
             # We pass the FULL measurements, including the data-qubit measurements
             # The m2d converter needs the full measurement record (including the final data-qubit measurements) to compute:
             # 1. All detectors
             # 2. The observable (which depends on the final data qubit measurements)
-            self.dets_and_obs_X = torch.from_numpy(converter_X.convert(measurements=meas_X, append_observables=True)).to(torch.uint8)
+            self.dets_and_obs_X = torch.from_numpy(
+                converter_X.convert(measurements=meas_X, append_observables=True)
+            ).to(torch.uint8)
 
             # Z circuit
             self.circ_Z = MemoryCircuit(
@@ -141,11 +147,14 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             self.circ_Z.set_error_rates()
             meas_Z = self.circ_Z.stim_circuit.compile_sampler().sample(shots=self.nZ)
             self.meas_Z = (
-                torch.from_numpy(meas_Z[..., :-(D*D)]).to(torch.uint8)
-                .view(self.nZ, self.n_rounds, D*D - 1).contiguous()
+                torch.from_numpy(meas_Z[..., :-(D * D)]
+                                ).to(torch.uint8).view(self.nZ, self.n_rounds,
+                                                       D * D - 1).contiguous()
             )
             converter_Z = self.circ_Z.stim_circuit.compile_m2d_converter()
-            self.dets_and_obs_Z = torch.from_numpy(converter_Z.convert(measurements=meas_Z, append_observables=True)).to(torch.uint8)
+            self.dets_and_obs_Z = torch.from_numpy(
+                converter_Z.convert(measurements=meas_Z, append_observables=True)
+            ).to(torch.uint8)
 
             # Pre-compute all transformations for X and Z batches
             self._precompute_transformations_X()
@@ -166,11 +175,14 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             self.circ.set_error_rates()
             meas = self.circ.stim_circuit.compile_sampler().sample(shots=self.num_samples)
             self.meas = (
-                torch.from_numpy(meas[..., :-(D*D)]).to(torch.uint8)
-                .view(self.num_samples, self.n_rounds, D*D - 1).contiguous()
+                torch.from_numpy(meas[..., :-(D * D)]
+                                ).to(torch.uint8).view(self.num_samples, self.n_rounds,
+                                                       D * D - 1).contiguous()
             )
             converter = self.circ.stim_circuit.compile_m2d_converter()
-            self.dets_and_obs = torch.from_numpy(converter.convert(measurements=meas, append_observables=True)).to(torch.uint8)
+            self.dets_and_obs = torch.from_numpy(
+                converter.convert(measurements=meas, append_observables=True)
+            ).to(torch.uint8)
 
             # Pre-compute all transformations
             self._precompute_transformations()
@@ -190,7 +202,8 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         zero_batch = torch.zeros((N, half, 1), dtype=torch.uint8)
         x_aug = torch.cat([zero_batch, x_raw], dim=2)  # (N, half, T+1)
         z_aug = torch.cat([zero_batch, z_raw], dim=2)
-        x_syn_diff = (x_aug[:, :, 1:] ^ x_aug[:, :, :-1]).to(torch.int32).contiguous()  # (N, half, T)
+        x_syn_diff = (x_aug[:, :, 1:] ^ x_aug[:, :, :-1]).to(torch.int32
+                                                            ).contiguous()  # (N, half, T)
         z_syn_diff = (z_aug[:, :, 1:] ^ z_aug[:, :, :-1]).to(torch.int32).contiguous()
 
         # Mask based on basis
@@ -208,12 +221,12 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         # Map to grid: (N, n_stab, T) -> (N, D*D, T) -> (N, T, D, D)
         x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]  # (N, n_stab_x, T)
         z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]  # (N, n_stab_z, T)
-        
+
         x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
         z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
-        
+
         x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()  # (N, T, D, D)
         z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
 
@@ -221,12 +234,15 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         # x_present, z_present: (1, T, D, D) -> expand to (N, T, D, D) -> (N, 1, T, D, D)
         x_present_batch = x_present.expand(N, -1, -1, -1)  # (N, T, D, D)
         z_present_batch = z_present.expand(N, -1, -1, -1)  # (N, T, D, D)
-        trainX = torch.cat([
-            x_type.unsqueeze(1),  # (N, 1, T, D, D)
-            z_type.unsqueeze(1),  # (N, 1, T, D, D)
-            x_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
-            z_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
-        ], dim=1).contiguous()
+        trainX = torch.cat(
+            [
+                x_type.unsqueeze(1),  # (N, 1, T, D, D)
+                z_type.unsqueeze(1),  # (N, 1, T, D, D)
+                x_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
+                z_present_batch.unsqueeze(1),  # (N, 1, T, D, D)
+            ],
+            dim=1
+        ).contiguous()
 
         self.x_syn_diff_all = x_syn_diff  # (N, half, T)
         self.z_syn_diff_all = z_syn_diff  # (N, half, T)
@@ -255,23 +271,26 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
 
         x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]
         z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]
-        
+
         x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
         z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
-        
+
         x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
         z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
 
         x_present_batch = x_present.expand(N, -1, -1, -1)
         z_present_batch = z_present.expand(N, -1, -1, -1)
-        trainX = torch.cat([
-            x_type.unsqueeze(1),
-            z_type.unsqueeze(1),
-            x_present_batch.unsqueeze(1),
-            z_present_batch.unsqueeze(1),
-        ], dim=1).contiguous()
+        trainX = torch.cat(
+            [
+                x_type.unsqueeze(1),
+                z_type.unsqueeze(1),
+                x_present_batch.unsqueeze(1),
+                z_present_batch.unsqueeze(1),
+            ],
+            dim=1
+        ).contiguous()
 
         self.x_syn_diff_X = x_syn_diff
         self.z_syn_diff_X = z_syn_diff
@@ -300,23 +319,26 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
 
         x_syn_stab = x_syn_diff[:, :self._n_stab_x, :]
         z_syn_stab = z_syn_diff[:, :self._n_stab_z, :]
-        
+
         x_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         z_grid = torch.zeros(N, D * D, T, dtype=torch.float32)
         x_grid[:, self._idx_map_x, :] = x_syn_stab.to(torch.float32)
         z_grid[:, self._idx_map_z, :] = z_syn_stab.to(torch.float32)
-        
+
         x_type = x_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
         z_type = z_grid.reshape(N, D, D, T).permute(0, 3, 1, 2).contiguous()
 
         x_present_batch = x_present.expand(N, -1, -1, -1)
         z_present_batch = z_present.expand(N, -1, -1, -1)
-        trainX = torch.cat([
-            x_type.unsqueeze(1),
-            z_type.unsqueeze(1),
-            x_present_batch.unsqueeze(1),
-            z_present_batch.unsqueeze(1),
-        ], dim=1).contiguous()
+        trainX = torch.cat(
+            [
+                x_type.unsqueeze(1),
+                z_type.unsqueeze(1),
+                x_present_batch.unsqueeze(1),
+                z_present_batch.unsqueeze(1),
+            ],
+            dim=1
+        ).contiguous()
 
         self.x_syn_diff_Z = x_syn_diff
         self.z_syn_diff_Z = z_syn_diff
@@ -328,7 +350,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
     def __getitem__(self, idx):
         """Fast indexing into pre-computed transformations."""
         if self._mixed:
-            if (idx % 2) == 0:   # even -> X
+            if (idx % 2) == 0:  # even -> X
                 lidx = idx // 2
                 return {
                     "x_syn_diff": self.x_syn_diff_X[lidx],  # (half, T)
@@ -336,7 +358,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
                     "trainX": self.trainX_X[lidx],  # (4, T, D, D)
                     "dets_and_obs": self.dets_and_obs_X[lidx],  # (num_detectors + num_observables,)
                 }
-            else:                # odd -> Z
+            else:  # odd -> Z
                 lidx = idx // 2
                 return {
                     "x_syn_diff": self.x_syn_diff_Z[lidx],

@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
-
 """Tests for checkpoint save/resume correctness.
 
 Verifies:
@@ -29,10 +28,10 @@ from training.utils import save_checkpoint, load_checkpoint
 from training.optimizers import get_lr_scheduler
 from training.train import get_current_per_device_batch_size
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _tiny_model():
     """A trivially small model for fast test iteration."""
@@ -57,28 +56,35 @@ def _make_cfg(
 ):
     if milestones is None:
         milestones = [0.25, 0.5]
-    return OmegaConf.create({
-        "train": {
-            "epochs": epochs,
-            "num_samples": num_samples,
-            "accumulate_steps": accumulate_steps,
-            "checkpoint_interval": checkpoint_interval,
-        },
-        "optimizer": {"lr": lr},
-        "lr_scheduler": {
-            "type": scheduler_type,
-            "milestones": milestones,
-            "gamma": gamma,
-            "warmup_steps": warmup_steps,
-        },
-        "batch_schedule": {
-            "enabled": batch_schedule_enabled,
-            "initial": batch_initial,
-            "final": batch_final,
-            "start_epoch": batch_start_epoch,
-            "end_epoch": batch_end_epoch,
-        },
-    })
+    return OmegaConf.create(
+        {
+            "train":
+                {
+                    "epochs": epochs,
+                    "num_samples": num_samples,
+                    "accumulate_steps": accumulate_steps,
+                    "checkpoint_interval": checkpoint_interval,
+                },
+            "optimizer": {
+                "lr": lr
+            },
+            "lr_scheduler":
+                {
+                    "type": scheduler_type,
+                    "milestones": milestones,
+                    "gamma": gamma,
+                    "warmup_steps": warmup_steps,
+                },
+            "batch_schedule":
+                {
+                    "enabled": batch_schedule_enabled,
+                    "initial": batch_initial,
+                    "final": batch_final,
+                    "start_epoch": batch_start_epoch,
+                    "end_epoch": batch_end_epoch,
+                },
+        }
+    )
 
 
 def _compute_total_steps(cfg, world_size=1):
@@ -110,6 +116,7 @@ def _simulate_training_steps(model, optimizer, scheduler, num_steps):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestCheckpointEpochNumbering(unittest.TestCase):
     """Verify that resume starts at the correct epoch (no off-by-one)."""
 
@@ -125,7 +132,14 @@ class TestCheckpointEpochNumbering(unittest.TestCase):
             scheduler = get_lr_scheduler(cfg, optimizer, total_steps)
 
             steps_per_epoch = _compute_total_steps(
-                OmegaConf.create({**OmegaConf.to_container(cfg), "train": {**OmegaConf.to_container(cfg.train), "epochs": 1}})
+                OmegaConf.create(
+                    {
+                        **OmegaConf.to_container(cfg), "train":
+                            {
+                                **OmegaConf.to_container(cfg.train), "epochs": 1
+                            }
+                    }
+                )
             )
             global_step = 0
 
@@ -183,7 +197,14 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
             sched = get_lr_scheduler(cfg, opt, total_steps)
 
             steps_per_epoch = _compute_total_steps(
-                OmegaConf.create({**OmegaConf.to_container(cfg), "train": {**OmegaConf.to_container(cfg.train), "epochs": 1}})
+                OmegaConf.create(
+                    {
+                        **OmegaConf.to_container(cfg), "train":
+                            {
+                                **OmegaConf.to_container(cfg.train), "epochs": 1
+                            }
+                    }
+                )
             )
             global_step = 0
 
@@ -195,8 +216,10 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
             lr_before_save = sched.get_last_lr()[0]
             last_epoch_before_save = sched.last_epoch
 
-            self.assertEqual(last_epoch_before_save, global_step,
-                             "Scheduler last_epoch should equal global_step after training")
+            self.assertEqual(
+                last_epoch_before_save, global_step,
+                "Scheduler last_epoch should equal global_step after training"
+            )
 
             save_checkpoint(
                 path=tmpdir,
@@ -221,14 +244,20 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
             )
 
             # The scheduler should be at global_step, NOT 2 * global_step
-            self.assertEqual(sched2.last_epoch, global_step,
-                             f"Scheduler should be at {global_step} but is at {sched2.last_epoch} "
-                             f"(double-count would give {2 * global_step})")
+            self.assertEqual(
+                sched2.last_epoch, global_step,
+                f"Scheduler should be at {global_step} but is at {sched2.last_epoch} "
+                f"(double-count would give {2 * global_step})"
+            )
 
             # LR should match what it was before saving
             lr_after_load = sched2.get_last_lr()[0]
-            self.assertAlmostEqual(lr_after_load, lr_before_save, places=10,
-                                   msg="LR after resume should match LR before checkpoint save")
+            self.assertAlmostEqual(
+                lr_after_load,
+                lr_before_save,
+                places=10,
+                msg="LR after resume should match LR before checkpoint save"
+            )
 
     def test_scheduler_milestones_hit_at_correct_step(self):
         """LR decay happens at the intended fraction of total_steps, not earlier."""
@@ -245,13 +274,21 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
         # Advance to step 49 (just before milestone)
         for _ in range(49):
             sched.step()
-        self.assertAlmostEqual(sched.get_last_lr()[0], base_lr, places=10,
-                               msg="LR should be unchanged before milestone")
+        self.assertAlmostEqual(
+            sched.get_last_lr()[0],
+            base_lr,
+            places=10,
+            msg="LR should be unchanged before milestone"
+        )
 
         # Step 50 (at milestone)
         sched.step()
-        self.assertAlmostEqual(sched.get_last_lr()[0], base_lr * 0.7, places=10,
-                               msg="LR should decay by gamma at milestone")
+        self.assertAlmostEqual(
+            sched.get_last_lr()[0],
+            base_lr * 0.7,
+            places=10,
+            msg="LR should decay by gamma at milestone"
+        )
 
         # Now simulate resume from step 30
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -284,15 +321,23 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
 
             # Scheduler should be at step 30 — LR should still be base_lr
             self.assertEqual(sched3.last_epoch, 30)
-            self.assertAlmostEqual(sched3.get_last_lr()[0], base_lr, places=10,
-                                   msg="LR should be base_lr at step 30 (milestone is at 50)")
+            self.assertAlmostEqual(
+                sched3.get_last_lr()[0],
+                base_lr,
+                places=10,
+                msg="LR should be base_lr at step 30 (milestone is at 50)"
+            )
 
             # Advance 20 more steps to reach milestone at step 50
             for _ in range(20):
                 sched3.step()
             self.assertEqual(sched3.last_epoch, 50)
-            self.assertAlmostEqual(sched3.get_last_lr()[0], base_lr * 0.7, places=10,
-                                   msg="LR should decay at step 50 after resume (not before)")
+            self.assertAlmostEqual(
+                sched3.get_last_lr()[0],
+                base_lr * 0.7,
+                places=10,
+                msg="LR should decay at step 50 after resume (not before)"
+            )
 
     def test_double_count_regression(self):
         """Explicitly verify the old bug: load_state_dict + replay = 2x steps."""
@@ -321,11 +366,13 @@ class TestSchedulerNoDoubleCount(unittest.TestCase):
                 sched_buggy.step()
 
             # Bug: scheduler now thinks it's at step 60 — past the 50-step milestone!
-            self.assertEqual(sched_buggy.last_epoch, 60,
-                             "Old bug would put scheduler at 60 (2x30)")
+            self.assertEqual(sched_buggy.last_epoch, 60, "Old bug would put scheduler at 60 (2x30)")
             self.assertAlmostEqual(
-                sched_buggy.get_last_lr()[0], 1e-3 * 0.7, places=10,
-                msg="Old bug triggers premature LR decay (milestone 50 hit at real step 30)")
+                sched_buggy.get_last_lr()[0],
+                1e-3 * 0.7,
+                places=10,
+                msg="Old bug triggers premature LR decay (milestone 50 hit at real step 30)"
+            )
 
 
 class TestBatchScheduleWithEpochFix(unittest.TestCase):
@@ -375,8 +422,9 @@ class TestBatchScheduleWithEpochFix(unittest.TestCase):
         # Epoch 2 should get the ramped batch size, NOT epoch 1's
         bs_epoch2 = get_current_per_device_batch_size(2, cfg)
         bs_epoch1 = get_current_per_device_batch_size(1, cfg)
-        self.assertGreater(bs_epoch2, bs_epoch1,
-                           "Resumed epoch 2 should use a larger batch than epoch 1")
+        self.assertGreater(
+            bs_epoch2, bs_epoch1, "Resumed epoch 2 should use a larger batch than epoch 1"
+        )
 
 
 class TestTensorBoardNoDuplicates(unittest.TestCase):
@@ -396,8 +444,7 @@ class TestTensorBoardNoDuplicates(unittest.TestCase):
 
         # No overlap
         overlap = set(job1_logged_epochs) & set(job2_logged_epochs)
-        self.assertEqual(overlap, set(),
-                         f"Epochs {overlap} would be logged twice!")
+        self.assertEqual(overlap, set(), f"Epochs {overlap} would be logged twice!")
 
         # Together they cover all epochs
         all_epochs = sorted(job1_logged_epochs + job2_logged_epochs)
@@ -471,8 +518,10 @@ class TestEndToEndMiniTraining(unittest.TestCase):
                 global_step2 += steps_per_epoch
 
             # Final global_step should equal total_steps
-            self.assertEqual(global_step2, total_steps,
-                             f"After full training: global_step={global_step2} != total_steps={total_steps}")
+            self.assertEqual(
+                global_step2, total_steps,
+                f"After full training: global_step={global_step2} != total_steps={total_steps}"
+            )
             self.assertEqual(sched2.last_epoch, total_steps)
 
     def test_multiple_resumes_no_drift(self):
@@ -511,9 +560,11 @@ class TestEndToEndMiniTraining(unittest.TestCase):
                     )
 
                 # Verify no drift
-                self.assertEqual(sched.last_epoch, global_step,
-                                 f"Job {job_idx+1}: scheduler at {sched.last_epoch}, "
-                                 f"expected {global_step}")
+                self.assertEqual(
+                    sched.last_epoch, global_step,
+                    f"Job {job_idx+1}: scheduler at {sched.last_epoch}, "
+                    f"expected {global_step}"
+                )
 
                 # Train 3 epochs
                 for epoch in range(init_epoch, init_epoch + 3):

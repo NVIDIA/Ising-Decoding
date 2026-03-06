@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Single-point public inference runner.
 
@@ -139,7 +138,8 @@ def run_inference(model, device, dist, cfg) -> None:
             from qec.noise_model import NoiseModel
 
             nm_cfg = getattr(getattr(cfg, "data", None), "noise_model", None)
-            nm_dict = OmegaConf.to_container(nm_cfg, resolve=True) if hasattr(nm_cfg, "items") else nm_cfg
+            nm_dict = OmegaConf.to_container(nm_cfg,
+                                             resolve=True) if hasattr(nm_cfg, "items") else nm_cfg
             if nm_dict is not None:
                 nm_obj = NoiseModel.from_config_dict(dict(nm_dict))
                 print(f"[Inference] Using explicit noise_model (25p): {nm_obj!r}")
@@ -152,10 +152,14 @@ def run_inference(model, device, dist, cfg) -> None:
         if p is None:
             print(f"\n[Inference] d={int(cfg.distance)}, n_rounds={int(cfg.n_rounds)}")
         else:
-            print(f"\n[Inference] d={int(cfg.distance)}, n_rounds={int(cfg.n_rounds)}, p={float(p):.4f}")
+            print(
+                f"\n[Inference] d={int(cfg.distance)}, n_rounds={int(cfg.n_rounds)}, p={float(p):.4f}"
+            )
 
     if not isinstance(result, dict) or "X" not in result or "Z" not in result:
-        print("[Inference] Warning: unexpected inference result format; expected dict with 'X' and 'Z'.")
+        print(
+            "[Inference] Warning: unexpected inference result format; expected dict with 'X' and 'Z'."
+        )
         return
 
     x_after, x_base, x_lat_after, x_lat_base = _extract_basis_metrics(result["X"])
@@ -175,11 +179,18 @@ def run_inference(model, device, dist, cfg) -> None:
 
     label_w = 40
     print(f"  {'':<{label_w}}{'No pre-decoder':>15}  {'After pre-decoder':>17}")
-    print(f"  {'PyMatching latency - X basis (µs/round):':<{label_w}}{x_lat_base:>15.3f}  {x_lat_after:>17.3f}")
-    print(f"  {'PyMatching latency - Z basis (µs/round):':<{label_w}}{z_lat_base:>15.3f}  {z_lat_after:>17.3f}")
-    print(f"  {'PyMatching latency - Avg (µs/round):':<{label_w}}{avg_lat_base:>15.3f}  {avg_lat_after:>17.3f}")
+    print(
+        f"  {'PyMatching latency - X basis (µs/round):':<{label_w}}{x_lat_base:>15.3f}  {x_lat_after:>17.3f}"
+    )
+    print(
+        f"  {'PyMatching latency - Z basis (µs/round):':<{label_w}}{z_lat_base:>15.3f}  {z_lat_after:>17.3f}"
+    )
+    print(
+        f"  {'PyMatching latency - Avg (µs/round):':<{label_w}}{avg_lat_base:>15.3f}  {avg_lat_after:>17.3f}"
+    )
     print(f"  {'LER - X basis:':<{label_w}}{x_base:>15.6f}  {x_after:>17.6f}")
     print(f"  {'LER - Z basis:':<{label_w}}{z_base:>15.6f}  {z_after:>17.6f}")
-    print(f"  {'LER - Avg:':<{label_w}}{_avg(x_base, z_base):>15.6f}  {_avg(x_after, z_after):>17.6f}")
+    print(
+        f"  {'LER - Avg:':<{label_w}}{_avg(x_base, z_base):>15.6f}  {_avg(x_after, z_after):>17.6f}"
+    )
     print(f"  {'PyMatching speedup (Avg X/Z):':<{label_w}}{avg_speedup:>15.3f}x")
-

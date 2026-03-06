@@ -22,9 +22,11 @@ import sys
 import unittest
 from pathlib import Path
 
+
 # In CI use fewer samples to keep unit-tests job ~5 min.
 def _ci_sample_count(full: int, ci: int = 400) -> int:
     return ci if os.environ.get("CI") == "true" else full
+
 
 # Ensure repo code/ is on path when run from repo root or from code/tests
 _repo_code = Path(__file__).resolve().parent.parent
@@ -43,9 +45,9 @@ ORIENTATIONS = ("XV", "XH", "ZV", "ZH")
 
 def test_detector_count_matches():
     """Test that residual + boundary detectors matches DEM detector count (all 4 orientations)."""
-    print("="*70)
+    print("=" * 70)
     print("Test: Detector count matching (all 4 orientations)")
-    print("="*70)
+    print("=" * 70)
     for code_rotation in ORIENTATIONS:
         for d in [5, 7]:
             for basis in ['X', 'Z']:
@@ -56,7 +58,7 @@ def test_detector_count_matches():
                     idle_error=p_placeholder,
                     sqgate_error=p_placeholder,
                     tqgate_error=p_placeholder,
-                    spam_error=(2.0/3.0) * p_placeholder,
+                    spam_error=(2.0 / 3.0) * p_placeholder,
                     n_rounds=d,
                     basis=basis,
                     noise_model=noise_model,
@@ -66,8 +68,7 @@ def test_detector_count_matches():
                 mc.set_error_rates()
                 circuit = mc.stim_circuit
                 dem = circuit.detector_error_model(
-                    decompose_errors=True,
-                    approximate_disjoint_errors=True
+                    decompose_errors=True, approximate_disjoint_errors=True
                 )
                 total_dem_detectors = dem.num_detectors
                 num_x_stab = (d * d - 1) // 2
@@ -78,7 +79,9 @@ def test_detector_count_matches():
                 num_boundary_dets = num_x_stab if basis == 'X' else num_z_stab
                 expected_total = pre_decoder_residual_size + num_boundary_dets
                 if expected_total != total_dem_detectors:
-                    print(f"  ✗ FAIL rotation={code_rotation} d={d} basis={basis}: {expected_total} != {total_dem_detectors}")
+                    print(
+                        f"  ✗ FAIL rotation={code_rotation} d={d} basis={basis}: {expected_total} != {total_dem_detectors}"
+                    )
                     return False
     print("  ✓ PASS: all orientations/d/basis match")
     return True
@@ -86,9 +89,9 @@ def test_detector_count_matches():
 
 def test_decoding_with_appended_boundary_detectors():
     """Test that PyMatching can decode residual + boundary detectors for all 4 orientations."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("Test: Decoding with appended boundary detectors (all 4 orientations)")
-    print("="*70)
+    print("=" * 70)
     d = 5
     basis = 'X'
     num_samples = _ci_sample_count(1000, 400)
@@ -100,7 +103,7 @@ def test_decoding_with_appended_boundary_detectors():
             idle_error=p_placeholder,
             sqgate_error=p_placeholder,
             tqgate_error=p_placeholder,
-            spam_error=(2.0/3.0) * p_placeholder,
+            spam_error=(2.0 / 3.0) * p_placeholder,
             n_rounds=d,
             basis=basis,
             noise_model=noise_model,
@@ -109,10 +112,7 @@ def test_decoding_with_appended_boundary_detectors():
         )
         mc.set_error_rates()
         circuit = mc.stim_circuit
-        dem = circuit.detector_error_model(
-            decompose_errors=True,
-            approximate_disjoint_errors=True
-        )
+        dem = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
         matcher = pymatching.Matching.from_detector_error_model(dem)
         sampler = circuit.compile_detector_sampler()
         stim_dets, stim_obs = sampler.sample(num_samples, separate_observables=True)
@@ -124,7 +124,9 @@ def test_decoding_with_appended_boundary_detectors():
         boundary_dets = stim_dets[:, -num_boundary_dets:]
         combined = np.concatenate([pre_decoder_residual, boundary_dets], axis=1)
         if combined.shape[1] != dem.num_detectors:
-            print(f"  ✗ FAIL rotation={code_rotation}: shape {combined.shape[1]} != {dem.num_detectors}")
+            print(
+                f"  ✗ FAIL rotation={code_rotation}: shape {combined.shape[1]} != {dem.num_detectors}"
+            )
             return False
         try:
             predictions = matcher.decode_batch(combined)
@@ -141,9 +143,9 @@ def test_decoding_with_appended_boundary_detectors():
 
 def test_boundary_detectors_unchanged_by_predecoder():
     """Boundary detectors well-defined for all 4 orientations."""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("Test: Boundary detectors unchanged by pre-decoder (all 4 orientations)")
-    print("="*70)
+    print("=" * 70)
     d = 5
     basis = 'X'
     noise_model = NoiseModel.from_single_p(0.002)
@@ -154,7 +156,7 @@ def test_boundary_detectors_unchanged_by_predecoder():
             idle_error=p_placeholder,
             sqgate_error=p_placeholder,
             tqgate_error=p_placeholder,
-            spam_error=(2.0/3.0) * p_placeholder,
+            spam_error=(2.0 / 3.0) * p_placeholder,
             n_rounds=d,
             basis=basis,
             noise_model=noise_model,
@@ -174,8 +176,10 @@ def test_boundary_detectors_unchanged_by_predecoder():
         boundary_from_stim = stim_dets[:, -num_boundary_dets:]
         boundary_rate = boundary_from_stim.mean()
         other_rate = stim_dets[:, :-num_boundary_dets].mean()
-        print(f"  rotation={code_rotation}: total_dets={stim_dets.shape[1]}, "
-              f"boundary_flip={boundary_rate:.4f}, other_flip={other_rate:.4f}")
+        print(
+            f"  rotation={code_rotation}: total_dets={stim_dets.shape[1]}, "
+            f"boundary_flip={boundary_rate:.4f}, other_flip={other_rate:.4f}"
+        )
     print("  ✓ PASS: boundary detectors well-defined for all orientations")
     return True
 

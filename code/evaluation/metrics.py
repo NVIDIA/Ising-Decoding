@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Evaluation Metrics Module
 
@@ -71,24 +70,24 @@ def configure_metrics(rank=0):
         Tuple of (compute_logical_error_rate, compute_syndrome_density_reduction)
     """
     global compute_logical_error_rate, compute_syndrome_density_reduction
-    
+
     compute_logical_error_rate = compute_logical_error_rate_stim
     compute_syndrome_density_reduction = compute_syndrome_density_reduction_stim
     if rank == 0 and HAS_LER_MODULE:
         print("[Evaluation] Using Stim-based validation functions")
-    
+
     return compute_logical_error_rate, compute_syndrome_density_reduction
 
 
 def _extract_reduction_factor(result, rank=0):
     """Helper to extract reduction factor from syndrome density result."""
     reduction_factor = None
-    
+
     if isinstance(result, dict):
         data = result.get('stim', result)
         x_reduction = data.get('reduction factor (X)')
         z_reduction = data.get('reduction factor (Z)')
-        
+
         if x_reduction is not None and z_reduction is not None:
             reduction_factor = (x_reduction + z_reduction) / 2.0
         elif x_reduction is not None:
@@ -102,7 +101,7 @@ def _extract_reduction_factor(result, rank=0):
                     break
     elif isinstance(result, (float, int)):
         reduction_factor = float(result)
-    
+
     return reduction_factor
 
 
@@ -110,62 +109,69 @@ def compute_syndrome_density(model, device, dist, cfg, generator=None, rank=0):
     """Compute syndrome density reduction factor for validation."""
     if not HAS_LER_MODULE or compute_syndrome_density_reduction is None:
         if rank == 0:
-            print("[Syndrome Density] Warning: Syndrome density module not available, skipping computation")
+            print(
+                "[Syndrome Density] Warning: Syndrome density module not available, skipping computation"
+            )
         return None
-    
-    is_multi = generator is not None and hasattr(generator, 'is_multi_pair') and generator.is_multi_pair()
-    
+
+    is_multi = generator is not None and hasattr(generator,
+                                                 'is_multi_pair') and generator.is_multi_pair()
+
     if is_multi:
         if rank == 0:
             print(f"[Syndrome Density] Multi-pair mode: computing for each distance separately...")
-        
+
         results = {}
         pairs_and_gens = generator.get_all_generators()
-        
+
         for (d, r), single_gen in pairs_and_gens:
             if rank == 0:
                 print(f"\n[Syndrome Density] Computing for (d={d}, r={r})...")
-            
+
             try:
                 orig_d, orig_r = cfg.distance, cfg.n_rounds
                 cfg.distance, cfg.n_rounds = d, r
-                
-                result = compute_syndrome_density_reduction(model, device, dist, cfg, generator=single_gen)
+
+                result = compute_syndrome_density_reduction(
+                    model, device, dist, cfg, generator=single_gen
+                )
                 reduction_factor = _extract_reduction_factor(result, rank)
-                
+
                 if reduction_factor is not None:
                     results[(d, r)] = reduction_factor
                     if rank == 0:
                         print(f"[Syndrome Density] (d={d}, r={r}): {reduction_factor:.4f}x")
-                
+
                 cfg.distance, cfg.n_rounds = orig_d, orig_r
-                
+
             except Exception as e:
                 if rank == 0:
                     print(f"[Syndrome Density] Error for (d={d}, r={r}): {e}")
                     import traceback
                     traceback.print_exc()
-        
+
         return results if results else None
-    
+
     else:
         try:
             if rank == 0:
                 print(f"[Syndrome Density] Computing syndrome density reduction...")
-            
+
             result = compute_syndrome_density_reduction(model, device, dist, cfg)
-            
+
             reduction_factor = _extract_reduction_factor(result, rank)
-            
+
             if reduction_factor is not None:
                 if rank == 0:
                     print(f"[Syndrome Density] Reduction factor: {reduction_factor:.4f}x")
                 return float(reduction_factor)
             else:
                 if rank == 0:
-                    print(f"[Syndrome Density] Warning: Could not extract reduction factor from result")
+                    print(
+                        f"[Syndrome Density] Warning: Could not extract reduction factor from result"
+                    )
                 return None
-                
+
         except Exception as e:
             if rank == 0:
                 print(f"[Syndrome Density] Error computing syndrome density: {e}")
@@ -179,15 +185,16 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
     try:
         if rank == 0:
             print(f"[LER Validation] Computing logical error rate...")
-        
+
         result = compute_logical_error_rate(model, device, dist, cfg)
-        
+
         # Extract PyMatching decode speedup (baseline / after pre-decoder), averaged across X/Z when available.
         pymatching_speedup_avg = None
         # Also extract the underlying (single-shot) latencies so we can report them in logs.
         pymatching_latency_baseline_avg = None
         pymatching_latency_after_avg = None
         if isinstance(result, dict) and "X" in result and "Z" in result:
+
             def _extract_latencies(basis_dict):
                 if not isinstance(basis_dict, dict):
                     return (None, None)
@@ -235,59 +242,70 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
 
         if isinstance(result, dict):
             ler_value = None
-            for key in ['logical_error_rate', 'ler', 'error_rate', 'avg_ler', 'logical error ratio (mean)']:
+            for key in [
+                'logical_error_rate', 'ler', 'error_rate', 'avg_ler', 'logical error ratio (mean)'
+            ]:
                 if key in result:
                     ler_value = result[key]
                     break
-            
+
             if ler_value is None:
                 if 'X' in result and isinstance(result['X'], dict):
-                    x_ler = (result['X'].get('logical error ratio (mean)') or 
-                            result['X'].get('logical_error_rate') or 
-                            result['X'].get('ler'))
+                    x_ler = (
+                        result['X'].get('logical error ratio (mean)') or
+                        result['X'].get('logical_error_rate') or result['X'].get('ler')
+                    )
                     if x_ler is not None:
                         ler_value = x_ler
-                
+
                 if ler_value is None and 'Z' in result and isinstance(result['Z'], dict):
-                    z_ler = (result['Z'].get('logical error ratio (mean)') or 
-                            result['Z'].get('logical_error_rate') or 
-                            result['Z'].get('ler'))
+                    z_ler = (
+                        result['Z'].get('logical error ratio (mean)') or
+                        result['Z'].get('logical_error_rate') or result['Z'].get('ler')
+                    )
                     if z_ler is not None:
                         ler_value = z_ler
-                
-                if 'X' in result and 'Z' in result and isinstance(result['X'], dict) and isinstance(result['Z'], dict):
-                    x_ler = (result['X'].get('logical error ratio (mean)') or 
-                            result['X'].get('logical_error_rate') or 
-                            result['X'].get('ler'))
-                    z_ler = (result['Z'].get('logical error ratio (mean)') or 
-                            result['Z'].get('logical_error_rate') or 
-                            result['Z'].get('ler'))
-                    
+
+                if 'X' in result and 'Z' in result and isinstance(result['X'], dict) and isinstance(
+                    result['Z'], dict
+                ):
+                    x_ler = (
+                        result['X'].get('logical error ratio (mean)') or
+                        result['X'].get('logical_error_rate') or result['X'].get('ler')
+                    )
+                    z_ler = (
+                        result['Z'].get('logical error ratio (mean)') or
+                        result['Z'].get('logical_error_rate') or result['Z'].get('ler')
+                    )
+
                     if x_ler is not None and z_ler is not None:
                         ler_value = (x_ler + z_ler) / 2.0
         elif isinstance(result, (float, int)):
             ler_value = float(result)
         else:
             ler_value = None
-        
+
         # Extract LER reduction factor
         ler_reduction_factor = None
         if isinstance(result, dict) and 'X' in result and 'Z' in result:
             x_data, z_data = result['X'], result['Z']
-            
+
             if isinstance(x_data, dict) and isinstance(z_data, dict):
                 x_logical_errors = x_data.get('logical errors')
                 x_pymatch_flips = x_data.get('pymatch flips')
                 z_logical_errors = z_data.get('logical errors')
                 z_pymatch_flips = z_data.get('pymatch flips')
 
-                if all(v is not None for v in [x_logical_errors, x_pymatch_flips, z_logical_errors, z_pymatch_flips]):
+                if all(
+                    v is not None
+                    for v in [x_logical_errors, x_pymatch_flips, z_logical_errors, z_pymatch_flips]
+                ):
                     x_reduction = _safe_ratio(x_pymatch_flips, x_logical_errors)
                     z_reduction = _safe_ratio(z_pymatch_flips, z_logical_errors)
                     # Average when both are finite/defined; otherwise fall back to whichever is not-NaN.
                     vals = [v for v in (x_reduction, z_reduction) if v == v]  # exclude NaN
                     ler_reduction_factor = (sum(vals) / len(vals)) if vals else float("nan")
-        
+
         if ler_value is not None:
             if rank == 0:
                 msg = f"[LER Validation] Logical error rate: {ler_value:.6f}"
@@ -306,7 +324,7 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
             if rank == 0:
                 print(f"[LER Validation] Warning: Could not extract LER value from result")
             return (None, None, pymatching_speedup_avg)
-            
+
     except Exception as e:
         if rank == 0:
             print(f"[LER Validation] Error computing LER: {e}")
@@ -321,45 +339,47 @@ def compute_validation_ler(model, device, dist, cfg, generator=None, rank=0):
         if rank == 0:
             print("[LER Validation] Warning: LER module not available, skipping LER computation")
         return None
-    
-    is_multi = generator is not None and hasattr(generator, 'is_multi_pair') and generator.is_multi_pair()
-    
+
+    is_multi = generator is not None and hasattr(generator,
+                                                 'is_multi_pair') and generator.is_multi_pair()
+
     if is_multi:
         if rank == 0:
             print(f"[LER Validation] Multi-pair mode: computing for each distance separately...")
-        
+
         results = {}
         pairs_and_gens = generator.get_all_generators()
-        
+
         for (d, r), single_gen in pairs_and_gens:
             if rank == 0:
                 print(f"\n[LER Validation] Computing for (d={d}, r={r})...")
-            
+
             try:
                 orig_d, orig_r = cfg.distance, cfg.n_rounds
                 cfg.distance, cfg.n_rounds = d, r
-                
+
                 ler_result = _compute_single_ler(model, device, dist, cfg, single_gen, rank)
-                
+
                 if ler_result is not None:
                     results[(d, r)] = ler_result
                     ler_val, ler_red, _ = ler_result
                     if rank == 0:
                         if ler_red is not None:
-                            print(f"[LER Validation] (d={d}, r={r}): LER={ler_val:.6f}, Reduction={ler_red:.4f}x")
+                            print(
+                                f"[LER Validation] (d={d}, r={r}): LER={ler_val:.6f}, Reduction={ler_red:.4f}x"
+                            )
                         else:
                             print(f"[LER Validation] (d={d}, r={r}): LER={ler_val:.6f}")
-                
+
                 cfg.distance, cfg.n_rounds = orig_d, orig_r
-                
+
             except Exception as e:
                 if rank == 0:
                     print(f"[LER Validation] Error for (d={d}, r={r}): {e}")
                     import traceback
                     traceback.print_exc()
-        
+
         return results if results else None
-    
+
     else:
         return _compute_single_ler(model, device, dist, cfg, generator, rank)
-

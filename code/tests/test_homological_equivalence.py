@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Unit tests for homological equivalence (spacelike + timelike).
 
@@ -56,10 +55,10 @@ from qec.surface_code.homological_equivalence import (
     get_anticommuting_stabilizers,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_parity_matrices(distance: int, rotation: str = "XV"):
     """Build parity check matrices for a surface code of given distance."""
@@ -136,7 +135,9 @@ def _make_dem_artifacts(
 # Coordinate helpers
 # ---------------------------------------------------------------------------
 
+
 class TestCoordinateHelpers(unittest.TestCase):
+
     def test_roundtrip(self):
         for d in (3, 5, 7):
             for idx in range(d * d):
@@ -154,18 +155,24 @@ class TestCoordinateHelpers(unittest.TestCase):
 # Stabilizer support extraction
 # ---------------------------------------------------------------------------
 
+
 class TestStabilizerSupport(unittest.TestCase):
+
     def test_support_sizes(self):
         for d in (3, 5):
             hx, hz, _ = _build_parity_matrices(d)
             for stab in range(hx.shape[0]):
                 support = get_stabilizer_support_from_parity_matrix(stab, hx)
-                self.assertIn(len(support), (2, 4),
-                              f"d={d} X-stab {stab}: unexpected support size {len(support)}")
+                self.assertIn(
+                    len(support), (2, 4),
+                    f"d={d} X-stab {stab}: unexpected support size {len(support)}"
+                )
             for stab in range(hz.shape[0]):
                 support = get_stabilizer_support_from_parity_matrix(stab, hz)
-                self.assertIn(len(support), (2, 4),
-                              f"d={d} Z-stab {stab}: unexpected support size {len(support)}")
+                self.assertIn(
+                    len(support), (2, 4),
+                    f"d={d} Z-stab {stab}: unexpected support size {len(support)}"
+                )
 
     def test_out_of_range(self):
         hx, _, _ = _build_parity_matrices(3)
@@ -176,14 +183,17 @@ class TestStabilizerSupport(unittest.TestCase):
 # Weight reduction
 # ---------------------------------------------------------------------------
 
+
 class TestWeightReduction(unittest.TestCase):
 
     def _assert_weight_nonincreasing(self, fn, parity, d, seeds=10):
         for s in range(seeds):
             e = _random_error(d, seed=s)
             reduced = fn(e, d, parity)
-            self.assertLessEqual(int(reduced.sum()), int(e.sum()),
-                                 f"seed={s}: weight increased from {int(e.sum())} to {int(reduced.sum())}")
+            self.assertLessEqual(
+                int(reduced.sum()), int(e.sum()),
+                f"seed={s}: weight increased from {int(e.sum())} to {int(reduced.sum())}"
+            )
 
     def test_weight_reduction_X_d3(self):
         hx, _, _ = _build_parity_matrices(3)
@@ -218,14 +228,16 @@ class TestWeightReduction(unittest.TestCase):
                     for q in support:
                         e[q] = 1
                     reduced = weight_reduction_X(e, d, hx)
-                    self.assertEqual(int(reduced.sum()), 0,
-                                     f"d={d} stab={stab_idx}: weight-4 not fully removed")
+                    self.assertEqual(
+                        int(reduced.sum()), 0, f"d={d} stab={stab_idx}: weight-4 not fully removed"
+                    )
                     break
 
 
 # ---------------------------------------------------------------------------
 # simplify_X / simplify_Z – idempotency
 # ---------------------------------------------------------------------------
+
 
 class TestSimplifyIdempotency(unittest.TestCase):
 
@@ -234,8 +246,10 @@ class TestSimplifyIdempotency(unittest.TestCase):
             e = _random_error(d, seed=s)
             once = simplify_fn(e, d, parity)
             twice = simplify_fn(once, d, parity)
-            self.assertTrue(torch.equal(once, twice),
-                            f"seed={s}: simplify not idempotent\n  once={once}\n  twice={twice}")
+            self.assertTrue(
+                torch.equal(once, twice),
+                f"seed={s}: simplify not idempotent\n  once={once}\n  twice={twice}"
+            )
 
     def test_simplify_X_d3(self):
         hx, _, _ = _build_parity_matrices(3)
@@ -258,6 +272,7 @@ class TestSimplifyIdempotency(unittest.TestCase):
 # Syndrome invariance: simplify preserves the syndrome
 # ---------------------------------------------------------------------------
 
+
 class TestSyndromeInvariance(unittest.TestCase):
 
     def _check_syndrome_preserved(self, simplify_fn, simplify_parity, syndrome_parity, d, seeds=30):
@@ -266,9 +281,10 @@ class TestSyndromeInvariance(unittest.TestCase):
             s_before = _syndrome(e, syndrome_parity)
             simplified = simplify_fn(e, d, simplify_parity)
             s_after = _syndrome(simplified, syndrome_parity)
-            self.assertTrue(torch.equal(s_before, s_after),
-                            f"seed={s}: syndrome changed after simplify\n"
-                            f"  before={s_before}\n  after ={s_after}")
+            self.assertTrue(
+                torch.equal(s_before, s_after), f"seed={s}: syndrome changed after simplify\n"
+                f"  before={s_before}\n  after ={s_after}"
+            )
 
     def test_X_syndrome_d3(self):
         hx, hz, _ = _build_parity_matrices(3)
@@ -291,6 +307,7 @@ class TestSyndromeInvariance(unittest.TestCase):
 # Convergence: simplify_X/Z_with_count finish in bounded iterations
 # ---------------------------------------------------------------------------
 
+
 class TestSimplifyConvergence(unittest.TestCase):
 
     def test_convergence_X_d5(self):
@@ -300,8 +317,7 @@ class TestSimplifyConvergence(unittest.TestCase):
             e = _random_error(5, seed=s)
             _, iters = simplify_X_with_count(e, 5, hx)
             max_seen = max(max_seen, iters)
-        self.assertLess(max_seen, 50,
-                        f"simplify_X needed {max_seen} iters (expected << 100)")
+        self.assertLess(max_seen, 50, f"simplify_X needed {max_seen} iters (expected << 100)")
 
     def test_convergence_Z_d5(self):
         _, hz, _ = _build_parity_matrices(5)
@@ -310,13 +326,13 @@ class TestSimplifyConvergence(unittest.TestCase):
             e = _random_error(5, seed=s)
             _, iters = simplify_Z_with_count(e, 5, hz)
             max_seen = max(max_seen, iters)
-        self.assertLess(max_seen, 50,
-                        f"simplify_Z needed {max_seen} iters (expected << 100)")
+        self.assertLess(max_seen, 50, f"simplify_Z needed {max_seen} iters (expected << 100)")
 
 
 # ---------------------------------------------------------------------------
 # Spacelike HE: full diff→simplify→diff pipeline
 # ---------------------------------------------------------------------------
+
 
 class TestSpacelikeHE(unittest.TestCase):
 
@@ -351,7 +367,8 @@ class TestSpacelikeHE(unittest.TestCase):
         x_diff, z_diff = self._random_diff_pair(d, 6, seed=42)
 
         x_out, z_out = apply_spacelike_homological_equivalence(
-            x_diff.to(torch.long), z_diff.to(torch.long), d, hx, hz)
+            x_diff.to(torch.long), z_diff.to(torch.long), d, hx, hz
+        )
 
         x_cum_in = torch.cumsum(x_diff.to(torch.long), dim=1) % 2
         z_cum_in = torch.cumsum(z_diff.to(torch.long), dim=1) % 2
@@ -364,15 +381,14 @@ class TestSpacelikeHE(unittest.TestCase):
             sx_out = _syndrome(x_cum_out[:, t], hz)
             sz_in = _syndrome(z_cum_in[:, t], hx)
             sz_out = _syndrome(z_cum_out[:, t], hx)
-            self.assertTrue(torch.equal(sx_in, sx_out),
-                            f"X syndrome mismatch at round {t}")
-            self.assertTrue(torch.equal(sz_in, sz_out),
-                            f"Z syndrome mismatch at round {t}")
+            self.assertTrue(torch.equal(sx_in, sx_out), f"X syndrome mismatch at round {t}")
+            self.assertTrue(torch.equal(sz_in, sz_out), f"Z syndrome mismatch at round {t}")
 
 
 # ---------------------------------------------------------------------------
 # Timelike HE – unit level
 # ---------------------------------------------------------------------------
+
 
 class TestTimelikeHEUnit(unittest.TestCase):
     """Test simplifytimeX / simplifytimeZ on 2-round windows."""
@@ -444,6 +460,7 @@ class TestTimelikeHEUnit(unittest.TestCase):
 # Timelike HE – full pipeline (apply_timelike_homological_equivalence)
 # ---------------------------------------------------------------------------
 
+
 class TestTimelikeHEPipeline(unittest.TestCase):
     """Integration-level tests for apply_timelike_homological_equivalence."""
 
@@ -473,8 +490,12 @@ class TestTimelikeHEPipeline(unittest.TestCase):
         n_rounds = 4
         hx, hz, _ = _build_parity_matrices(d)
         trainY = self._make_trainY(d, n_rounds, batch=2, seed=5)
-        y1, c1 = apply_timelike_homological_equivalence(trainY.clone(), hx, hz, max_iterations=32, basis="X")
-        y2, c2 = apply_timelike_homological_equivalence(trainY.clone(), hx, hz, max_iterations=32, basis="X")
+        y1, c1 = apply_timelike_homological_equivalence(
+            trainY.clone(), hx, hz, max_iterations=32, basis="X"
+        )
+        y2, c2 = apply_timelike_homological_equivalence(
+            trainY.clone(), hx, hz, max_iterations=32, basis="X"
+        )
         self.assertTrue(torch.equal(y1, y2))
         self.assertEqual(c1["total_accepted"], c2["total_accepted"])
 
@@ -504,7 +525,9 @@ class TestTimelikeHEPipeline(unittest.TestCase):
 # Anticommuting stabilizers helper
 # ---------------------------------------------------------------------------
 
+
 class TestAnticommutingStabilizers(unittest.TestCase):
+
     def test_single_qubit(self):
         d = 3
         hx, hz, _ = _build_parity_matrices(d)
@@ -520,6 +543,7 @@ class TestAnticommutingStabilizers(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Known small-distance cases
 # ---------------------------------------------------------------------------
+
 
 class TestKnownSmallCases(unittest.TestCase):
     """Hand-picked cases where we can predict the output."""
@@ -540,13 +564,13 @@ class TestKnownSmallCases(unittest.TestCase):
         e = torch.zeros(9, dtype=torch.long)
         e[0] = e[1] = e[2] = 1
         reduced = simplify_X(e, 3, hx)
-        self.assertLessEqual(int(reduced.sum()), 3,
-                             "weight-3 row error should be non-increasing")
+        self.assertLessEqual(int(reduced.sum()), 3, "weight-3 row error should be non-increasing")
 
 
 # ---------------------------------------------------------------------------
 # Visual examples with explicit expected patterns (d=3)
 # ---------------------------------------------------------------------------
+
 
 class TestVisualExamples(unittest.TestCase):
     """
@@ -647,6 +671,7 @@ class TestVisualExamples(unittest.TestCase):
 # Direct tests for homological_equivalence_torch.py
 # ---------------------------------------------------------------------------
 
+
 class TestTorchHEKernel(unittest.TestCase):
     """Unit tests for apply_weight1_timelike_homological_equivalence_torch()."""
 
@@ -664,22 +689,33 @@ class TestTorchHEKernel(unittest.TestCase):
         d2 = self.d * self.d
         num_x = self.parity_X.shape[0]
         num_z = self.parity_Z.shape[0]
-        z_cum = torch.randint(0, 2, (self.batch_size, self.n_rounds, d2),
-                              dtype=torch.uint8, generator=rng)
-        x_cum = torch.randint(0, 2, (self.batch_size, self.n_rounds, d2),
-                              dtype=torch.uint8, generator=rng)
-        s1s2x = torch.randint(0, 2, (self.batch_size, self.n_rounds, num_x),
-                              dtype=torch.uint8, generator=rng)
-        s1s2z = torch.randint(0, 2, (self.batch_size, self.n_rounds, num_z),
-                              dtype=torch.uint8, generator=rng)
+        z_cum = torch.randint(
+            0, 2, (self.batch_size, self.n_rounds, d2), dtype=torch.uint8, generator=rng
+        )
+        x_cum = torch.randint(
+            0, 2, (self.batch_size, self.n_rounds, d2), dtype=torch.uint8, generator=rng
+        )
+        s1s2x = torch.randint(
+            0, 2, (self.batch_size, self.n_rounds, num_x), dtype=torch.uint8, generator=rng
+        )
+        s1s2z = torch.randint(
+            0, 2, (self.batch_size, self.n_rounds, num_z), dtype=torch.uint8, generator=rng
+        )
         return z_cum, x_cum, s1s2x, s1s2z
 
     def test_output_shapes(self):
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs()
         z_diff, x_diff, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=8,
+            basis="X",
         )
         self.assertEqual(z_diff.shape, z_cum.shape)
         self.assertEqual(x_diff.shape, x_cum.shape)
@@ -689,9 +725,16 @@ class TestTorchHEKernel(unittest.TestCase):
     def test_output_dtypes(self):
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs()
         z_diff, x_diff, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=8,
+            basis="X",
         )
         self.assertEqual(z_diff.dtype, torch.uint8)
         self.assertEqual(x_diff.dtype, torch.uint8)
@@ -700,23 +743,40 @@ class TestTorchHEKernel(unittest.TestCase):
         """All output values must be exactly 0 or 1."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs()
         z_diff, x_diff, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=2, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=2,
+            max_passes=8,
+            basis="X",
         )
-        for name, t in [("z_diff", z_diff), ("x_diff", x_diff),
-                         ("s1s2x", sx_out), ("s1s2z", sz_out)]:
+        for name, t in [
+            ("z_diff", z_diff), ("x_diff", x_diff), ("s1s2x", sx_out), ("s1s2z", sz_out)
+        ]:
             vals = torch.unique(t)
-            self.assertTrue(torch.all((vals == 0) | (vals == 1)),
-                            f"{name} has non-binary values: {vals.tolist()}")
+            self.assertTrue(
+                torch.all((vals == 0) | (vals == 1)),
+                f"{name} has non-binary values: {vals.tolist()}"
+            )
 
     def test_diff_weight_nonincreasing(self):
         """With 0 cycles the final spacelike should not increase weight vs raw diffs."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=99)
         z_diff, x_diff, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=0, max_passes=0, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=0,
+            max_passes=0,
+            basis="X",
         )
         z_expected = torch.zeros_like(z_cum)
         z_expected[:, 0, :] = z_cum[:, 0, :]
@@ -735,9 +795,16 @@ class TestTorchHEKernel(unittest.TestCase):
         """num_he_cycles=0 does not modify syndromes (only spacelike on diffs)."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=77)
         z_diff, x_diff, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=0, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=0,
+            max_passes=8,
+            basis="X",
         )
         self.assertTrue(torch.equal(sx_out, s1s2x))
         self.assertTrue(torch.equal(sz_out, s1s2z))
@@ -746,14 +813,28 @@ class TestTorchHEKernel(unittest.TestCase):
         """With random errors, HE cycles>0 should generally produce different output."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=77)
         out0 = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=0, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=0,
+            max_passes=8,
+            basis="X",
         )
         out1 = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=3, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=3,
+            max_passes=8,
+            basis="X",
         )
         any_diff = any(not torch.equal(out0[i], out1[i]) for i in range(4))
         self.assertTrue(any_diff, "Expected HE to change at least one output tensor")
@@ -761,9 +842,7 @@ class TestTorchHEKernel(unittest.TestCase):
     def test_deterministic(self):
         """Same inputs must produce identical outputs across calls."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=55)
-        args = (z_cum, x_cum, s1s2x, s1s2z,
-                self.parity_Z, self.parity_X,
-                self.d, 1, 8, "X")
+        args = (z_cum, x_cum, s1s2x, s1s2z, self.parity_Z, self.parity_X, self.d, 1, 8, "X")
         out1 = apply_weight1_timelike_homological_equivalence_torch(*args)
         out2 = apply_weight1_timelike_homological_equivalence_torch(*args)
         for i in range(4):
@@ -773,9 +852,16 @@ class TestTorchHEKernel(unittest.TestCase):
         """With num_he_cycles=0, syndromes should pass through unmodified."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=33)
         _, _, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=0, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=0,
+            max_passes=8,
+            basis="X",
         )
         self.assertTrue(torch.equal(sx_out, s1s2x))
         self.assertTrue(torch.equal(sz_out, s1s2z))
@@ -784,19 +870,37 @@ class TestTorchHEKernel(unittest.TestCase):
         """HE reductions should never increase total error weight."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=42)
         z_raw, x_raw, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=0, max_passes=0, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=0,
+            max_passes=0,
+            basis="X",
         )
         z_red, x_red, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=3, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=3,
+            max_passes=8,
+            basis="X",
         )
-        self.assertLessEqual(z_red.sum().item(), z_raw.sum().item(),
-                             "Z error weight increased after HE")
-        self.assertLessEqual(x_red.sum().item(), x_raw.sum().item(),
-                             "X error weight increased after HE")
+        self.assertLessEqual(
+            z_red.sum().item(),
+            z_raw.sum().item(), "Z error weight increased after HE"
+        )
+        self.assertLessEqual(
+            x_red.sum().item(),
+            x_raw.sum().item(), "X error weight increased after HE"
+        )
 
     def test_output_binary_and_shapes_multi_d(self):
         """Output must be binary uint8 with correct shapes for all d, seed, basis."""
@@ -812,12 +916,24 @@ class TestTorchHEKernel(unittest.TestCase):
                     B, R = 8, d
                     z_cum = torch.randint(0, 2, (B, R, d2), dtype=torch.uint8, generator=rng)
                     x_cum = torch.randint(0, 2, (B, R, d2), dtype=torch.uint8, generator=rng)
-                    s1s2x = torch.randint(0, 2, (B, R, px_m.shape[0]), dtype=torch.uint8, generator=rng)
-                    s1s2z = torch.randint(0, 2, (B, R, pz_m.shape[0]), dtype=torch.uint8, generator=rng)
+                    s1s2x = torch.randint(
+                        0, 2, (B, R, px_m.shape[0]), dtype=torch.uint8, generator=rng
+                    )
+                    s1s2z = torch.randint(
+                        0, 2, (B, R, pz_m.shape[0]), dtype=torch.uint8, generator=rng
+                    )
 
                     z_out, x_out, sx_out, sz_out = apply_weight1_timelike_homological_equivalence_torch(
-                        z_cum, x_cum, s1s2x, s1s2z, pz_m, px_m, d,
-                        num_he_cycles=1, max_passes=8, basis=basis,
+                        z_cum,
+                        x_cum,
+                        s1s2x,
+                        s1s2z,
+                        pz_m,
+                        px_m,
+                        d,
+                        num_he_cycles=1,
+                        max_passes=8,
+                        basis=basis,
                     )
 
                     tag = f"d={d} seed={seed} basis={basis}"
@@ -839,9 +955,16 @@ class TestTorchHEKernel(unittest.TestCase):
         s1s2x = torch.zeros(2, 3, num_x, dtype=torch.uint8)
         s1s2z = torch.zeros(2, 3, num_z, dtype=torch.uint8)
         z_diff, x_diff, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=8,
+            basis="X",
         )
         self.assertTrue(torch.all(z_diff == 0))
         self.assertTrue(torch.all(x_diff == 0))
@@ -858,9 +981,16 @@ class TestTorchHEKernel(unittest.TestCase):
         s1s2x = torch.randint(0, 2, (4, 1, num_x), dtype=torch.uint8, generator=rng)
         s1s2z = torch.randint(0, 2, (4, 1, num_z), dtype=torch.uint8, generator=rng)
         z_diff, x_diff, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=8, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=8,
+            basis="X",
         )
         self.assertLessEqual(z_diff.sum().item(), z_cum.sum().item())
         self.assertLessEqual(x_diff.sum().item(), x_cum.sum().item())
@@ -879,8 +1009,16 @@ class TestTorchHEKernel(unittest.TestCase):
             s1s2x = torch.randint(0, 2, (2, d, px.shape[0]), dtype=torch.uint8, generator=rng)
             s1s2z = torch.randint(0, 2, (2, d, pz.shape[0]), dtype=torch.uint8, generator=rng)
             z_diff, x_diff, _, _ = apply_weight1_timelike_homological_equivalence_torch(
-                z_cum, x_cum, s1s2x, s1s2z,
-                pz, px, d, num_he_cycles=1, max_passes=8, basis="X",
+                z_cum,
+                x_cum,
+                s1s2x,
+                s1s2z,
+                pz,
+                px,
+                d,
+                num_he_cycles=1,
+                max_passes=8,
+                basis="X",
             )
             self.assertEqual(z_diff.shape, (2, d, d2), f"Wrong shape for d={d}")
 
@@ -888,19 +1026,32 @@ class TestTorchHEKernel(unittest.TestCase):
         """More passes should not further reduce total error weight."""
         z_cum, x_cum, s1s2x, s1s2z = self._random_inputs(seed=88)
         out_few = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=32, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=32,
+            basis="X",
         )
         out_many = apply_weight1_timelike_homological_equivalence_torch(
-            z_cum, x_cum, s1s2x, s1s2z,
-            self.parity_Z, self.parity_X,
-            self.d, num_he_cycles=1, max_passes=256, basis="X",
+            z_cum,
+            x_cum,
+            s1s2x,
+            s1s2z,
+            self.parity_Z,
+            self.parity_X,
+            self.d,
+            num_he_cycles=1,
+            max_passes=256,
+            basis="X",
         )
         w_few = out_few[0].sum().item() + out_few[1].sum().item()
         w_many = out_many[0].sum().item() + out_many[1].sum().item()
-        self.assertEqual(w_few, w_many,
-                         f"Weight changed from {w_few} to {w_many} with more passes")
+        self.assertEqual(w_few, w_many, f"Weight changed from {w_few} to {w_many} with more passes")
 
     def _spacelike_inputs(self, d, B, seed):
         """Generate random inputs and caches for spacelike HE tests."""
@@ -932,29 +1083,38 @@ class TestTorchHEKernel(unittest.TestCase):
             x_diff_in = (x_cum ^ x_prev).to(torch.uint8)
 
             z_diff_out, x_diff_out = apply_homological_equivalence_torch_vmap(
-                z_diff_in, x_diff_in, pz, px, d, cache_Z=czsp, cache_X=cxsp)
+                z_diff_in, x_diff_in, pz, px, d, cache_Z=czsp, cache_X=cxsp
+            )
 
-            B = 4; R = d
+            B = 4
+            R = d
             for b in range(B):
                 for r in range(R):
-                    self.assertLessEqual(x_diff_out[b, r].sum().item(),
-                        x_diff_in[b, r].sum().item(),
-                        f"{tag} d={d} s={seed} b={b} r={r}: X diff weight increased")
-                    self.assertLessEqual(z_diff_out[b, r].sum().item(),
-                        z_diff_in[b, r].sum().item(),
-                        f"{tag} d={d} s={seed} b={b} r={r}: Z diff weight increased")
+                    self.assertLessEqual(
+                        x_diff_out[b, r].sum().item(), x_diff_in[b, r].sum().item(),
+                        f"{tag} d={d} s={seed} b={b} r={r}: X diff weight increased"
+                    )
+                    self.assertLessEqual(
+                        z_diff_out[b, r].sum().item(), z_diff_in[b, r].sum().item(),
+                        f"{tag} d={d} s={seed} b={b} r={r}: Z diff weight increased"
+                    )
 
-            self.assertTrue(((x_diff_out == 0) | (x_diff_out == 1)).all(),
-                f"{tag} d={d} s={seed}: X non-binary")
-            self.assertTrue(((z_diff_out == 0) | (z_diff_out == 1)).all(),
-                f"{tag} d={d} s={seed}: Z non-binary")
+            self.assertTrue(
+                ((x_diff_out == 0) | (x_diff_out == 1)).all(), f"{tag} d={d} s={seed}: X non-binary"
+            )
+            self.assertTrue(
+                ((z_diff_out == 0) | (z_diff_out == 1)).all(), f"{tag} d={d} s={seed}: Z non-binary"
+            )
 
             z_diff_2, x_diff_2 = apply_homological_equivalence_torch_vmap(
-                z_diff_out, x_diff_out, pz, px, d, cache_Z=czsp, cache_X=cxsp)
-            self.assertTrue(torch.equal(z_diff_out, z_diff_2),
-                f"{tag} d={d} s={seed}: Z not idempotent")
-            self.assertTrue(torch.equal(x_diff_out, x_diff_2),
-                f"{tag} d={d} s={seed}: X not idempotent")
+                z_diff_out, x_diff_out, pz, px, d, cache_Z=czsp, cache_X=cxsp
+            )
+            self.assertTrue(
+                torch.equal(z_diff_out, z_diff_2), f"{tag} d={d} s={seed}: Z not idempotent"
+            )
+            self.assertTrue(
+                torch.equal(x_diff_out, x_diff_2), f"{tag} d={d} s={seed}: X not idempotent"
+            )
 
     def test_spacelike_invariants(self):
         """Spacelike HE on diffs preserves all invariants."""
@@ -985,7 +1145,9 @@ class TestTorchCacheBuilders(unittest.TestCase):
         for d in (3, 5, 7):
             hx, hz, _ = _build_parity_matrices(d)
             for label, h in [("X", hx), ("Z", hz)]:
-                cache = build_spacelike_he_cache(h.to(torch.uint8), distance=d, device=torch.device("cpu"))
+                cache = build_spacelike_he_cache(
+                    h.to(torch.uint8), distance=d, device=torch.device("cpu")
+                )
                 for s in range(cache.support_sizes.shape[0]):
                     w = cache.support_sizes[s].item()
                     self.assertIn(w, (2, 4), f"d={d} {label} stab {s}: unexpected weight {w}")
@@ -1004,7 +1166,9 @@ class TestTorchCacheBuilders(unittest.TestCase):
         """Greedy layers should collectively cover all stabilizers."""
         for d in (3, 5):
             hx, _, _ = _build_parity_matrices(d)
-            cache = build_spacelike_he_cache(hx.to(torch.uint8), distance=d, device=torch.device("cpu"))
+            cache = build_spacelike_he_cache(
+                hx.to(torch.uint8), distance=d, device=torch.device("cpu")
+            )
             all_idx = []
             for layer in cache.layers:
                 all_idx.extend(layer.tolist())
@@ -1014,6 +1178,7 @@ class TestTorchCacheBuilders(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Torch integration tests
 # ---------------------------------------------------------------------------
+
 
 class TestHETorchIntegration(unittest.TestCase):
     """Integration tests through MemoryCircuitTorch.generate_batch()."""
@@ -1086,8 +1251,7 @@ class TestHETorchIntegration(unittest.TestCase):
         # Error channels (0, 1) weight should not increase.
         w0 = trainY0[:, :2].sum().item()
         w1 = trainY1[:, :2].sum().item()
-        self.assertLessEqual(w1, w0,
-                             f"HE increased error weight: {w0} -> {w1}")
+        self.assertLessEqual(w1, w0, f"HE increased error weight: {w0} -> {w1}")
 
     def test_trainY_binary_channels(self):
         """
