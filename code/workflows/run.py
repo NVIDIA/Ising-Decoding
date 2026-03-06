@@ -100,7 +100,7 @@ def find_best_model(path, *, rank: int = 0):
     model_files = []
     
     for filename in os.listdir(path):
-        if not filename.startswith("PreDecoderModelMemory_v1"):
+        if not filename.startswith("PreDecoderModelMemory_"):
             continue
         try:
             value = float(filename.split(".")[2])  # Gets epoch number
@@ -119,7 +119,7 @@ def find_best_model(path, *, rank: int = 0):
             print(f"  {marker} {filename} (epoch {epoch})")
     
     if best_file is None:
-        raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory_v1 files found in {path}")
+        raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory files found in {path}")
     
     best_model_path = path + "/" + best_file
     if rank == 0:
@@ -205,8 +205,17 @@ def _load_model(cfg, dist):
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
             checkpoint_dir = os.path.join(project_root, checkpoint_dir)
         
-        # Construct checkpoint filename: PreDecoderModelMemory_v1.0.{checkpoint}.pt
-        checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
+        target_suffix = f".0.{use_checkpoint}.pt"
+        checkpoint_filename = None
+        try:
+            for f in os.listdir(checkpoint_dir):
+                if f.startswith("PreDecoderModelMemory_") and f.endswith(target_suffix):
+                    checkpoint_filename = f
+                    break
+        except OSError:
+            pass
+        if checkpoint_filename is None:
+            checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
         model_path = os.path.join(checkpoint_dir, checkpoint_filename)
         
         if dist.rank == 0:

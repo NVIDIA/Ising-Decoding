@@ -90,17 +90,12 @@ python -m pip install --upgrade pip
 pip install -r code/requirements_public_inference.txt
 ```
 
-2. **Get the pre-trained model**  
-   **Package users** receive model files via your distribution channel (e.g. release package or archive), not from this repo. Place the model file so the loader can find it:
-   - Either extract the provided archive into the experiment models folder:
-     ```bash
-     mkdir -p outputs/predecoder_model_1/models
-     tar xzf /path/to/PreDecoderModelMemory_v1.0.94.pt.tar.gz -C outputs/predecoder_model_1/models
-     ```
-     This creates `outputs/predecoder_model_1/models/PreDecoderModelMemory_v1.0.94.pt`.
-   - Or, if your package includes a download URL for the model, set `PREDECODER_MODEL_URL` (or `MODEL_URL`) and run with `EXTRA_PARAMS="+test.use_model_checkpoint=94"`; the loader will download to the experiment models folder when the file is missing.
+2. **Get the pre-trained models**  
+   This repo ships two pre-trained model files (tracked with Git LFS):
+   - `models/PreDecoderModelMemory_r9_v1.0.77.pt` (receptive field R=9, checkpoint 77)
+   - `models/PreDecoderModelMemory_r13_v1.0.86.pt` (receptive field R=13, checkpoint 86)
 
-   **Repository users**: This repo tracks the model with Git LFS. Clones get the file via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch the file when not in the working tree (e.g. in a minimal checkout or CI).
+   Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
 3. Set:
 - `EXPERIMENT_NAME=predecoder_model_1`

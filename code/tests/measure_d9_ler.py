@@ -9,10 +9,10 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-"""One-off script to measure LER at d=9, n_rounds=9 for TestPublicInferenceModelV1 baseline.
+"""One-off script to measure LER at d=9, n_rounds=9 for TestPublicInferenceModels baseline.
 
 Who: Maintainers or developers working on the public inference model or d=9 test bounds.
-When: Run when you want to tighten test_inference_d9_noise25p_ler_quality bounds (e.g. after
+When: Run when you want to tighten test_inference_d9_r9_ler_quality bounds (e.g. after
   changing the model, noise, or config), or to recalibrate after flaky CI. Not run by CI.
 Use the printed "Suggested test bounds" to update LER_AVG_D9_MAX / LER_BASIS_D9_MAX in
   test_inference_public_model.py if desired.
@@ -42,13 +42,13 @@ def main():
     model_spec = validate_public_config(cfg)
     merged = apply_public_defaults_and_model(cfg, model_spec)
 
-    model_file = repo_root / "models" / "PreDecoderModelMemory_v1.0.94.pt"
+    model_file = repo_root / "models" / "PreDecoderModelMemory_r9_v1.0.77.pt"
     if not model_file.exists():
         print(f"Missing model: {model_file}")
         return 1
 
     merged.model_checkpoint_dir = str(model_file.parent)
-    merged.test.use_model_checkpoint = 94
+    merged.test.use_model_checkpoint = 77
     merged.test.latency_num_samples = 0
     merged.test.verbose_inference = False
     if "dataloader" in merged.test:
@@ -87,7 +87,7 @@ def main():
     base_z = float(z["logical error ratio (pymatch mean)"])
     ler_avg = 0.5 * (ler_x + ler_z)
 
-    print("d=9, n_rounds=9 (25p noise, model v1.0.94):")
+    print("d=9, n_rounds=9 (25p noise, model r9 v1.0.77):")
     print(f"  LER X (after):  {ler_x:.6f}  baseline: {base_x:.6f}")
     print(f"  LER Z (after):  {ler_z:.6f}  baseline: {base_z:.6f}")
     print(f"  LER avg:        {ler_avg:.6f}")

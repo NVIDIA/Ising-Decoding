@@ -17,7 +17,6 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
-# Ensure repo's code/ is on sys.path when running directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from workflows.config_validator import apply_public_defaults_and_model, validate_public_config
@@ -31,14 +30,32 @@ from training.distributed import DistributedManager
 # gives combined SE ~4e-5, so 2e-4 is a ~5-sigma guard against flakes.
 LER_IMPROVEMENT_TOLERANCE = 2e-4
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MODELS_DIR = REPO_ROOT / "models"
 
-def _run_inference_rtest(distance: int, n_rounds: int):
-    """Load public config and model v1.0.94, run inference at given distance/n_rounds; returns result dict."""
-    repo_root = Path(__file__).resolve().parents[2]
-    cfg_path = repo_root / "conf" / "config_public.yaml"
+MODEL_R9 = {
+    "filename": "PreDecoderModelMemory_r9_v1.0.77.pt",
+    "checkpoint": 77,
+    "model_id": 1,
+}
+MODEL_R13 = {
+    "filename": "PreDecoderModelMemory_r13_v1.0.86.pt",
+    "checkpoint": 86,
+    "model_id": 4,
+}
+
+REQUIRED_MODEL_FILES = [
+    MODELS_DIR / MODEL_R9["filename"],
+    MODELS_DIR / MODEL_R13["filename"],
+]
+
+
+def _run_inference_rtest(distance: int, n_rounds: int, model_info: dict):
+    """Load public config and a specific model, run inference; returns result dict."""
+    cfg_path = REPO_ROOT / "conf" / "config_public.yaml"
     cfg = OmegaConf.load(str(cfg_path))
 
-    cfg.model_id = 1
+    cfg.model_id = model_info["model_id"]
     cfg.distance = distance
     cfg.n_rounds = n_rounds
     cfg.workflow.task = "inference"
@@ -46,14 +63,14 @@ def _run_inference_rtest(distance: int, n_rounds: int):
     model_spec = validate_public_config(cfg)
     merged = apply_public_defaults_and_model(cfg, model_spec)
 
-    model_file = (repo_root / "models" / "PreDecoderModelMemory_v1.0.94.pt").resolve()
+    model_file = (MODELS_DIR / model_info["filename"]).resolve()
     if not model_file.exists():
         raise FileNotFoundError(
             f"Missing model file: {model_file}. It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file."
         )
 
     merged.model_checkpoint_dir = str(model_file.parent)
-    merged.test.use_model_checkpoint = 94
+    merged.test.use_model_checkpoint = model_info["checkpoint"]
     merged.test.latency_num_samples = 0
     merged.test.verbose_inference = False
     if "dataloader" in merged.test:
@@ -97,51 +114,29 @@ def _assert_ler_improvement_vs_baseline(self, result, tolerance: float = LER_IMP
         )
 
 
-# Required model file; must exist in repo so tests fail (not skip) if it is removed.
-REQUIRED_MODEL_FILE = (Path(__file__).resolve().parents[2] / "models" / "PreDecoderModelMemory_v1.0.94.pt")
+class TestPublicInferenceModels(unittest.TestCase):
+    """Tests for pre-trained model files (r9 and r13)."""
 
+    def test_required_model_files_present(self):
+        """Fail if any tracked model file is missing. Must not skip."""
+        for model_file in REQUIRED_MODEL_FILES:
+            self.assertTrue(
+                model_file.exists(),
+                msg=f"Required model file missing: {model_file}. "
+                "It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file.",
+            )
 
-class TestPublicInferenceModelV1(unittest.TestCase):
-    def test_required_model_file_present(self):
-        """Fail if the tracked model file is missing (e.g. removed from repo). Must not skip."""
-        self.assertTrue(
-            REQUIRED_MODEL_FILE.exists(),
-            msg=f"Required model file missing: {REQUIRED_MODEL_FILE}. "
-            "It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file.",
-        )
+    # -- R=9 model tests --
 
     @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for inference rtest.")
-    def test_inference_d13_noise25p_ler_quality(self):
-        """d=13, 25p noise: LER avg, per-basis (X/Z) in range, and improvement over baseline."""
-        result = _run_inference_rtest(13, 13)
+    def test_inference_d9_r9_ler_quality(self):
+        """d=9, n_rounds=9, r9 model: LER avg in range, per-basis, improvement."""
+        result = _run_inference_rtest(9, 9, MODEL_R9)
 
         ler_x = float(result["X"]["logical error ratio (mean)"])
         ler_z = float(result["Z"]["logical error ratio (mean)"])
         ler_avg = 0.5 * (ler_x + ler_z)
 
-        # 1) Average LER sanity check (expected ~2e-4 for d=13 at default noise).
-        # SE(avg) ≈ sqrt(p/N)/sqrt(2) ≈ 2e-5; delta=1.5e-4 gives ~7-sigma headroom.
-        self.assertAlmostEqual(ler_avg, 2e-4, delta=1.5e-4)
-
-        # 2) Per-basis LER in expected range.
-        # Per-basis SE ≈ 2.8e-5 with 262k shots; delta=2e-4 covers ~7 sigma.
-        self.assertAlmostEqual(ler_x, 2e-4, delta=2e-4, msg="LER X out of range")
-        self.assertAlmostEqual(ler_z, 2e-4, delta=2e-4, msg="LER Z out of range")
-
-        # 3) Pre-decoder not worse than baseline (LER after <= baseline + tolerance)
-        _assert_ler_improvement_vs_baseline(self, result)
-
-    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for inference rtest.")
-    def test_inference_d9_noise25p_ler_quality(self):
-        """d=9, n_rounds=9, 25p noise: LER avg in conservative range, per-basis, improvement.
-        Baseline range can be tightened by running: python3 code/tests/measure_d9_ler.py"""
-        result = _run_inference_rtest(9, 9)
-
-        ler_x = float(result["X"]["logical error ratio (mean)"])
-        ler_z = float(result["Z"]["logical error ratio (mean)"])
-        ler_avg = 0.5 * (ler_x + ler_z)
-
-        # Conservative upper bound for d=9 (smaller code -> higher LER than d=13).
         LER_AVG_D9_MAX = 5e-3
         LER_BASIS_D9_MAX = 1e-2
         self.assertGreaterEqual(ler_avg, 0.0, msg="LER avg negative")
@@ -151,9 +146,39 @@ class TestPublicInferenceModelV1(unittest.TestCase):
         self.assertGreaterEqual(ler_z, 0.0)
         self.assertLessEqual(ler_z, LER_BASIS_D9_MAX, msg="LER Z too high")
 
-        # d=9 LER is ~5-10x higher than d=13, so Monte Carlo variance is
-        # proportionally larger. Use a wider tolerance than the d=13 default.
         _assert_ler_improvement_vs_baseline(self, result, tolerance=5e-4)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for inference rtest.")
+    def test_inference_d13_r9_ler_quality(self):
+        """d=13, n_rounds=13, r9 model: evaluate at distance larger than R."""
+        result = _run_inference_rtest(13, 13, MODEL_R9)
+
+        ler_x = float(result["X"]["logical error ratio (mean)"])
+        ler_z = float(result["Z"]["logical error ratio (mean)"])
+        ler_avg = 0.5 * (ler_x + ler_z)
+
+        self.assertAlmostEqual(ler_avg, 2e-4, delta=1.5e-4)
+        self.assertAlmostEqual(ler_x, 2e-4, delta=2e-4, msg="LER X out of range")
+        self.assertAlmostEqual(ler_z, 2e-4, delta=2e-4, msg="LER Z out of range")
+
+        _assert_ler_improvement_vs_baseline(self, result)
+
+    # -- R=13 model tests --
+
+    @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for inference rtest.")
+    def test_inference_d13_r13_ler_quality(self):
+        """d=13, n_rounds=13, r13 model: LER avg, per-basis, improvement over baseline."""
+        result = _run_inference_rtest(13, 13, MODEL_R13)
+
+        ler_x = float(result["X"]["logical error ratio (mean)"])
+        ler_z = float(result["Z"]["logical error ratio (mean)"])
+        ler_avg = 0.5 * (ler_x + ler_z)
+
+        self.assertAlmostEqual(ler_avg, 2e-4, delta=1.5e-4)
+        self.assertAlmostEqual(ler_x, 2e-4, delta=2e-4, msg="LER X out of range")
+        self.assertAlmostEqual(ler_z, 2e-4, delta=2e-4, msg="LER Z out of range")
+
+        _assert_ler_improvement_vs_baseline(self, result)
 
 
 if __name__ == "__main__":
