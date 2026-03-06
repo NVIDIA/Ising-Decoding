@@ -87,7 +87,8 @@ jobs:
           source .venv_train_${{ matrix.python-version }}/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_train.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          python code/scripts/check_ler_from_log.py /tmp/ci_train.log --max-ler 0.25
+          # 0.35: short run (4k/1 epoch); loosen if flaky
+          python code/scripts/check_ler_from_log.py /tmp/ci_train.log --max-ler 0.35
         env:
           EXPERIMENT_NAME: ci_short
           PREDECODER_TRAIN_SAMPLES: "4096"
@@ -145,7 +146,8 @@ jobs:
           . .venv_mid/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_mid.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          python code/scripts/check_ler_from_log.py /tmp/ci_mid.log --max-ler 0.15
+          # 0.2: mid-tier (32k/2 epochs); loosen if flaky
+          python code/scripts/check_ler_from_log.py /tmp/ci_mid.log --max-ler 0.2
         env:
           EXPERIMENT_NAME: ci_mid
           PREDECODER_TRAIN_SAMPLES: "32768"

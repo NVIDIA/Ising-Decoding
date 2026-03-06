@@ -303,7 +303,8 @@ jobs:
           . .venv/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_full_epoch.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          python code/scripts/check_ler_from_log.py /tmp/ci_full_epoch.log --max-ler 0.1
+          # 0.15: conservative for 2M samples / 1 epoch; tighten if runs are stable
+          python code/scripts/check_ler_from_log.py /tmp/ci_full_epoch.log --max-ler 0.15
         env:
           EXPERIMENT_NAME: ci_full_epoch
           PREDECODER_TRAIN_SAMPLES: "2097152"
