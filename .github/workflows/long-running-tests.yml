@@ -8,15 +8,19 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-# Long-running GPU tests: statistical validation, multi-orientation inference,
-# LER regression, and full-epoch training. NOT triggered by push/PR.
+# Long-running GPU tests (20+ min each): statistical validation,
+# multi-orientation inference, LER regression, and full-epoch training.
+#
+# Schedule: daily at 02:00 UTC, but skipped if no commits landed on main
+# in the last 24 hours (saves GPU runner time on quiet days).
+# Manual dispatch always runs regardless of commit activity.
+# All jobs use Python 3.13 (multi-version coverage is handled by short-tier CI).
 # See code/tests/README_TEST_TIERS.md for the tier model.
 
 name: Long-running tests
 
 on:
   schedule:
-    # Daily at 02:00 UTC
     - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
@@ -30,17 +34,49 @@ env:
   PIP_NO_CACHE_DIR: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_PREFER_BINARY: "1"
+  PYTHON_VERSION: "3.13"
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: skip the whole workflow on schedule if main had no commits in 24h.
+  # Manual dispatch always passes through.
+  # ---------------------------------------------------------------------------
+  check-for-changes:
+    runs-on: linux-amd64-cpu4
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — always run."
+          else
+            SINCE="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ')"
+            COUNT=$(git log --oneline --since="$SINCE" origin/main | wc -l)
+            if [[ "$COUNT" -gt 0 ]]; then
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              echo "$COUNT commit(s) on main in the last 24h — running long tests."
+            else
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              echo "No commits on main in the last 24h — skipping."
+            fi
+          fi
+
   # ---------------------------------------------------------------------------
   # Statistical noise model tests (~15 min)
   # Runs the full test suite with RUN_SLOW=1 to enable >=100k-shot tests.
   # ---------------------------------------------------------------------------
   statistical-noise-model:
+    needs: check-for-changes
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.jobs == '' || contains(inputs.jobs, 'statistical-noise-model')))
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'statistical-noise-model'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
@@ -56,8 +92,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
           git lfs install
 
       - uses: actions/checkout@v4
@@ -66,27 +106,33 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_inference.txt
 
       - name: Verify GPU
         run: |
           nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: Run statistical noise model tests (RUN_SLOW=1)
         run: |
-          RUN_SLOW=1 PYTHONPATH=code python3 -m unittest discover -s code/tests -p "test_noise_model.py" -v
+          . .venv/bin/activate
+          RUN_SLOW=1 PYTHONPATH=code python -m unittest discover -s code/tests -p "test_noise_model.py" -v
 
   # ---------------------------------------------------------------------------
   # Multi-orientation inference (~30-60 min)
   # Inference over all 4 surface code orientations (O1-O4) with moderate shots.
   # ---------------------------------------------------------------------------
   orientation-inference:
+    needs: check-for-changes
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.jobs == '' || contains(inputs.jobs, 'orientation-inference')))
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'orientation-inference'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
@@ -102,8 +148,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
           git lfs install
 
       - uses: actions/checkout@v4
@@ -112,16 +162,21 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_train.txt
 
       - name: Verify GPU
         run: |
           nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: Inference over all orientations (O1-O4)
-        run: ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh
+        run: |
+          . .venv/bin/activate
+          ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh
         env:
           EXPERIMENT_NAME: ci_orient
           PREDECODER_INFERENCE_NUM_SAMPLES: "1024"
@@ -133,10 +188,12 @@ jobs:
   # Evaluates LER at multiple distances using pre-trained models.
   # ---------------------------------------------------------------------------
   ler-regression:
+    needs: check-for-changes
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.jobs == '' || contains(inputs.jobs, 'ler-regression')))
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'ler-regression'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
@@ -152,8 +209,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
           git lfs install
 
       - uses: actions/checkout@v4
@@ -162,27 +223,33 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_inference.txt
 
       - name: Verify GPU
         run: |
           nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: LER regression (pre-trained models)
         run: |
-          PYTHONPATH=code python3 -m unittest code.tests.test_inference_public_model -v
+          . .venv/bin/activate
+          PYTHONPATH=code python -m unittest code.tests.test_inference_public_model -v
 
   # ---------------------------------------------------------------------------
   # Full 1-epoch training + LER validation (~30-60 min)
   # Trains 1 epoch with production-scale samples and validates LER threshold.
   # ---------------------------------------------------------------------------
   full-epoch-training:
+    needs: check-for-changes
     if: >-
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' &&
-       (inputs.jobs == '' || contains(inputs.jobs, 'full-epoch-training')))
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'full-epoch-training'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
       image: ubuntu:22.04
@@ -198,8 +265,12 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
           git lfs install
 
       - uses: actions/checkout@v4
@@ -208,16 +279,21 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_train.txt
 
       - name: Verify GPU
         run: |
           nvidia-smi
-          python3 -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: Full 1-epoch training + inference
-        run: bash code/scripts/smoke_run.sh
+        run: |
+          . .venv/bin/activate
+          bash code/scripts/smoke_run.sh
         env:
           EXPERIMENT_NAME: ci_full_epoch
           PREDECODER_TRAIN_SAMPLES: "2097152"
