@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# GPU tests live in a separate workflow because NVIDIA self-hosted runners
+# block pull_request events entirely. Keeping them here avoids a confusing
+# "Skipped" entry with unresolved matrix names on every PR.
+
+name: CI / GPU
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - "pull-request/[0-9]+"
+  merge_group:
+    types:
+      - checks_requested
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_NO_CACHE_DIR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_PREFER_BINARY: "1"
+
+jobs:
+  gpu-tests:
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:22.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    name: "gpu / py${{ matrix.python-version }}"
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y \
+            python${{ matrix.python-version }} \
+            python${{ matrix.python-version }}-venv \
+            python${{ matrix.python-version }}-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify GPU
+        run: nvidia-smi
+
+      - name: Install dependencies and run tests
+        run: bash code/scripts/check_python_compat.sh
+        env:
+          PYTHON_BIN: python${{ matrix.python-version }}
+          MODE: train
+          SKIP_TESTS: "0"
+          REQUIRE_GPU: "1"
+
+      - name: Smoke training + inference
+        shell: bash
+        run: |
+          source .venv_train_${{ matrix.python-version }}/bin/activate
+          bash code/scripts/smoke_run.sh
+        env:
+          EXPERIMENT_NAME: ci_smoke
+          PREDECODER_TRAIN_SAMPLES: "4096"
+          PREDECODER_VAL_SAMPLES: "512"
+          PREDECODER_TEST_SAMPLES: "512"
+          PREDECODER_TRAIN_EPOCHS: "1"
