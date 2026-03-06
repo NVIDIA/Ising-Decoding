@@ -79,7 +79,7 @@ jobs:
         (inputs.jobs == '' || contains(inputs.jobs, 'statistical-noise-model'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
-      image: ubuntu:22.04
+      image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
@@ -135,7 +135,7 @@ jobs:
         (inputs.jobs == '' || contains(inputs.jobs, 'orientation-inference'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
-      image: ubuntu:22.04
+      image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
@@ -196,7 +196,7 @@ jobs:
         (inputs.jobs == '' || contains(inputs.jobs, 'ler-regression'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
-      image: ubuntu:22.04
+      image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
@@ -252,7 +252,7 @@ jobs:
         (inputs.jobs == '' || contains(inputs.jobs, 'full-epoch-training'))))
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
-      image: ubuntu:22.04
+      image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
