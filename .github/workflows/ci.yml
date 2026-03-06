@@ -18,6 +18,7 @@ on:
   push:
     branches:
       - main
+      - "pull-request/[0-9]+"
   merge_group:
     types:
       - checks_requested
@@ -33,7 +34,7 @@ env:
 
 jobs:
   spdx-header-check:
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,7 +43,7 @@ jobs:
       - run: python3 code/scripts/spdx_headers.py --check
 
   unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu4
     strategy:
       fail-fast: false
       matrix:
@@ -64,7 +65,7 @@ jobs:
           PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
   unit-tests-coverage:
-    runs-on: ubuntu-latest
+    runs-on: linux-amd64-cpu4
     steps:
       - uses: actions/checkout@v4
         with:
