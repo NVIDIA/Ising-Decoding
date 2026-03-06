@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 25-Parameter Noise Model for Quantum Error Correction.
 
@@ -63,17 +62,16 @@ def _single_p_mapping(p: float, spam_factor: float = 2.0 / 3.0) -> Dict[str, flo
         "p_idle_spam_X": p_idle_spam,
         "p_idle_spam_Y": p_idle_spam,
         "p_idle_spam_Z": p_idle_spam,
-        **{f"p_cnot_{k}": p_cnot for k in CNOT_ERROR_TYPES},
+        **{
+            f"p_cnot_{k}": p_cnot for k in CNOT_ERROR_TYPES
+        },
     }
 
 
 # Ordered list of CNOT error types (excluding II)
 # Order matches Stim's PAULI_CHANNEL_2: IX, IY, IZ, XI, XX, XY, XZ, YI, YX, YY, YZ, ZI, ZX, ZY, ZZ
 CNOT_ERROR_TYPES = [
-    'IX', 'IY', 'IZ',
-    'XI', 'XX', 'XY', 'XZ',
-    'YI', 'YX', 'YY', 'YZ',
-    'ZI', 'ZX', 'ZY', 'ZZ'
+    'IX', 'IY', 'IZ', 'XI', 'XX', 'XY', 'XZ', 'YI', 'YX', 'YY', 'YZ', 'ZI', 'ZX', 'ZY', 'ZZ'
 ]
 
 # Mapping from error type string to index (0-14)
@@ -100,11 +98,11 @@ class NoiseModel:
     # State preparation errors (2)
     p_prep_X: float = 0.0
     p_prep_Z: float = 0.0
-    
+
     # Measurement errors (2)
     p_meas_X: float = 0.0
     p_meas_Z: float = 0.0
-    
+
     # Idle errors during bulk/CNOT layers (3)
     p_idle_cnot_X: float = 0.0
     p_idle_cnot_Y: float = 0.0
@@ -114,7 +112,7 @@ class NoiseModel:
     p_idle_spam_X: float = 0.0
     p_idle_spam_Y: float = 0.0
     p_idle_spam_Z: float = 0.0
-    
+
     # CNOT two-qubit Pauli errors (15)
     # Convention: "AB" means A on control, B on target
     p_cnot_IX: float = 0.0
@@ -135,14 +133,14 @@ class NoiseModel:
 
     # Drift support (not part of the user-facing parameterization)
     _reference: Dict[str, float] = field(default_factory=dict, repr=False, compare=False)
-    
+
     def __post_init__(self):
         """Validate parameters after initialization."""
         # Capture reference parameters once (used for drift/randomization)
         if not self._reference:
             self._reference = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
         self.validate()
-    
+
     def validate(self) -> None:
         """
         Validate that all probabilities are valid (0 <= p <= 1).
@@ -151,7 +149,7 @@ class NoiseModel:
             ValueError: If any probability is out of range or total CNOT prob > 1.
         """
         all_params = {k: v for k, v in asdict(self).items() if not k.startswith("_")}
-        
+
         for name, value in all_params.items():
             if not isinstance(value, (int, float)):
                 raise ValueError(f"{name} must be a number, got {type(value)}")
@@ -159,20 +157,24 @@ class NoiseModel:
                 raise ValueError(f"{name} must be non-negative, got {value}")
             if value > 1:
                 raise ValueError(f"{name} must be <= 1, got {value}")
-        
+
         # Check total CNOT probability doesn't exceed 1
         cnot_total = sum(v for k, v in all_params.items() if k.startswith('p_cnot_'))
         if cnot_total > 1:
             raise ValueError(f"Total CNOT error probability ({cnot_total}) exceeds 1")
-        
+
         # Check total idle probabilities don't exceed 1
         idle_cnot_total = self.p_idle_cnot_X + self.p_idle_cnot_Y + self.p_idle_cnot_Z
         if idle_cnot_total > 1:
-            raise ValueError(f"Total CNOT-layer idle error probability ({idle_cnot_total}) exceeds 1")
+            raise ValueError(
+                f"Total CNOT-layer idle error probability ({idle_cnot_total}) exceeds 1"
+            )
         idle_spam_total = self.p_idle_spam_X + self.p_idle_spam_Y + self.p_idle_spam_Z
         if idle_spam_total > 1:
-            raise ValueError(f"Total SPAM-window idle error probability ({idle_spam_total}) exceeds 1")
-    
+            raise ValueError(
+                f"Total SPAM-window idle error probability ({idle_spam_total}) exceeds 1"
+            )
+
     def to_config_dict(self) -> Dict[str, float]:
         """
         Convert to a configuration dictionary.
@@ -194,7 +196,9 @@ class NoiseModel:
             setattr(self, k, float(v))
         self.validate()
 
-    def randomize_around_reference(self, *, frac: float = 0.25, rng: Optional[np.random.Generator] = None) -> None:
+    def randomize_around_reference(
+        self, *, frac: float = 0.25, rng: Optional[np.random.Generator] = None
+    ) -> None:
         """
         Apply a uniform ±frac multiplicative drift to each parameter around the stored reference.
 
@@ -234,7 +238,7 @@ class NoiseModel:
         _renorm("p_cnot_")
 
         self.validate()
-    
+
     @classmethod
     def from_config_dict(cls, d: Dict[str, float]) -> 'NoiseModel':
         """
@@ -248,7 +252,7 @@ class NoiseModel:
         """
         if d is None:
             return None
-            
+
         if 'p' in d or 'spam_factor' in d:
             raise ValueError(
                 "Single-p noise_model configs are not supported. "
@@ -265,10 +269,7 @@ class NoiseModel:
         required_keys = {k for k in asdict(cls()).keys() if not k.startswith("_")}
         missing = required_keys - set(d.keys())
         if missing:
-            raise ValueError(
-                "Missing noise_model parameters: "
-                + ", ".join(sorted(missing))
-            )
+            raise ValueError("Missing noise_model parameters: " + ", ".join(sorted(missing)))
 
         return cls(**d)
 
@@ -286,7 +287,7 @@ class NoiseModel:
         """
         mapping = _single_p_mapping(float(p), spam_factor=float(spam_factor))
         return cls(**mapping)
-    
+
     def get_cnot_probabilities(self) -> np.ndarray:
         """
         Get CNOT error probabilities as a numpy array.
@@ -295,21 +296,27 @@ class NoiseModel:
             Array of shape (15,) with probabilities in Stim PAULI_CHANNEL_2 order:
             [IX, IY, IZ, XI, XX, XY, XZ, YI, YX, YY, YZ, ZI, ZX, ZY, ZZ]
         """
-        return np.array([
-            self.p_cnot_IX, self.p_cnot_IY, self.p_cnot_IZ,
-            self.p_cnot_XI, self.p_cnot_XX, self.p_cnot_XY, self.p_cnot_XZ,
-            self.p_cnot_YI, self.p_cnot_YX, self.p_cnot_YY, self.p_cnot_YZ,
-            self.p_cnot_ZI, self.p_cnot_ZX, self.p_cnot_ZY, self.p_cnot_ZZ
-        ], dtype=np.float64)
-    
+        return np.array(
+            [
+                self.p_cnot_IX, self.p_cnot_IY, self.p_cnot_IZ, self.p_cnot_XI, self.p_cnot_XX,
+                self.p_cnot_XY, self.p_cnot_XZ, self.p_cnot_YI, self.p_cnot_YX, self.p_cnot_YY,
+                self.p_cnot_YZ, self.p_cnot_ZI, self.p_cnot_ZX, self.p_cnot_ZY, self.p_cnot_ZZ
+            ],
+            dtype=np.float64
+        )
+
     def get_idle_cnot_probabilities(self) -> np.ndarray:
         """Get bulk/CNOT-layer idle probabilities as (3,) array [p_X, p_Y, p_Z]."""
-        return np.array([self.p_idle_cnot_X, self.p_idle_cnot_Y, self.p_idle_cnot_Z], dtype=np.float64)
+        return np.array(
+            [self.p_idle_cnot_X, self.p_idle_cnot_Y, self.p_idle_cnot_Z], dtype=np.float64
+        )
 
     def get_idle_spam_probabilities(self) -> np.ndarray:
         """Get SPAM-window (data during ancilla prep/reset) idle probabilities as (3,) array [p_X, p_Y, p_Z]."""
-        return np.array([self.p_idle_spam_X, self.p_idle_spam_Y, self.p_idle_spam_Z], dtype=np.float64)
-    
+        return np.array(
+            [self.p_idle_spam_X, self.p_idle_spam_Y, self.p_idle_spam_Z], dtype=np.float64
+        )
+
     def get_max_probability(self) -> float:
         """
         Get the maximum probability across all error types.
@@ -321,11 +328,11 @@ class NoiseModel:
         """
         all_probs = [v for k, v in asdict(self).items() if not k.startswith("_")]
         return float(max(all_probs)) if all_probs else 0.0
-    
+
     def get_total_cnot_probability(self) -> float:
         """Get total probability of any CNOT error occurring."""
         return sum(self.get_cnot_probabilities())
-    
+
     def get_total_idle_cnot_probability(self) -> float:
         """Get total probability of any bulk/CNOT-layer idle error occurring."""
         return float(np.sum(self.get_idle_cnot_probabilities()))
@@ -333,7 +340,7 @@ class NoiseModel:
     def get_total_idle_spam_probability(self) -> float:
         """Get total probability of any SPAM-window idle error occurring."""
         return float(np.sum(self.get_idle_spam_probabilities()))
-    
+
     def to_stim_pauli_channel_1_args_cnot(self) -> Tuple[float, float, float]:
         """Args (p_X,p_Y,p_Z) for PAULI_CHANNEL_1 during bulk/CNOT-layer idle."""
         return (self.p_idle_cnot_X, self.p_idle_cnot_Y, self.p_idle_cnot_Z)
@@ -341,7 +348,7 @@ class NoiseModel:
     def to_stim_pauli_channel_1_args_spam(self) -> Tuple[float, float, float]:
         """Args (p_X,p_Y,p_Z) for PAULI_CHANNEL_1 during SPAM-window data-idle (ancilla prep/reset)."""
         return (self.p_idle_spam_X, self.p_idle_spam_Y, self.p_idle_spam_Z)
-    
+
     def to_stim_pauli_channel_2_args(self) -> Tuple[float, ...]:
         """
         Get arguments for Stim's PAULI_CHANNEL_2 instruction.
@@ -352,7 +359,7 @@ class NoiseModel:
              p_YI, p_YX, p_YY, p_YZ, p_ZI, p_ZX, p_ZY, p_ZZ)
         """
         return tuple(self.get_cnot_probabilities())
-    
+
     def scale(self, factor: float) -> 'NoiseModel':
         """
         Create a new NoiseModel with all probabilities scaled by a factor.
@@ -368,7 +375,7 @@ class NoiseModel:
         nm = NoiseModel(**scaled_params)
         nm._reference = dict(self._reference)
         return nm
-    
+
     def __repr__(self) -> str:
         """String representation showing key parameters."""
         return (
@@ -394,20 +401,20 @@ def noise_model_from_config(cfg) -> Optional[NoiseModel]:
     noise_model_cfg = getattr(cfg, 'noise_model', None)
     if noise_model_cfg is None:
         return None
-    
+
     # Convert OmegaConf to dict if needed
     if hasattr(noise_model_cfg, 'items'):
         noise_model_dict = dict(noise_model_cfg)
     else:
         noise_model_dict = noise_model_cfg
-    
+
     return NoiseModel.from_config_dict(noise_model_dict)
 
 
 if __name__ == "__main__":
     # Test the NoiseModel
     print("Testing NoiseModel...")
-    
+
     # Test 1: Create from explicit 25-parameter config
     p = 0.01
     mapping = _single_p_mapping(p)
@@ -417,22 +424,22 @@ if __name__ == "__main__":
     print(f"  p_prep_X = {nm.p_prep_X} (expected: {mapping['p_prep_X']})")
     print(f"  p_idle_cnot_X = {nm.p_idle_cnot_X} (expected: {mapping['p_idle_cnot_X']})")
     print(f"  p_cnot_IX = {nm.p_cnot_IX} (expected: {mapping['p_cnot_IX']})")
-    
+
     # Test 2: Verify depolarizing equivalence (CNOT-layer idle + CNOT total)
     print(f"\nDepolarizing equivalence check:")
     print(f"  Total idle CNOT-layer prob = {nm.get_total_idle_cnot_probability()} (expected: {p})")
     print(f"  Total CNOT prob = {nm.get_total_cnot_probability()} (expected: {p})")
-    
+
     # Test 3: Config dict round-trip
     config_dict = nm.to_config_dict()
     nm2 = NoiseModel.from_config_dict(config_dict)
     print(f"\nConfig dict round-trip: {nm == nm2}")
-    
+
     # Test 4: Stim instruction arguments
     print(f"\nStim PAULI_CHANNEL_1 (CNOT-layer) args: {nm.to_stim_pauli_channel_1_args_cnot()}")
     print(f"Stim PAULI_CHANNEL_1 (SPAM-window) args: {nm.to_stim_pauli_channel_1_args_spam()}")
     print(f"Stim PAULI_CHANNEL_2 args (first 5): {nm.to_stim_pauli_channel_2_args()[:5]}...")
-    
+
     # Test 5: Validation
     print(f"\nValidation tests:")
     try:
@@ -440,6 +447,5 @@ if __name__ == "__main__":
         print("  ERROR: Should have raised ValueError for p > 1")
     except ValueError as e:
         print(f"  Correctly raised ValueError: {e}")
-    
-    print("\nAll tests passed!")
 
+    print("\nAll tests passed!")

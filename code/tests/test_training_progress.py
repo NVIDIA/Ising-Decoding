@@ -22,7 +22,8 @@ class TestTrainingProgressScript(unittest.TestCase):
         if not _script.exists():
             self.skipTest("training_progress.py not in repository")
         proc = subprocess.run(
-            [sys.executable, str(_script), "--logdir", "/nonexistent/tensorboard/log"],
+            [sys.executable,
+             str(_script), "--logdir", "/nonexistent/tensorboard/log"],
             cwd=str(_repo_root),
             capture_output=True,
             text=True,

@@ -20,6 +20,7 @@ from training.train import resolve_precomputed_frames_dir
 
 
 class TestPrecomputedFramesFallback(unittest.TestCase):
+
     def test_missing_frames_dir_falls_back(self):
         with TemporaryDirectory() as tmp:
             result = resolve_precomputed_frames_dir(tmp, 9, 9, "both", rank=0)

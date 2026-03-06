@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """Tests for model.factory (ModelFactory)."""
 
 import sys
@@ -23,6 +22,7 @@ from model.predecoder import get_mock_config, get_mock_config_v2
 
 
 class TestModelFactory(unittest.TestCase):
+
     def test_invalid_code_raises(self):
         from types import SimpleNamespace
         cfg = SimpleNamespace(code="invalid")

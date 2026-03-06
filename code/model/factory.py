@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Factory module for creating models.
 
@@ -16,6 +15,7 @@ Provides ModelFactory for instantiating pre-decoder models from config.
 
 
 class ModelFactory:
+
     @staticmethod
     def create_model(cfg):
         if cfg.code == "surface":
@@ -35,4 +35,3 @@ class ModelFactory:
             return model
         else:
             raise ValueError(f"Invalid model version: {cfg.model.version}")
-

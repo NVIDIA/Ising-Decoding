@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Minimal static capture placeholder to replace physicsnemo.utils.capture._StaticCapture.
 """

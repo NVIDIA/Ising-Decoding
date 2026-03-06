@@ -26,6 +26,7 @@ class OnnxWorkflow(IntEnum):
     EXPORT_AND_USE_TRT = 2
     USE_ENGINE_ONLY = 3
 
+
 from data.factory import DatapipeFactory
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
@@ -35,14 +36,11 @@ import time
 import warnings
 
 from qec.surface_code.data_mapping import (
-    normalized_weight_mapping_Xstab_memory,
-    normalized_weight_mapping_Zstab_memory,
-    compute_stabX_to_data_index_map,
-    compute_stabZ_to_data_index_map,
-    map_grid_to_stabilizer_tensor,
-    construct_X_stab_Parity_check_Mat,
-    construct_Z_stab_Parity_check_Mat
+    normalized_weight_mapping_Xstab_memory, normalized_weight_mapping_Zstab_memory,
+    compute_stabX_to_data_index_map, compute_stabZ_to_data_index_map, map_grid_to_stabilizer_tensor,
+    construct_X_stab_Parity_check_Mat, construct_Z_stab_Parity_check_Mat
 )
+
 
 def _detect_shm_bytes() -> Optional[int]:
     try:
@@ -50,6 +48,7 @@ def _detect_shm_bytes() -> Optional[int]:
         return int(st.f_frsize * st.f_blocks)
     except Exception:
         return None
+
 
 def _time_single_shot_latency_stim(
     matcher,
@@ -110,10 +109,12 @@ def _time_single_shot_latency_stim(
     return (baseline_mean_us_per_round, predecoder_mean_us_per_round)
 
 
-def sample_predictions(logits: torch.Tensor, 
-                       threshold: float = 0.0, 
-                       sampling_mode: str = "threshold",
-                       temperature: float = 1.0) -> torch.Tensor:
+def sample_predictions(
+    logits: torch.Tensor,
+    threshold: float = 0.0,
+    sampling_mode: str = "threshold",
+    temperature: float = 1.0
+) -> torch.Tensor:
     """
     Convert logits to binary predictions using either thresholding or temperature sampling.
     
@@ -144,7 +145,9 @@ def sample_predictions(logits: torch.Tensor,
         # Deterministic thresholding (default)
         return (logits >= threshold).to(torch.int32)
 
+
 class CUDAPrefetcher:
+
     def __init__(self, loader, device):
         self.loader = iter(loader)
         self.device = device
@@ -171,7 +174,9 @@ class CUDAPrefetcher:
         with torch.cuda.stream(self.stream):
             self.next_batch = self._to_device(batch)
 
-    def __iter__(self): return self
+    def __iter__(self):
+        return self
+
     def __next__(self):
         torch.cuda.current_stream(self.device).wait_stream(self.stream)
         if self.next_batch is None:
@@ -180,10 +185,12 @@ class CUDAPrefetcher:
         self._preload()
         return batch
 
+
 from functools import lru_cache
 
 # Last DEM timing snapshot from Stim-based validation (seconds).
 LAST_DEM_TIMING = {"dem_build_s": 0.0, "dem_decode_s": 0.0}
+
 
 @lru_cache(maxsize=64)
 def _build_stab_maps(distance: int, rotation: str = 'XV'):
@@ -204,7 +211,7 @@ def _build_stab_maps(distance: int, rotation: str = 'XV'):
         # For other orientations, get parity matrices from SurfaceCode
         from qec.surface_code.memory_circuit import SurfaceCode
         first_bulk = rotation[0]  # 'X' or 'Z'
-        rotated = rotation[1]     # 'V' or 'H'
+        rotated = rotation[1]  # 'V' or 'H'
         code = SurfaceCode(distance, first_bulk_syndrome_type=first_bulk, rotated_type=rotated)
         Hx_i32 = torch.tensor(code.hx, dtype=torch.int32)
         Hz_i32 = torch.tensor(code.hz, dtype=torch.int32)
@@ -212,7 +219,7 @@ def _build_stab_maps(distance: int, rotation: str = 'XV'):
     def _row_indices_and_mask(H_i32: torch.Tensor):
         # H: (S, D2), entries are 0/1 (int32)
         S, D2 = H_i32.shape
-        nz = H_i32.nonzero(as_tuple=False)          # (nnz, 2) [row, col]
+        nz = H_i32.nonzero(as_tuple=False)  # (nnz, 2) [row, col]
         # Ensure row-major order (usually already true)
         # nz = nz[nz[:, 0].argsort(stable=True)]
 
@@ -224,8 +231,8 @@ def _build_stab_maps(distance: int, rotation: str = 'XV'):
         K = int(deg.max().item())
 
         # Allocate outputs
-        idx = torch.full((S, K), -1, dtype=torch.long)   # columns or -1
-        msk = torch.zeros((S, K), dtype=torch.bool)      # valid flags
+        idx = torch.full((S, K), -1, dtype=torch.long)  # columns or -1
+        msk = torch.zeros((S, K), dtype=torch.bool)  # valid flags
 
         if K == 0:
             return idx, msk, deg, K  # empty H (edge case)
@@ -255,19 +262,30 @@ def _build_stab_maps(distance: int, rotation: str = 'XV'):
     rotation = rotation.upper() if rotation else 'XV'
     x_idx_list = compute_stabX_to_data_index_map(distance, rotation)
     z_idx_list = compute_stabZ_to_data_index_map(distance, rotation)
-    stab_x_cpu = x_idx_list if torch.is_tensor(x_idx_list) else torch.tensor(x_idx_list, dtype=torch.long)
-    stab_z_cpu = z_idx_list if torch.is_tensor(z_idx_list) else torch.tensor(z_idx_list, dtype=torch.long)
+    stab_x_cpu = x_idx_list if torch.is_tensor(x_idx_list
+                                              ) else torch.tensor(x_idx_list, dtype=torch.long)
+    stab_z_cpu = z_idx_list if torch.is_tensor(z_idx_list
+                                              ) else torch.tensor(z_idx_list, dtype=torch.long)
 
     # (Optional) sanity: surface code typical degree ≤4
     # if Kx > 4 or Kz > 4:
     #     raise ValueError(f"Unexpected stabilizer degree: Kx={Kx}, Kz={Kz}")
 
     return {
-        "Hx_i32": Hx_i32, "Hz_i32": Hz_i32,
-        "Hx_idx": Hx_idx_cpu, "Hx_mask": Hx_mask_cpu, "Hx_deg": Hx_deg_cpu, "Kx": Kx,
-        "Hz_idx": Hz_idx_cpu, "Hz_mask": Hz_mask_cpu, "Hz_deg": Hz_deg_cpu, "Kz": Kz,
-        "stab_x": stab_x_cpu, "stab_z": stab_z_cpu,
+        "Hx_i32": Hx_i32,
+        "Hz_i32": Hz_i32,
+        "Hx_idx": Hx_idx_cpu,
+        "Hx_mask": Hx_mask_cpu,
+        "Hx_deg": Hx_deg_cpu,
+        "Kx": Kx,
+        "Hz_idx": Hz_idx_cpu,
+        "Hz_mask": Hz_mask_cpu,
+        "Hz_deg": Hz_deg_cpu,
+        "Kz": Kz,
+        "stab_x": stab_x_cpu,
+        "stab_z": stab_z_cpu,
     }
+
 
 def move_to_device(x, device, non_blocking=False):
     if torch.is_tensor(x):
@@ -278,6 +296,7 @@ def move_to_device(x, device, non_blocking=False):
         t = [move_to_device(v, device, non_blocking) for v in x]
         return type(x)(t)  # preserve tuple/list
     return x
+
 
 def interleave_XZ_residuals(R_X: torch.Tensor, R_Z: torch.Tensor) -> torch.Tensor:
     """
@@ -298,6 +317,7 @@ def interleave_XZ_residuals(R_X: torch.Tensor, R_Z: torch.Tensor) -> torch.Tenso
 
     # Reshape to flat per time step: (B, T*(nX + nZ))
     return R_cat.reshape(B, T * (nX + nZ))
+
 
 def map_grid_to_stabilizer_tensor(grid_btdd, stab_indices_1d):
     """
@@ -332,8 +352,12 @@ class PreDecoderMemoryEvalModule(nn.Module):
         self.th_data = float(getattr(cfg.test, "th_data", 0.0))
         self.th_syn = float(getattr(cfg.test, "th_syn", 0.0))
         self.sampling_mode = str(getattr(cfg.test, "sampling_mode", "threshold")).lower()
-        self.temperature_data = float(getattr(cfg.test, "temperature_data", None) or getattr(cfg.test, "temperature", 1.0))
-        self.temperature_syn = float(getattr(cfg.test, "temperature_syn", None) or getattr(cfg.test, "temperature", 1.0))
+        self.temperature_data = float(
+            getattr(cfg.test, "temperature_data", None) or getattr(cfg.test, "temperature", 1.0)
+        )
+        self.temperature_syn = float(
+            getattr(cfg.test, "temperature_syn", None) or getattr(cfg.test, "temperature", 1.0)
+        )
         self.enable_fp16 = bool(getattr(cfg, "enable_fp16", False))
         self.num_obs = 1
 
@@ -346,8 +370,8 @@ class PreDecoderMemoryEvalModule(nn.Module):
         scatter_z = torch.zeros(self.D2, self.half, dtype=torch.float32, device=device)
         scatter_z[stab_z, col_idx] = 1.0
 
-        gather_x = scatter_x.t().contiguous()      # (half, D²)
-        gather_z = scatter_z.t().contiguous()      # (half, D²)
+        gather_x = scatter_x.t().contiguous()  # (half, D²)
+        gather_z = scatter_z.t().contiguous()  # (half, D²)
 
         # Scatter-via-gather permutation for preprocessing (myelin-fusible).
         scatter_perm_x = torch.full((self.D2,), self.half, dtype=torch.long, device=device)
@@ -358,18 +382,20 @@ class PreDecoderMemoryEvalModule(nn.Module):
         self.register_buffer("scatter_perm_z", scatter_perm_z)
 
         # Zero-padding row for scatter-via-gather: (1, 1, 1) expanded to (B, 1, T).
-        self.register_buffer("zero_pad_row", torch.zeros(1, 1, 1, dtype=torch.float32, device=device))
+        self.register_buffer(
+            "zero_pad_row", torch.zeros(1, 1, 1, dtype=torch.float32, device=device)
+        )
 
         # Logical strings - orientation-aware, float32.
         code_rotation = getattr(cfg.data, "code_rotation", "XV").upper()
         Lx = torch.zeros((1, self.D2), dtype=torch.float32, device=device)
         Lz = torch.zeros((1, self.D2), dtype=torch.float32, device=device)
         if code_rotation in ("XV", "ZH"):
-            Lx[0, : self.D] = 1
-            Lz[0, :: self.D] = 1
+            Lx[0, :self.D] = 1
+            Lz[0, ::self.D] = 1
         else:
-            Lx[0, :: self.D] = 1
-            Lz[0, : self.D] = 1
+            Lx[0, ::self.D] = 1
+            Lz[0, :self.D] = 1
 
         # Pad the basis-dependent L vector to (half, D²) so it fits as the 5th GEMM row.
         L_padded = torch.zeros(self.half, self.D2, dtype=torch.float32, device=device)
@@ -381,21 +407,34 @@ class PreDecoderMemoryEvalModule(nn.Module):
         # [4] L_padded @ preL_input → pre_L (row 0 only).
         Hx_dense = maps["Hx_i32"].to(dtype=torch.float32, device=device)
         Hz_dense = maps["Hz_i32"].to(dtype=torch.float32, device=device)
-        self.register_buffer("post_matrices", torch.stack([
-            Hx_dense, Hz_dense, gather_x, gather_z, L_padded,
-        ], dim=0))
+        self.register_buffer(
+            "post_matrices",
+            torch.stack([
+                Hx_dense,
+                Hz_dense,
+                gather_x,
+                gather_z,
+                L_padded,
+            ], dim=0)
+        )
 
         # Presence grids: (1, 1, D, D); expanded and masked per batch in forward
-        w_mapX = normalized_weight_mapping_Xstab_memory(self.D, getattr(cfg.data, "code_rotation", "XV")).reshape(self.D, self.D).unsqueeze(0).unsqueeze(0)
-        w_mapZ = normalized_weight_mapping_Zstab_memory(self.D, getattr(cfg.data, "code_rotation", "XV")).reshape(self.D, self.D).unsqueeze(0).unsqueeze(0)
-        self.register_buffer("w_mapXgrid", torch.as_tensor(w_mapX, dtype=torch.float32, device=device))
-        self.register_buffer("w_mapZgrid", torch.as_tensor(w_mapZ, dtype=torch.float32, device=device))
+        w_mapX = normalized_weight_mapping_Xstab_memory(
+            self.D, getattr(cfg.data, "code_rotation", "XV")
+        ).reshape(self.D, self.D).unsqueeze(0).unsqueeze(0)
+        w_mapZ = normalized_weight_mapping_Zstab_memory(
+            self.D, getattr(cfg.data, "code_rotation", "XV")
+        ).reshape(self.D, self.D).unsqueeze(0).unsqueeze(0)
+        self.register_buffer(
+            "w_mapXgrid", torch.as_tensor(w_mapX, dtype=torch.float32, device=device)
+        )
+        self.register_buffer(
+            "w_mapZgrid", torch.as_tensor(w_mapZ, dtype=torch.float32, device=device)
+        )
 
         # Pin residual output size for ONNX so the second dimension is a constant (not Concatresidual_dim_1).
         n_rounds = getattr(getattr(cfg, "test", None), "n_rounds", None)
-        self.num_residual_dets = (
-            int(2 * n_rounds * self.half) if n_rounds is not None else None
-        )
+        self.num_residual_dets = (int(2 * n_rounds * self.half) if n_rounds is not None else None)
 
     def _batch_to_trainx_and_syndromes(self, dets: torch.Tensor):
         """From dets (B, 2*T*half) build trainX, x_syn_diff, z_syn_diff, baseline_detectors_batch."""
@@ -410,15 +449,16 @@ class PreDecoderMemoryEvalModule(nn.Module):
 
         # ── trt_L1: preprocessor (cast, deinterleave, index_select, boundary handling) ──
         # (B, 2*T*half) -> (B, half, 2*T) float32.
-        dets_timeline = dets.to(torch.float32).view(B, timeline_len, half).permute(0, 2, 1).contiguous()
-        zero_col = self.zero_pad_row.expand(B, half, 1)                           # (B, half, 1)
-        dets_timeline_padded = torch.cat([dets_timeline, zero_col], dim=2)        # (B, half, 2*T+1)
+        dets_timeline = dets.to(torch.float32).view(B, timeline_len, half).permute(0, 2,
+                                                                                   1).contiguous()
+        zero_col = self.zero_pad_row.expand(B, half, 1)  # (B, half, 1)
+        dets_timeline_padded = torch.cat([dets_timeline, zero_col], dim=2)  # (B, half, 2*T+1)
 
         # Build deinterleave indices dynamically for this T.
         sentinel_idx = timeline_len  # points to appended all-zero column
         dev = dets.device
         x_bulk_idx = torch.arange(1, timeline_len - 1, 2, dtype=torch.long, device=dev)  # T-1
-        z_bulk_idx = torch.arange(2, timeline_len, 2, dtype=torch.long, device=dev)       # T-1
+        z_bulk_idx = torch.arange(2, timeline_len, 2, dtype=torch.long, device=dev)  # T-1
 
         _zero = torch.zeros(1, dtype=torch.long, device=dev)
         _sentinel = torch.full((1,), sentinel_idx, dtype=torch.long, device=dev)
@@ -426,20 +466,22 @@ class PreDecoderMemoryEvalModule(nn.Module):
         if self.basis == "X":
             idx_x = torch.cat([_zero, x_bulk_idx])
             idx_z = torch.cat([_sentinel, z_bulk_idx[:-1], _sentinel])
-            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)      # (B, half, T)
-            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)      # (B, half, T)
+            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)  # (B, half, T)
+            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)  # (B, half, T)
         else:
             idx_z = torch.cat([_zero, z_bulk_idx])
             idx_x = torch.cat([_sentinel, x_bulk_idx[:-1], _sentinel])
-            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)      # (B, half, T)
-            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)      # (B, half, T)
+            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)  # (B, half, T)
+            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)  # (B, half, T)
 
         # Presence: broadcast-multiply by round mask to zero boundary rounds (no clone/in-place)
-        boundary_mask = torch.cat([
-            torch.zeros(1, device=dev, dtype=torch.float32),
-            torch.ones(T - 2, device=dev, dtype=torch.float32),
-            torch.zeros(1, device=dev, dtype=torch.float32),
-        ]).view(1, T, 1, 1)
+        boundary_mask = torch.cat(
+            [
+                torch.zeros(1, device=dev, dtype=torch.float32),
+                torch.ones(T - 2, device=dev, dtype=torch.float32),
+                torch.zeros(1, device=dev, dtype=torch.float32),
+            ]
+        ).view(1, T, 1, 1)
         if self.basis == "X":
             x_present = self.w_mapXgrid.expand(B, T, self.D, self.D)
             z_present = (self.w_mapZgrid * boundary_mask).expand(B, T, self.D, self.D)
@@ -450,15 +492,23 @@ class PreDecoderMemoryEvalModule(nn.Module):
         # ── trt_L2: trainX assembly (scatter-via-gather → grid reshape → cat) ──
         zero_pad = self.zero_pad_row.expand(B, 1, T)
         x_grid = torch.index_select(
-            torch.cat([x_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_x)    # (B, D², T)
+            torch.cat([x_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_x
+        )  # (B, D², T)
         z_grid = torch.index_select(
-            torch.cat([z_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_z)    # (B, D², T)
-        x_type = x_grid.reshape(B, self.D, self.D, T).permute(0, 3, 1, 2).contiguous()  # (B, T, D, D)
+            torch.cat([z_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_z
+        )  # (B, D², T)
+        x_type = x_grid.reshape(B, self.D, self.D, T).permute(0, 3, 1,
+                                                              2).contiguous()  # (B, T, D, D)
         z_type = z_grid.reshape(B, self.D, self.D, T).permute(0, 3, 1, 2).contiguous()
-        trainX = torch.cat([
-            x_type.unsqueeze(1), z_type.unsqueeze(1),
-            x_present.unsqueeze(1), z_present.unsqueeze(1),
-        ], dim=1).contiguous()
+        trainX = torch.cat(
+            [
+                x_type.unsqueeze(1),
+                z_type.unsqueeze(1),
+                x_present.unsqueeze(1),
+                z_present.unsqueeze(1),
+            ],
+            dim=1
+        ).contiguous()
 
         n_x = half
         n_z = z_syn_diff.shape[1]
@@ -475,18 +525,30 @@ class PreDecoderMemoryEvalModule(nn.Module):
             out: (B, 1 + num_detectors) uint8, where out[:, 0] is pre_L and
                  out[:, 1:] is residual (for global decoder).
         """
-        trainX, x_syn_diff, z_syn_diff, baseline_detectors_batch, num_boundary_dets, B, T, n_x, n_z = self._batch_to_trainx_and_syndromes(dets)
+        trainX, x_syn_diff, z_syn_diff, baseline_detectors_batch, num_boundary_dets, B, T, n_x, n_z = self._batch_to_trainx_and_syndromes(
+            dets
+        )
 
-        device_type = next(self.parameters()).device.type if next(self.parameters()).device.type in ("cuda", "cpu") else "cpu"
+        device_type = next(self.parameters()).device.type if next(
+            self.parameters()
+        ).device.type in ("cuda", "cpu") else "cpu"
         # ── trt_L3–L6: four Conv3D blocks (inside self.model) ──
         with torch.amp.autocast(device_type=device_type, enabled=self.enable_fp16):
             logits = self.model(trainX)
 
         # ── trt_L7: threshold/cast/reshape/transpose (sample_predictions → flatten → stack) ──
-        z_data_corr = sample_predictions(logits[:, 0], self.th_data, self.sampling_mode, self.temperature_data)
-        x_data_corr = sample_predictions(logits[:, 1], self.th_data, self.sampling_mode, self.temperature_data)
-        syn_x_grid = sample_predictions(logits[:, 2], self.th_syn, self.sampling_mode, self.temperature_syn)
-        syn_z_grid = sample_predictions(logits[:, 3], self.th_syn, self.sampling_mode, self.temperature_syn)
+        z_data_corr = sample_predictions(
+            logits[:, 0], self.th_data, self.sampling_mode, self.temperature_data
+        )
+        x_data_corr = sample_predictions(
+            logits[:, 1], self.th_data, self.sampling_mode, self.temperature_data
+        )
+        syn_x_grid = sample_predictions(
+            logits[:, 2], self.th_syn, self.sampling_mode, self.temperature_syn
+        )
+        syn_z_grid = sample_predictions(
+            logits[:, 3], self.th_syn, self.sampling_mode, self.temperature_syn
+        )
 
         # Flatten each grid to (B, D^2, T), then stack for one fused batched GEMM.
         # post_matrices: (5, half, D^2)
@@ -497,38 +559,46 @@ class PreDecoderMemoryEvalModule(nn.Module):
         syn_x_flat_in = syn_x_grid.permute(0, 2, 3, 1).contiguous().view(B, self.D2, T)
         syn_z_flat_in = syn_z_grid.permute(0, 2, 3, 1).contiguous().view(B, self.D2, T)
         preL_input = z_corr_flat if self.basis == "X" else x_corr_flat
-        all_flat = torch.stack([
-            z_corr_flat, x_corr_flat, syn_x_flat_in, syn_z_flat_in, preL_input,
-        ], dim=1).to(torch.float32)                                         # (B, 5, D², T)
+        all_flat = torch.stack(
+            [
+                z_corr_flat,
+                x_corr_flat,
+                syn_x_flat_in,
+                syn_z_flat_in,
+                preL_input,
+            ], dim=1
+        ).to(torch.float32)  # (B, 5, D², T)
 
         # ── trt_L8: batched GEMM (5-matrix post_matrices @ all_flat) ──
-        all_results = torch.matmul(self.post_matrices, all_flat)            # (B, 5, half, T)
+        all_results = torch.matmul(self.post_matrices, all_flat)  # (B, 5, half, T)
 
         # ── trt_L9: pre_L slice (extract pre_L row from GEMM result) ──
         # ── trt_L10: pre_L reduction (mod2 → sum over time → mod2 → cast int32) ──
-        pre_L = all_results[:, 4, 0:1, :].remainder(2).sum(dim=-1).remainder(2).view(-1).to(torch.int32)
+        pre_L = all_results[:, 4,
+                            0:1, :].remainder(2).sum(dim=-1).remainder(2).view(-1).to(torch.int32)
 
         # ── trt_L11: residual assembly + interleave (stacked R_X/R_Z → permute → cat → cast int32) ──
-        S_xz = all_results[:, :2].remainder(2)                              # (B, 2, half, T)
-        syn_xz = all_results[:, 2:4]                                        # (B, 2, half, T)
-        syn_diff_xz = torch.stack([x_syn_diff, z_syn_diff], dim=1)          # (B, 2, half, T)
+        S_xz = all_results[:, :2].remainder(2)  # (B, 2, half, T)
+        syn_xz = all_results[:, 2:4]  # (B, 2, half, T)
+        syn_diff_xz = torch.stack([x_syn_diff, z_syn_diff], dim=1)  # (B, 2, half, T)
 
         # Time-recurrent residual equation:
         # R_0    = (input + pred + induced) mod 2
         # R_rest = (input[t] + pred[t] + pred[t-1] + induced[t]) mod 2
         R_0 = (syn_diff_xz[..., 0:1] + syn_xz[..., 0:1] + S_xz[..., 0:1]).remainder(2)
-        R_rest = (syn_diff_xz[..., 1:] + syn_xz[..., 1:] + syn_xz[..., :-1] + S_xz[..., 1:]).remainder(2)
-        R_xz = torch.cat([R_0, R_rest], dim=-1)                             # (B, 2, half, T)
+        R_rest = (syn_diff_xz[..., 1:] + syn_xz[..., 1:] + syn_xz[..., :-1] +
+                  S_xz[..., 1:]).remainder(2)
+        R_xz = torch.cat([R_0, R_rest], dim=-1)  # (B, 2, half, T)
 
         if self.basis == "X":
-            initial = R_xz[:, 0, :, 0:1].reshape(B, -1)                     # (B, half)
+            initial = R_xz[:, 0, :, 0:1].reshape(B, -1)  # (B, half)
         else:
-            initial = R_xz[:, 1, :, 0:1].reshape(B, -1)                     # (B, half)
+            initial = R_xz[:, 1, :, 0:1].reshape(B, -1)  # (B, half)
         # (B, 2, half, T-1) → (B, T-1, 2, half) → (B, (T-1)*2*half)
         rest = R_xz[:, :, :, 1:].permute(0, 3, 1, 2).contiguous().reshape(B, -1)
-        residual = torch.cat([
-            initial, rest, baseline_detectors_batch[:, -num_boundary_dets:]
-        ], dim=1).to(torch.int32)
+        residual = torch.cat(
+            [initial, rest, baseline_detectors_batch[:, -num_boundary_dets:]], dim=1
+        ).to(torch.int32)
 
         # Reshape with constant second dim so ONNX exports shape [batch, num_residual_dets] (no symbolic Concatresidual_dim_1).
         if self.num_residual_dets is not None:
@@ -542,7 +612,7 @@ class PreDecoderMemoryEvalModule(nn.Module):
 def count_logical_errors_with_errorbar(model, device, dist, cfg):
     #logical_errors.item(), total_samples, num_pymatch_errors
     result = {}
-    
+
     if cfg.test.meas_basis_test.lower() in ("both", "mixed"):
         orig = cfg.test.meas_basis_test
         # First run X, then Z
@@ -551,7 +621,8 @@ def count_logical_errors_with_errorbar(model, device, dist, cfg):
                 cfg.test.meas_basis_test = "X"
             else:
                 cfg.test.meas_basis_test = "Z"
-            verbose = bool(getattr(cfg.test, "verbose_inference", False)) or bool(getattr(cfg.test, "verbose", False))
+            verbose = bool(getattr(cfg.test, "verbose_inference", False)
+                          ) or bool(getattr(cfg.test, "verbose", False))
             t0 = time.time()
             num_errors, num_shots, pymatch_predictions, baseline_us_per_round, predecoder_us_per_round = run_inference_and_decode_pre_decoder_memory(
                 model, device, dist, cfg
@@ -561,46 +632,69 @@ def count_logical_errors_with_errorbar(model, device, dist, cfg):
                 print(f"Time taken for {cfg.test.meas_basis_test}: {tf - t0:.3f}s")
 
             # Because each element is either 1 or 0, the sum_i of x_i == the sum_i of x_i^2.
-            var = (num_errors - num_errors*num_errors/float(num_shots)) / num_shots
+            var = (num_errors - num_errors * num_errors / float(num_shots)) / num_shots
             stddev = np.sqrt(var)
-            pymatch_var = (pymatch_predictions - pymatch_predictions*pymatch_predictions/float(num_shots)) / num_shots
+            pymatch_var = (
+                pymatch_predictions - pymatch_predictions * pymatch_predictions / float(num_shots)
+            ) / num_shots
             pymatch_stddev = np.sqrt(pymatch_var)
 
             result[cfg.test.meas_basis_test] = {
-                "num shots": int(num_shots),
-                "logical errors": int(num_errors),
-                "pymatch flips": int(pymatch_predictions),
-                "logical error ratio (mean)": float(num_errors / num_shots),
-                "logical error ratio (standard error)": float(stddev/np.sqrt(num_shots)),
-                "logical error ratio (pymatch mean)": float(pymatch_predictions / float(num_shots)),
-                "logical error ratio (pymatch standard error)": float(pymatch_stddev/np.sqrt(num_shots)),
-                "pymatch latency (baseline µs/round)": float(baseline_us_per_round),
-                "pymatch latency (after predecoder µs/round)": float(predecoder_us_per_round),
+                "num shots":
+                    int(num_shots),
+                "logical errors":
+                    int(num_errors),
+                "pymatch flips":
+                    int(pymatch_predictions),
+                "logical error ratio (mean)":
+                    float(num_errors / num_shots),
+                "logical error ratio (standard error)":
+                    float(stddev / np.sqrt(num_shots)),
+                "logical error ratio (pymatch mean)":
+                    float(pymatch_predictions / float(num_shots)),
+                "logical error ratio (pymatch standard error)":
+                    float(pymatch_stddev / np.sqrt(num_shots)),
+                "pymatch latency (baseline µs/round)":
+                    float(baseline_us_per_round),
+                "pymatch latency (after predecoder µs/round)":
+                    float(predecoder_us_per_round),
             }
         cfg.test.meas_basis_test = orig
     else:
         num_errors, num_shots, pymatch_predictions, baseline_us_per_round, predecoder_us_per_round = run_inference_and_decode_pre_decoder_memory(
-                model, device, dist, cfg
-            )
-        
+            model, device, dist, cfg
+        )
+
         # Because each element is either 1 or 0, the sum_i of x_i == the sum_i of x_i^2.
-        var = (num_errors - num_errors*num_errors/float(num_shots)) / num_shots
+        var = (num_errors - num_errors * num_errors / float(num_shots)) / num_shots
         stddev = np.sqrt(var)
-        pymatch_var = (pymatch_predictions - pymatch_predictions*pymatch_predictions/float(num_shots)) / num_shots
+        pymatch_var = (
+            pymatch_predictions - pymatch_predictions * pymatch_predictions / float(num_shots)
+        ) / num_shots
         pymatch_stddev = np.sqrt(pymatch_var)
 
         result[cfg.test.meas_basis_test] = {
-            "num shots": int(num_shots),
-            "logical errors": int(num_errors),
-            "pymatch flips": int(pymatch_predictions),
-            "logical error ratio (mean)": float(num_errors / num_shots),
-            "logical error ratio (standard error)": float(stddev/np.sqrt(num_shots)),
-            "logical error ratio (pymatch mean)": float(pymatch_predictions / float(num_shots)),
-            "logical error ratio (pymatch standard error)": float(pymatch_stddev/np.sqrt(num_shots)),
-            "pymatch latency (baseline µs/round)": float(baseline_us_per_round),
-            "pymatch latency (after predecoder µs/round)": float(predecoder_us_per_round),
+            "num shots":
+                int(num_shots),
+            "logical errors":
+                int(num_errors),
+            "pymatch flips":
+                int(pymatch_predictions),
+            "logical error ratio (mean)":
+                float(num_errors / num_shots),
+            "logical error ratio (standard error)":
+                float(stddev / np.sqrt(num_shots)),
+            "logical error ratio (pymatch mean)":
+                float(pymatch_predictions / float(num_shots)),
+            "logical error ratio (pymatch standard error)":
+                float(pymatch_stddev / np.sqrt(num_shots)),
+            "pymatch latency (baseline µs/round)":
+                float(baseline_us_per_round),
+            "pymatch latency (after predecoder µs/round)":
+                float(predecoder_us_per_round),
         }
     return result
+
 
 @torch.inference_mode()
 def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dict:
@@ -611,8 +705,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     """
 
     th_data = float(getattr(cfg.test, "th_data", 0.0))
-    th_syn  = float(getattr(cfg.test, "th_syn", 0.0))
-    
+    th_syn = float(getattr(cfg.test, "th_syn", 0.0))
+
     # Sampling mode configuration
     sampling_mode = str(getattr(cfg.test, "sampling_mode", "threshold")).lower()
     temperature = float(getattr(cfg.test, "temperature", 1.0))
@@ -620,12 +714,13 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     temperature_syn = getattr(cfg.test, "temperature_syn", None)
     temperature_data = float(temperature_data) if temperature_data is not None else temperature
     temperature_syn = float(temperature_syn) if temperature_syn is not None else temperature
-    
+
     # Calculate samples per GPU (divide total across GPUs)
     total_samples = int(cfg.test.num_samples)
     samples_per_gpu = total_samples // dist.world_size
-    
-    verbose = bool(getattr(cfg.test, "verbose_inference", False)) or bool(getattr(cfg.test, "verbose", False))
+
+    verbose = bool(getattr(cfg.test, "verbose_inference", False)
+                  ) or bool(getattr(cfg.test, "verbose", False))
     # Log distributed and sampling configuration (only on rank 0, verbose only)
     if verbose and dist.rank == 0:
         if dist.world_size > 1:
@@ -633,29 +728,31 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             print(f"[LER] Total samples (cfg): {total_samples}")
             print(f"[LER] Samples per GPU: {samples_per_gpu}")
         if sampling_mode == "temperature":
-            print(f"[LER] Sampling mode: temperature (T_data={temperature_data}, T_syn={temperature_syn})")
+            print(
+                f"[LER] Sampling mode: temperature (T_data={temperature_data}, T_syn={temperature_syn})"
+            )
         else:
             print(f"[LER] Sampling mode: threshold (th_data={th_data}, th_syn={th_syn})")
 
     model.eval()
-    
+
     # Latency measurement: sample a small subset and time decode at batch_size=1.
     # Default: time on 10k single-shot decodes (batch_size=1) for a stable, informative metric.
     latency_num_samples = int(getattr(cfg.test, "latency_num_samples", 10_000))
     latency_num_samples = max(latency_num_samples, 0)
     latency_baseline_rows = [] if dist.rank == 0 and latency_num_samples > 0 else None
     latency_predecoder_rows = [] if dist.rank == 0 and latency_num_samples > 0 else None
-    
+
     # --- Distributed: Each GPU generates its share of samples with rank-specific seed ---
     import random
     from copy import deepcopy
-    
+
     # Save random states
     torch_state = torch.get_rng_state()
     cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
     np_state = np.random.get_state()
     py_state = random.getstate()
-    
+
     try:
         # Set rank-specific seed so each GPU generates DIFFERENT samples
         rank_seed = 12345 + dist.rank * 1000
@@ -664,7 +761,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             torch.cuda.manual_seed_all(rank_seed)
         np.random.seed(rank_seed)
         random.seed(rank_seed)
-        
+
         # Create datapipe with reduced sample count per GPU
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
@@ -676,7 +773,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             torch.cuda.set_rng_state_all(cuda_state)
         np.random.set_state(np_state)
         random.setstate(py_state)
-    
+
     if cfg.test.meas_basis_test.upper() in ["X", "Z"]:
         circuit = test_dataset.circ.stim_circuit
 
@@ -687,7 +784,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     # NOTE: With explicit noise models we use PAULI_CHANNEL_2, which requires
     # approximate_disjoint_errors=True when extracting a detector error model.
     t_dem_build_start = time.perf_counter()
-    det_model = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
+    det_model = circuit.detector_error_model(
+        decompose_errors=True, approximate_disjoint_errors=True
+    )
     matcher = pymatching.Matching.from_detector_error_model(det_model)
     dem_build_s += time.perf_counter() - t_dem_build_start
 
@@ -696,24 +795,23 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     stim_dets = np.asarray(test_dataset.dets_and_obs[:, :-circuit.num_observables], dtype=np.uint8)
     assert stim_dets.shape[1] == det_model.num_detectors, \
         f"Stim dets width {stim_dets.shape[1]} != DEM {det_model.num_detectors}"
-    stim_obs = np.asarray(
-        test_dataset.dets_and_obs[:, -circuit.num_observables:], 
-        dtype=np.uint8
-    )
- 
+    stim_obs = np.asarray(test_dataset.dets_and_obs[:, -circuit.num_observables:], dtype=np.uint8)
+
     # Each GPU computes baseline on its own samples
     # (Boundary detectors are included in stim_dets via add_boundary_detectors=True)
-    
-    if dist.rank == 0 and latency_baseline_rows is not None and len(latency_baseline_rows) < latency_num_samples:
+
+    if dist.rank == 0 and latency_baseline_rows is not None and len(
+        latency_baseline_rows
+    ) < latency_num_samples:
         remaining = latency_num_samples - len(latency_baseline_rows)
         take = min(int(stim_dets.shape[0]), remaining)
         for i in range(take):
             latency_baseline_rows.append(stim_dets[i].copy())
-    
+
     t_dem_decode = time.perf_counter()
     baseline_pred = matcher.decode_batch(stim_dets)
     dem_decode_s += time.perf_counter() - t_dem_decode
-    
+
     baseline_pred = np.asarray(baseline_pred, dtype=np.uint8).reshape(-1, circuit.num_observables)
     num_pymatch_errors = int((baseline_pred != stim_obs).sum())
 
@@ -726,9 +824,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     # Allow env override for SDR DataLoader workers (container/shm safety).
     try:
         override_workers = (
-            os.environ.get("PREDECODER_SDR_NUM_WORKERS")
-            or os.environ.get("PREDECODER_EVAL_NUM_WORKERS")
-            or os.environ.get("PREDECODER_INFERENCE_NUM_WORKERS")
+            os.environ.get("PREDECODER_SDR_NUM_WORKERS") or
+            os.environ.get("PREDECODER_EVAL_NUM_WORKERS") or
+            os.environ.get("PREDECODER_INFERENCE_NUM_WORKERS")
         )
         if override_workers is not None:
             test_loader_kwargs["num_workers"] = int(override_workers)
@@ -800,14 +898,18 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                     raise RuntimeError("TensorRT engine deserialize from file failed")
                 trt_context = (engine.create_execution_context(), engine)
                 if dist.rank == 0:
-                    print(f"[LER] TensorRT engine loaded from {engine_path} in {t_load_end - t_load_start:.3f}s")
+                    print(
+                        f"[LER] TensorRT engine loaded from {engine_path} in {t_load_end - t_load_start:.3f}s"
+                    )
             except Exception as e:
                 if dist.rank == 0:
                     print(f"[LER] TensorRT engine load failed: {e}; falling back to PyTorch.")
                 trt_context = None
         else:
             if dist.rank == 0:
-                print(f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; falling back to PyTorch.")
+                print(
+                    f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; falling back to PyTorch."
+                )
 
     elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
         if dist.rank == 0:
@@ -822,8 +924,12 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                     input_names=["dets"],
                     output_names=["L_and_residual_dets"],
                     dynamic_axes={
-                        "dets": {0: "batch"},
-                        "L_and_residual_dets": {0: "batch"},
+                        "dets": {
+                            0: "batch"
+                        },
+                        "L_and_residual_dets": {
+                            0: "batch"
+                        },
                     },
                     do_constant_folding=True,
                     dynamo=False,
@@ -878,7 +984,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 t_create_context_start = time.perf_counter()
                 trt_context = (engine.create_execution_context(), engine)
                 t_create_context_end = time.perf_counter()
-                print(f"[LER] TensorRT execution context created in {t_create_context_end - t_create_context_start:.3f}s")
+                print(
+                    f"[LER] TensorRT execution context created in {t_create_context_end - t_create_context_start:.3f}s"
+                )
                 if dist.rank == 0:
                     print(f"[LER] TensorRT engine built from {onnx_path}")
             except Exception as e:
@@ -890,16 +998,16 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     assert num_obs == 1, f"Expected 1 observable, got {num_obs}"
 
     logical_errors = 0
-    total_samples = 0    
+    total_samples = 0
 
     t_start = time.perf_counter()
     t_model_time = 0.0
     t_pm_time = 0.0
     t_dataloader_s = 0.0
     t_to_device_s = 0.0
-    t_postmodel_s = 0.0   # sampling + syndrome + residuals + residual build
-    t_cpu_copy_s = 0.0    # .cpu().numpy() + latency_predecoder_rows
-    t_post_decode_s = 0.0 # as_tensor, final_L, gt_obs, logical_errors
+    t_postmodel_s = 0.0  # sampling + syndrome + residuals + residual build
+    t_cpu_copy_s = 0.0  # .cpu().numpy() + latency_predecoder_rows
+    t_post_decode_s = 0.0  # as_tensor, final_L, gt_obs, logical_errors
     for batch_idx, batch in enumerate(test_dataloader):
         # print(f"Batch {batch_idx} of {len(test_dataloader)}")
         _t0 = time.perf_counter()
@@ -939,7 +1047,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             )
         _t_cpu = time.perf_counter()
         residual_np = residual.cpu().numpy()
-        if dist.rank == 0 and latency_predecoder_rows is not None and len(latency_predecoder_rows) < latency_num_samples:
+        if dist.rank == 0 and latency_predecoder_rows is not None and len(
+            latency_predecoder_rows
+        ) < latency_num_samples:
             remaining = latency_num_samples - len(latency_predecoder_rows)
             take = min(int(residual_np.shape[0]), remaining)
             for i in range(take):
@@ -961,21 +1071,25 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     # Dataloader time = time spent waiting for next batch (iteration overhead)
     num_batches = batch_idx + 1 if "batch_idx" in locals() else 0
     t_end = time.perf_counter()
-    t_dataloader_s = (t_end - t_start) - (t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_pm_time + t_post_decode_s)
+    t_dataloader_s = (t_end - t_start) - (
+        t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_pm_time + t_post_decode_s
+    )
     # Disable detailed printing for now
     if False:
         print(f"Time taken for total_samples={total_samples}: {t_end - t_start:.3f}s")
         print(f"  Model: {t_model_time:.3f}s  PyMatching: {t_pm_time:.3f}s")
-        print(f"  ToDevice: {t_to_device_s:.3f}s  PostModel (syn+residual): {t_postmodel_s:.3f}s  CPU copy: {t_cpu_copy_s:.3f}s  PostDecode: {t_post_decode_s:.3f}s  Dataloader (est.): {t_dataloader_s:.3f}s")
+        print(
+            f"  ToDevice: {t_to_device_s:.3f}s  PostModel (syn+residual): {t_postmodel_s:.3f}s  CPU copy: {t_cpu_copy_s:.3f}s  PostDecode: {t_post_decode_s:.3f}s  Dataloader (est.): {t_dataloader_s:.3f}s"
+        )
     if dist.world_size > 1:
         t_log = torch.tensor(logical_errors, device=device, dtype=torch.long)
-        t_n   = torch.tensor(total_samples,  device=device, dtype=torch.long)
+        t_n = torch.tensor(total_samples, device=device, dtype=torch.long)
         t_pymatch = torch.tensor(num_pymatch_errors, device=device, dtype=torch.long)
         torch.distributed.all_reduce(t_log, op=torch.distributed.ReduceOp.SUM)
-        torch.distributed.all_reduce(t_n,   op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(t_n, op=torch.distributed.ReduceOp.SUM)
         torch.distributed.all_reduce(t_pymatch, op=torch.distributed.ReduceOp.SUM)
         logical_errors = int(t_log.item())
-        total_samples  = int(t_n.item())
+        total_samples = int(t_n.item())
         num_pymatch_errors = int(t_pymatch.item())
 
     # Latency: single-shot (batch_size=1, matcher.decode) on a small subset on rank 0 only,
@@ -1017,10 +1131,10 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
 
     import random
     import numpy as np
-    
+
     th_data = float(getattr(cfg.test, "th_data", 0.0))
-    th_syn  = float(getattr(cfg.test, "th_syn", 0.0))
-    
+    th_syn = float(getattr(cfg.test, "th_syn", 0.0))
+
     # Sampling mode configuration
     sampling_mode = str(getattr(cfg.test, "sampling_mode", "threshold")).lower()
     temperature = float(getattr(cfg.test, "temperature", 1.0))
@@ -1042,7 +1156,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
     if mode not in {"full", "syn_only", "s_only"}:
         print(f"[warn] Unknown cfg.test.syn_red={mode!r}; using 'full'.")
         mode = "full"
-    
+
     # Calculate samples per GPU (divide total across GPUs)
     total_samples = int(cfg.test.num_samples)
     samples_per_gpu = total_samples // world_size
@@ -1052,7 +1166,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
     cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
     np_state = np.random.get_state()
     py_state = random.getstate()
-    
+
     try:
         # Set rank-specific seed so each GPU generates DIFFERENT samples
         rank_seed = 54321 + rank * 1000
@@ -1061,18 +1175,20 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             torch.cuda.manual_seed_all(rank_seed)
         np.random.seed(rank_seed)
         random.seed(rank_seed)
-        
+
         if rank == 0:
             if world_size > 1:
-                print(f"[Syndrome Density] Distributed: {world_size} GPUs, {total_samples} total samples")
+                print(
+                    f"[Syndrome Density] Distributed: {world_size} GPUs, {total_samples} total samples"
+                )
                 print(f"[Syndrome Density] Samples per GPU: {samples_per_gpu}")
-        
+
         # ----- Data: Create datapipe with reduced sample count per GPU -----
         from copy import deepcopy
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
         test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
-        
+
         if rank == 0:
             print(f"[Syndrome Density] Each GPU processes {len(test_dataset)} samples")
     finally:
@@ -1082,15 +1198,15 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             torch.cuda.set_rng_state_all(cuda_state)
         np.random.set_state(np_state)
         random.setstate(py_state)
-    
+
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
     # Allow env override for SDR DataLoader workers (container/shm safety).
     try:
         override_workers = (
-            os.environ.get("PREDECODER_SDR_NUM_WORKERS")
-            or os.environ.get("PREDECODER_EVAL_NUM_WORKERS")
-            or os.environ.get("PREDECODER_INFERENCE_NUM_WORKERS")
+            os.environ.get("PREDECODER_SDR_NUM_WORKERS") or
+            os.environ.get("PREDECODER_EVAL_NUM_WORKERS") or
+            os.environ.get("PREDECODER_INFERENCE_NUM_WORKERS")
         )
         if override_workers is not None:
             test_loader_kwargs["num_workers"] = int(override_workers)
@@ -1128,19 +1244,19 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
     # ----- Parity check matrices (build once) -----
     code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
     maps = _build_stab_maps(cfg.distance, code_rotation)
-    Hx_idx  = maps["Hx_idx"].to(device)
+    Hx_idx = maps["Hx_idx"].to(device)
     Hx_mask = maps["Hx_mask"].to(device)
-    Hz_idx  = maps["Hz_idx"].to(device)
+    Hz_idx = maps["Hz_idx"].to(device)
     Hz_mask = maps["Hz_mask"].to(device)
     stab_indices_x = maps["stab_x"].to(device=device, dtype=torch.long)
     stab_indices_z = maps["stab_z"].to(device=device, dtype=torch.long)
 
     # ----- Accumulators -----
-    in_ones_X  = torch.tensor(0, dtype=torch.int64, device=device)
+    in_ones_X = torch.tensor(0, dtype=torch.int64, device=device)
     in_elems_X = torch.tensor(0, dtype=torch.int64, device=device)
     res_ones_X = torch.tensor(0, dtype=torch.int64, device=device)
 
-    in_ones_Z  = torch.tensor(0, dtype=torch.int64, device=device)
+    in_ones_Z = torch.tensor(0, dtype=torch.int64, device=device)
     in_elems_Z = torch.tensor(0, dtype=torch.int64, device=device)
     res_ones_Z = torch.tensor(0, dtype=torch.int64, device=device)
 
@@ -1160,7 +1276,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         data_iter = iter(test_dataloader)
 
     use_autocast = (device.type == "cuda") and bool(cfg.enable_fp16)
-    
+
     batch_count = 0
     t_start = time.perf_counter()
     for sample_batched in data_iter:
@@ -1168,9 +1284,9 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         sample_batched = move_to_device(sample_batched, device, non_blocking=True)
 
         # === Inputs ===
-        x_syn_diff = sample_batched["x_syn_diff"].to(dtype=torch.int32)   # (B,Sx,T)
-        z_syn_diff = sample_batched["z_syn_diff"].to(dtype=torch.int32)   # (B,Sz,T)
-        trainX = sample_batched["trainX"]                                  # (B,4,T,D,D)
+        x_syn_diff = sample_batched["x_syn_diff"].to(dtype=torch.int32)  # (B,Sx,T)
+        z_syn_diff = sample_batched["z_syn_diff"].to(dtype=torch.int32)  # (B,Sz,T)
+        trainX = sample_batched["trainX"]  # (B,4,T,D,D)
 
         # Basis masks (from first-round presence maps)
         x_present_first = trainX[:, 2, 0]
@@ -1186,23 +1302,23 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         # --- count input density ---
         # IMPORTANT: Use test.meas_basis_test, not meas_basis (training config)
         test_meas_basis = str(getattr(cfg.test, "meas_basis_test", cfg.meas_basis)).lower()
-        
+
         # (Keep logs minimal: no first-batch debug prints here.)
-        
+
         if test_meas_basis == 'x':
-            in_ones_X  += x_syn_diff.sum(dtype=torch.int64)
+            in_ones_X += x_syn_diff.sum(dtype=torch.int64)
             in_elems_X += torch.tensor(x_syn_diff.numel(), device=device, dtype=torch.int64)
         elif test_meas_basis == 'z':
-            in_ones_Z  += z_syn_diff.sum(dtype=torch.int64)
+            in_ones_Z += z_syn_diff.sum(dtype=torch.int64)
             in_elems_Z += torch.tensor(z_syn_diff.numel(), device=device, dtype=torch.int64)
         elif test_meas_basis in ('both', 'mixed'):
             if mask_X.any():
                 x_in = x_syn_diff[mask_X]
-                in_ones_X  += x_in.sum(dtype=torch.int64)
+                in_ones_X += x_in.sum(dtype=torch.int64)
                 in_elems_X += torch.tensor(x_in.numel(), device=device, dtype=torch.int64)
             if mask_Z.any():
                 z_in = z_syn_diff[mask_Z]
-                in_ones_Z  += z_in.sum(dtype=torch.int64)
+                in_ones_Z += z_in.sum(dtype=torch.int64)
                 in_elems_Z += torch.tensor(z_in.numel(), device=device, dtype=torch.int64)
         else:
             raise ValueError(f"Unsupported measurement basis: {cfg.meas_basis}")
@@ -1218,18 +1334,19 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         if test_meas_basis == 'x':
             # channels: 0=z_data_corr, 2=syn_x_grid
             z_data_corr = sample_predictions(logits[:, 0], th_data, sampling_mode, temperature_data)
-            syn_x_grid  = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
+            syn_x_grid = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
 
             # S_X from z_data_corr
-            z_flat   = z_data_corr.permute(0,2,3,1).contiguous().view(B, D2, T)
-            Kx       = Hx_idx.size(1)
-            z_exp    = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
-            hx_idx_e = Hx_idx.clamp_min(0).view(1,-1,Kx,1).expand(B,-1,-1,T)
-            g_x      = z_exp.gather(dim=1, index=hx_idx_e)
-            m_x      = Hx_mask.view(1,-1,Kx,1).expand_as(g_x)
-            S_X      = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)      # (B,Sx,T)
+            z_flat = z_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
+            Kx = Hx_idx.size(1)
+            z_exp = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
+            hx_idx_e = Hx_idx.clamp_min(0).view(1, -1, Kx, 1).expand(B, -1, -1, T)
+            g_x = z_exp.gather(dim=1, index=hx_idx_e)
+            m_x = Hx_mask.view(1, -1, Kx, 1).expand_as(g_x)
+            S_X = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)  # (B,Sx,T)
 
-            syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid, stab_indices_x).to(torch.int32)  # (B,Sx,T)
+            syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid,
+                                                       stab_indices_x).to(torch.int32)  # (B,Sx,T)
 
             # ===== NEW: ablation =====
             if mode == "syn_only":
@@ -1242,10 +1359,8 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
             if T > 1:
                 R_X[:, :, 1:] = (
-                    x_syn_diff[:, :, 1:]
-                    + syn_x_flat[:, :, 1:]
-                    + syn_x_flat[:, :, :-1]
-                    + S_X[:, :, 1:]
+                    x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] +
+                    S_X[:, :, 1:]
                 ) & 1
 
             res_ones_X += R_X.sum(dtype=torch.int64)
@@ -1253,16 +1368,16 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         elif test_meas_basis == 'z':
             # channels: 1=x_data_corr, 3=syn_z_grid
             x_data_corr = sample_predictions(logits[:, 1], th_data, sampling_mode, temperature_data)
-            syn_z_grid  = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
+            syn_z_grid = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
 
             # S_Z from x_data_corr
-            x_flat   = x_data_corr.permute(0,2,3,1).contiguous().view(B, D2, T)
-            Kz       = Hz_idx.size(1)
-            x_exp    = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
-            hz_idx_e = Hz_idx.clamp_min(0).view(1,-1,Kz,1).expand(B,-1,-1,T)
-            g_z      = x_exp.gather(dim=1, index=hz_idx_e)
-            m_z      = Hz_mask.view(1,-1,Kz,1).expand_as(g_z)
-            S_Z      = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)      # (B,Sz,T)
+            x_flat = x_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
+            Kz = Hz_idx.size(1)
+            x_exp = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
+            hz_idx_e = Hz_idx.clamp_min(0).view(1, -1, Kz, 1).expand(B, -1, -1, T)
+            g_z = x_exp.gather(dim=1, index=hz_idx_e)
+            m_z = Hz_mask.view(1, -1, Kz, 1).expand_as(g_z)
+            S_Z = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)  # (B,Sz,T)
 
             syn_z_flat = map_grid_to_stabilizer_tensor(syn_z_grid, stab_indices_z).to(torch.int32)
 
@@ -1276,10 +1391,8 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
             if T > 1:
                 R_Z[:, :, 1:] = (
-                    z_syn_diff[:, :, 1:]
-                    + syn_z_flat[:, :, 1:]
-                    + syn_z_flat[:, :, :-1]
-                    + S_Z[:, :, 1:]
+                    z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] +
+                    S_Z[:, :, 1:]
                 ) & 1
 
             res_ones_Z += R_Z.sum(dtype=torch.int64)
@@ -1288,26 +1401,26 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             # channels: 0=z_data_corr, 1=x_data_corr, 2=syn_x_grid, 3=syn_z_grid
             z_data_corr = sample_predictions(logits[:, 0], th_data, sampling_mode, temperature_data)
             x_data_corr = sample_predictions(logits[:, 1], th_data, sampling_mode, temperature_data)
-            syn_x_grid  = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
-            syn_z_grid  = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
+            syn_x_grid = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
+            syn_z_grid = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
 
             # S_X
-            z_flat   = z_data_corr.permute(0,2,3,1).contiguous().view(B, D2, T)
-            Kx       = Hx_idx.size(1)
-            z_exp    = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
-            hx_idx_e = Hx_idx.clamp_min(0).view(1,-1,Kx,1).expand(B,-1,-1,T)
-            g_x      = z_exp.gather(dim=1, index=hx_idx_e)
-            m_x      = Hx_mask.view(1,-1,Kx,1).expand_as(g_x)
-            S_X      = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)
+            z_flat = z_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
+            Kx = Hx_idx.size(1)
+            z_exp = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
+            hx_idx_e = Hx_idx.clamp_min(0).view(1, -1, Kx, 1).expand(B, -1, -1, T)
+            g_x = z_exp.gather(dim=1, index=hx_idx_e)
+            m_x = Hx_mask.view(1, -1, Kx, 1).expand_as(g_x)
+            S_X = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)
 
             # S_Z
-            x_flat   = x_data_corr.permute(0,2,3,1).contiguous().view(B, D2, T)
-            Kz       = Hz_idx.size(1)
-            x_exp    = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
-            hz_idx_e = Hz_idx.clamp_min(0).view(1,-1,Kz,1).expand(B,-1,-1,T)
-            g_z      = x_exp.gather(dim=1, index=hz_idx_e)
-            m_z      = Hz_mask.view(1,-1,Kz,1).expand_as(g_z)
-            S_Z      = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)
+            x_flat = x_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
+            Kz = Hz_idx.size(1)
+            x_exp = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
+            hz_idx_e = Hz_idx.clamp_min(0).view(1, -1, Kz, 1).expand(B, -1, -1, T)
+            g_z = x_exp.gather(dim=1, index=hz_idx_e)
+            m_z = Hz_mask.view(1, -1, Kz, 1).expand_as(g_z)
+            S_Z = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)
 
             # syn maps
             syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid, stab_indices_x).to(torch.int32)
@@ -1326,20 +1439,16 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
             if T > 1:
                 R_X[:, :, 1:] = (
-                    x_syn_diff[:, :, 1:]
-                    + syn_x_flat[:, :, 1:]
-                    + syn_x_flat[:, :, :-1]
-                    + S_X[:, :, 1:]
+                    x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] +
+                    S_X[:, :, 1:]
                 ) & 1
 
             R_Z = torch.empty_like(z_syn_diff, dtype=torch.int32)
             R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
             if T > 1:
                 R_Z[:, :, 1:] = (
-                    z_syn_diff[:, :, 1:]
-                    + syn_z_flat[:, :, 1:]
-                    + syn_z_flat[:, :, :-1]
-                    + S_Z[:, :, 1:]
+                    z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] +
+                    S_Z[:, :, 1:]
                 ) & 1
 
             if mask_X.any():
@@ -1356,24 +1465,30 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         for t in (in_ones_X, in_elems_X, res_ones_X, in_ones_Z, in_elems_Z, res_ones_Z):
             torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.SUM)
-    
+
     # Debug: Print raw counts (only on rank 0)
     rank = dist.rank if dist else 0
     if rank == 0:
         print(f"\n[Syndrome Density Debug]")
         print(f"  Processed {batch_count} batches")
-        print(f"  X-basis: in_ones={in_ones_X.item()}, in_elems={in_elems_X.item()}, res_ones={res_ones_X.item()}")
-        print(f"  Z-basis: in_ones={in_ones_Z.item()}, in_elems={in_elems_Z.item()}, res_ones={res_ones_Z.item()}")
+        print(
+            f"  X-basis: in_ones={in_ones_X.item()}, in_elems={in_elems_X.item()}, res_ones={res_ones_X.item()}"
+        )
+        print(
+            f"  Z-basis: in_ones={in_ones_Z.item()}, in_elems={in_elems_Z.item()}, res_ones={res_ones_Z.item()}"
+        )
 
     def safe_ratio(num, den):
-        return (num.float() / den.float()) if den.item() > 0 else torch.tensor(float('nan'), device=device)
+        return (num.float() /
+                den.float()) if den.item() > 0 else torch.tensor(float('nan'), device=device)
 
-    input_density_X    = safe_ratio(in_ones_X, in_elems_X)
+    input_density_X = safe_ratio(in_ones_X, in_elems_X)
     residual_density_X = safe_ratio(res_ones_X, in_elems_X)
-    input_density_Z    = safe_ratio(in_ones_Z, in_elems_Z)
+    input_density_Z = safe_ratio(in_ones_Z, in_elems_Z)
     residual_density_Z = safe_ratio(res_ones_Z, in_elems_Z)
 
     as_float = lambda t: float(t.item())
+
     def finite_pos(x: torch.Tensor) -> bool:
         return torch.isfinite(x).item() and (x > 0).item()
 
@@ -1385,19 +1500,19 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         elif finite_pos(input_density_X) and residual_density_X.item() == 0:
             # Perfect correction: input had syndromes, output has none
             reduction_x = float('inf')
-        
+
         reduction_z = float('nan')
         if finite_pos(input_density_Z) and finite_pos(residual_density_Z):
             reduction_z = as_float(input_density_Z / residual_density_Z)
         elif finite_pos(input_density_Z) and residual_density_Z.item() == 0:
             # Perfect correction: input had syndromes, output has none
             reduction_z = float('inf')
-        
+
         result = {
             "ablation": mode,
-            "input syndrome density (X stabs)":    as_float(input_density_X),
+            "input syndrome density (X stabs)": as_float(input_density_X),
             "residual syndrome density (X stabs)": as_float(residual_density_X),
-            "input syndrome density (Z stabs)":    as_float(input_density_Z),
+            "input syndrome density (Z stabs)": as_float(input_density_Z),
             "residual syndrome density (Z stabs)": as_float(residual_density_Z),
             "reduction factor (X)": reduction_x,
             "reduction factor (Z)": reduction_z,
@@ -1409,10 +1524,10 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
                 reduction_x = as_float(input_density_X / residual_density_X)
             elif finite_pos(input_density_X) and residual_density_X.item() == 0:
                 reduction_x = float('inf')
-            
+
             result = {
                 "ablation": mode,
-                "input syndrome density (meas_basis=X)":    as_float(input_density_X),
+                "input syndrome density (meas_basis=X)": as_float(input_density_X),
                 "residual syndrome density (meas_basis=X)": as_float(residual_density_X),
                 "reduction factor (X)": reduction_x,
             }
@@ -1422,13 +1537,12 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
                 reduction_z = as_float(input_density_Z / residual_density_Z)
             elif finite_pos(input_density_Z) and residual_density_Z.item() == 0:
                 reduction_z = float('inf')
-            
+
             result = {
                 "ablation": mode,
-                "input syndrome density (meas_basis=Z)":    as_float(input_density_Z),
+                "input syndrome density (meas_basis=Z)": as_float(input_density_Z),
                 "residual syndrome density (meas_basis=Z)": as_float(residual_density_Z),
                 "reduction factor (Z)": reduction_z,
             }
 
     return result
-

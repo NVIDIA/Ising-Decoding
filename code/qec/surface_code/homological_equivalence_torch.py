@@ -7,7 +7,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """
 Torch Implementation of Homological Equivalence Transformations
 ===============================================================
@@ -68,7 +67,7 @@ class SpacelikeHECache:
 
     # Weight-2 boundary stabilizers
     w2_canonical: torch.Tensor  # (num_stabs,) int64, -1 if not weight-2
-    w2_other: torch.Tensor      # (num_stabs,) int64, -1 if not weight-2
+    w2_other: torch.Tensor  # (num_stabs,) int64, -1 if not weight-2
 
     # Weight-4 stabilizers corners in coordinate order (tl,tr,bl,br)
     w4_tl: torch.Tensor  # (num_stabs,) int64, -1 if not weight-4
@@ -136,7 +135,7 @@ def build_spacelike_he_cache(
     parity_u8 = _as_uint8_binary(parity_matrix)
     num_stabs, D2 = parity_u8.shape
     if distance is None:
-        distance = int(int(D2) ** 0.5)
+        distance = int(int(D2)**0.5)
     d = int(distance)
 
     if device is None:
@@ -239,7 +238,10 @@ def _apply_corner_update(
     set_zero: torch.Tensor,
 ) -> torch.Tensor:
     # Disjoint masks: set_one and set_zero should not overlap.
-    return torch.where(set_one, torch.ones_like(cfg_col), torch.where(set_zero, torch.zeros_like(cfg_col), cfg_col))
+    return torch.where(
+        set_one, torch.ones_like(cfg_col),
+        torch.where(set_zero, torch.zeros_like(cfg_col), cfg_col)
+    )
 
 
 def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) -> torch.Tensor:
@@ -273,8 +275,12 @@ def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) 
             error_at_canonical = cfg[:, canonical] == 1
             should_move = should_process & (~error_at_canonical)
             if should_move.any():
-                cfg[:, canonical] = torch.where(should_move, torch.ones_like(cfg[:, canonical]), cfg[:, canonical])
-                cfg[:, other] = torch.where(should_move, torch.zeros_like(cfg[:, other]), cfg[:, other])
+                cfg[:, canonical] = torch.where(
+                    should_move, torch.ones_like(cfg[:, canonical]), cfg[:, canonical]
+                )
+                cfg[:, other] = torch.where(
+                    should_move, torch.zeros_like(cfg[:, other]), cfg[:, other]
+                )
                 claimed[:, canonical] = claimed[:, canonical] | should_move
                 claimed[:, other] = claimed[:, other] | should_move
 
@@ -309,7 +315,9 @@ def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) 
                 moved = m1 | m2 | m3
                 if moved.any():
                     cfg[:, tl] = _apply_corner_update(cfg[:, tl], set_one=m2, set_zero=m1 | m3)
-                    cfg[:, tr] = _apply_corner_update(cfg[:, tr], set_one=m1 | m2 | m3, set_zero=torch.zeros_like(m1))
+                    cfg[:, tr] = _apply_corner_update(
+                        cfg[:, tr], set_one=m1 | m2 | m3, set_zero=torch.zeros_like(m1)
+                    )
                     cfg[:, bl] = _apply_corner_update(cfg[:, bl], set_one=m3, set_zero=m1 | m2)
                     cfg[:, br] = _apply_corner_update(cfg[:, br], set_one=m1, set_zero=m2 | m3)
                     claimed[:, (tl, tr, bl, br)] = claimed[:, (tl, tr, bl, br)] | moved.unsqueeze(1)
@@ -326,7 +334,9 @@ def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) 
                 if moved.any():
                     cfg[:, tl] = _apply_corner_update(cfg[:, tl], set_one=m2 | m3, set_zero=m1)
                     cfg[:, tr] = _apply_corner_update(cfg[:, tr], set_one=m1 | m2, set_zero=m3)
-                    cfg[:, bl] = _apply_corner_update(cfg[:, bl], set_one=torch.zeros_like(m1), set_zero=m1 | m2 | m3)
+                    cfg[:, bl] = _apply_corner_update(
+                        cfg[:, bl], set_one=torch.zeros_like(m1), set_zero=m1 | m2 | m3
+                    )
                     cfg[:, br] = _apply_corner_update(cfg[:, br], set_one=m1 | m3, set_zero=m2)
                     claimed[:, (tl, tr, bl, br)] = claimed[:, (tl, tr, bl, br)] | moved.unsqueeze(1)
 
@@ -370,7 +380,7 @@ def apply_homological_equivalence_torch_vmap(
     x = _as_uint8_binary(x_diffs)
     B, T, D2 = z.shape
     if distance is None:
-        distance = int(int(D2) ** 0.5)
+        distance = int(int(D2)**0.5)
     d = int(distance)
 
     if cache_Z is None:
@@ -394,7 +404,7 @@ def apply_homological_equivalence_torch_vmap(
 
 @dataclass(frozen=True)
 class TimelikeHECache:
-    edge_stab: torch.Tensor   # (E,) int64
+    edge_stab: torch.Tensor  # (E,) int64
     edge_qubit: torch.Tensor  # (E,) int64
     num_stabs: int
     D2: int
@@ -421,7 +431,7 @@ def _require_scatter_reduce() -> None:
 
 def _timelike_pair_step_torch(
     diffs_bt: torch.Tensor,  # (B2, 2, D2)
-    meas_bt: torch.Tensor,   # (B2, 2, num_stabs)
+    meas_bt: torch.Tensor,  # (B2, 2, num_stabs)
     parity_stab_to_qubit: torch.Tensor,  # (num_stabs, D2)
     *,
     use_tie_breaker: bool = True,
@@ -456,7 +466,8 @@ def _timelike_pair_step_torch(
 
     meas_contrib = torch.einsum("bts,sd->btd", meas_bt.to(torch.float32), parity_f).to(torch.int32)
     if trainX_bt is not None:
-        trainX_contrib = torch.einsum("bts,sd->btd", trainX_bt.to(torch.float32), parity_f).to(torch.int32)
+        trainX_contrib = torch.einsum("bts,sd->btd", trainX_bt.to(torch.float32),
+                                      parity_f).to(torch.int32)
     else:
         trainX_contrib = torch.zeros_like(meas_contrib)
 
@@ -468,7 +479,8 @@ def _timelike_pair_step_torch(
     new_meas_bt = meas_bt.clone()
     new_meas_bt[:, 0, :] = 1 - new_meas_bt[:, 0, :]
 
-    new_meas_contrib = torch.einsum("bts,sd->btd", new_meas_bt.to(torch.float32), parity_f).to(torch.int32)
+    new_meas_contrib = torch.einsum("bts,sd->btd", new_meas_bt.to(torch.float32),
+                                    parity_f).to(torch.int32)
     new_density_per_round = new_diffs_bt.to(torch.int32) + new_meas_contrib + trainX_contrib
     new_density = new_density_per_round.sum(dim=1)
 
@@ -534,7 +546,7 @@ def _timelike_pair_step_torch(
 
 def _timelike_pass_brickwork_torch(
     diffs: torch.Tensor,  # (B, T, D2)
-    meas: torch.Tensor,   # (B, T, num_stabs)
+    meas: torch.Tensor,  # (B, T, num_stabs)
     parity_stab_to_qubit: torch.Tensor,
     *,
     exclude_round0: bool = False,
@@ -552,7 +564,8 @@ def _timelike_pass_brickwork_torch(
 
     start_even = 2 if exclude_round0 else 0
 
-    def process_pass(start_idx: int, d: torch.Tensor, m: torch.Tensor, tX: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def process_pass(start_idx: int, d: torch.Tensor, m: torch.Tensor,
+                     tX: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
         num_pairs = (T - start_idx) // 2
         if num_pairs <= 0:
             return d, m
@@ -627,7 +640,10 @@ def _apply_timelike_weight1_convergence_torch(
             break
         if prev is not None:
             prev_z, prev_x, prev_sx, prev_sz = prev
-            if not ((z != prev_z).any() | (x != prev_x).any() | (sx != prev_sx).any() | (sz != prev_sz).any()):
+            if not (
+                (z != prev_z).any() | (x != prev_x).any() | (sx != prev_sx).any() |
+                (sz != prev_sz).any()
+            ):
                 break
 
         prev = (z, x, sx, sz)
@@ -658,7 +674,8 @@ def _apply_timelike_weight1_convergence_torch(
     return z, x, sx, sz, torch.tensor(iters, dtype=torch.int32, device=z.device)
 
 
-def _cumulative_to_diffs_torch(z_cum: torch.Tensor, x_cum: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def _cumulative_to_diffs_torch(z_cum: torch.Tensor,
+                               x_cum: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     z_cum = _as_uint8_binary(z_cum)
     x_cum = _as_uint8_binary(x_cum)
     z_pad = torch.cat([torch.zeros_like(z_cum[:, :1, :]), z_cum], dim=1)
@@ -667,10 +684,10 @@ def _cumulative_to_diffs_torch(z_cum: torch.Tensor, x_cum: torch.Tensor) -> Tupl
 
 
 def apply_weight1_timelike_homological_equivalence_torch(
-    z_errors: torch.Tensor,      # (B, T, D2) cumulative
-    x_errors: torch.Tensor,      # (B, T, D2) cumulative
-    s1s2_x: torch.Tensor,        # (B, T, num_X_stabs)
-    s1s2_z: torch.Tensor,        # (B, T, num_Z_stabs)
+    z_errors: torch.Tensor,  # (B, T, D2) cumulative
+    x_errors: torch.Tensor,  # (B, T, D2) cumulative
+    s1s2_x: torch.Tensor,  # (B, T, num_X_stabs)
+    s1s2_z: torch.Tensor,  # (B, T, num_Z_stabs)
     parity_matrix_Z: torch.Tensor,
     parity_matrix_X: torch.Tensor,
     distance: int,
@@ -706,9 +723,13 @@ def apply_weight1_timelike_homological_equivalence_torch(
 
     # Build spacelike caches once
     if cache_Z_spacelike is None:
-        cache_Z_spacelike = build_spacelike_he_cache(parity_Z, distance=distance, device=z_diffs.device)
+        cache_Z_spacelike = build_spacelike_he_cache(
+            parity_Z, distance=distance, device=z_diffs.device
+        )
     if cache_X_spacelike is None:
-        cache_X_spacelike = build_spacelike_he_cache(parity_X, distance=distance, device=z_diffs.device)
+        cache_X_spacelike = build_spacelike_he_cache(
+            parity_X, distance=distance, device=z_diffs.device
+        )
 
     for _ in range(int(num_he_cycles)):
         # Spacelike HE on diffs
@@ -749,4 +770,3 @@ def apply_weight1_timelike_homological_equivalence_torch(
     )
 
     return z_diffs, x_diffs, sx, sz
-

@@ -23,6 +23,7 @@ from training.distributed import DistributedManager
 
 from torch.utils.data import DataLoader
 
+
 def _ensure_inference_io_channels(cfg):
     # 1) Ensure out_channels matches the model’s heads (4: z_data, x_data, syn_x, syn_z)
     if not getattr(cfg.model, "out_channels", None) or cfg.model.out_channels == 0:
@@ -39,10 +40,11 @@ def _ensure_inference_io_channels(cfg):
     if hasattr(cfg.model, "num_filters"):
         filters = list(cfg.model.num_filters)
         if filters and filters[-1] != cfg.model.out_channels:
-            print(f"[run] Adjusting model.num_filters[-1] {filters[-1]} -> {cfg.model.out_channels}")
+            print(
+                f"[run] Adjusting model.num_filters[-1] {filters[-1]} -> {cfg.model.out_channels}"
+            )
             filters[-1] = cfg.model.out_channels
             cfg.model.num_filters = filters
-
 
 
 @hydra.main(version_base="1.3", config_path="../../conf", config_name="config")
@@ -76,9 +78,7 @@ def run_surface(cfg: DictConfig):
     elif cfg.workflow.task == "data":
         DistributedManager.initialize()
         dist = DistributedManager()
-        train_loader, _ = DatapipeFactory.create_dataloader(
-            cfg, dist.world_size, dist.rank
-        )
+        train_loader, _ = DatapipeFactory.create_dataloader(cfg, dist.world_size, dist.rank)
         for j, dl in enumerate(train_loader):
             print(f"Batch {j}: syndrome_shape: {dl['syndrome'].shape}")
     elif cfg.workflow.task in ("sampling", "visualize"):
@@ -88,17 +88,16 @@ def run_surface(cfg: DictConfig):
         )
 
 
-
 def find_best_model(path, *, rank: int = 0):
     if rank == 0:
         print(f"Searching for best model in: {path}")
     if not os.path.isdir(path):
         raise FileNotFoundError(f"Model directory does not exist: {path}")
-    
+
     max_value = -1  # Start with -1 to include epoch 0
     best_file = None
     model_files = []
-    
+
     for filename in os.listdir(path):
         if not filename.startswith("PreDecoderModelMemory_"):
             continue
@@ -111,69 +110,69 @@ def find_best_model(path, *, rank: int = 0):
         except (IndexError, ValueError) as e:
             print(f"⚠️  Warning: Could not parse epoch from filename {filename}: {e}")
             continue
-    
+
     if rank == 0:
         print(f"📊 Found {len(model_files)} model files:")
         for filename, epoch in sorted(model_files, key=lambda x: x[1]):
             marker = "👑" if filename == best_file else "  "
             print(f"  {marker} {filename} (epoch {epoch})")
-    
+
     if best_file is None:
         raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory files found in {path}")
-    
+
     best_model_path = path + "/" + best_file
     if rank == 0:
         print(f"✅ Selected best model: {best_file} (epoch {max_value})")
         print(f"📁 Full path: {best_model_path}")
-    
+
     return best_model_path
 
 
 def _load_model(cfg, dist):
     if dist.rank == 0:
         print(f"🚀 Loading model for task: {cfg.workflow.task}")
-    
+
     _ensure_inference_io_channels(cfg)
     model = ModelFactory.create_model(cfg).to(dist.device)
-    
+
     if dist.rank == 0:
         print(f"Model architecture created and moved to device: {dist.device}")
-    
+
     # Convert model to fp16 if enabled (consistent with training)
     if cfg.enable_fp16:
         model = model.half()
         if dist.rank == 0:
             print(f"Model converted to float16 for fp16 inference")
-    
+
     model = torch.compile(model, disable=True)
-    
+
     if dist.rank == 0:
         print(f"Model compilation disabled (for compatibility)")
-    
+
     # Determine model directory
     # Priority: 1) model_checkpoint_dir (for inference configs)
     #           2) cfg.output/models (for training configs)
     model_checkpoint_dir = getattr(cfg, 'model_checkpoint_dir', None)
-    
+
     # Determine which model to load based on use_model_checkpoint
     use_checkpoint = getattr(cfg.test, 'use_model_checkpoint', -1)
-    
+
     if use_checkpoint == -1:
         # Load best model from best_model folder
         if model_checkpoint_dir:
             model_dir = os.path.join(model_checkpoint_dir, "best_model")
         else:
             model_dir = f"{cfg.output}/models/best_model"
-        
+
         if dist.rank == 0:
             print(f"📂 Loading best model (use_model_checkpoint=-1)")
-        
+
         # If model_dir is relative, make it absolute
         if not os.path.isabs(model_dir):
             current_file = os.path.abspath(__file__)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
             model_dir = os.path.join(project_root, model_dir)
-        
+
         if dist.rank == 0:
             print(f"🔍 Resolved model directory: {model_dir}")
 
@@ -195,16 +194,16 @@ def _load_model(cfg, dist):
             checkpoint_dir = model_checkpoint_dir
         else:
             checkpoint_dir = f"{cfg.output}/models"
-        
+
         if dist.rank == 0:
             print(f"📂 Loading checkpoint {use_checkpoint} (use_model_checkpoint={use_checkpoint})")
-        
+
         # If checkpoint_dir is relative, make it absolute
         if not os.path.isabs(checkpoint_dir):
             current_file = os.path.abspath(__file__)
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
             checkpoint_dir = os.path.join(project_root, checkpoint_dir)
-        
+
         target_suffix = f".0.{use_checkpoint}.pt"
         checkpoint_filename = None
         try:
@@ -217,25 +216,25 @@ def _load_model(cfg, dist):
         if checkpoint_filename is None:
             checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
         model_path = os.path.join(checkpoint_dir, checkpoint_filename)
-        
+
         if dist.rank == 0:
             print(f"🔍 Resolved checkpoint path: {model_path}")
-        
+
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"❌ Checkpoint not found: {model_path}")
-    
+
     if dist.rank == 0:
         print(f"📥 Loading model parameters from: {model_path}")
-    
+
     model_params = torch.load(model_path, map_location=dist.device)
     model.load_state_dict(model_params)
-    
+
     if dist.rank == 0:
         print(f"✅ Model loaded successfully!")
         # Show model size info
         param_count = sum(p.numel() for p in model.parameters())
         print(f"📊 Model parameters: {param_count:,}")
-    
+
     return model
 
 

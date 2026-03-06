@@ -8,7 +8,6 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
 """One-off script to measure LER at d=9, n_rounds=9 for TestPublicInferenceModels baseline.
 
 Who: Maintainers or developers working on the public inference model or d=9 test bounds.
@@ -28,6 +27,7 @@ from workflows.config_validator import apply_public_defaults_and_model, validate
 from workflows.run import _load_model
 from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from training.distributed import DistributedManager
+
 
 def main():
     repo_root = Path(__file__).resolve().parents[2]
@@ -93,6 +93,7 @@ def main():
     print(f"  LER avg:        {ler_avg:.6f}")
     print("\n# Suggested test bounds (mean ± delta): use ler_avg with delta e.g. 1e-3 or 5e-4")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
