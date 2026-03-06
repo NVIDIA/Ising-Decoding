@@ -141,17 +141,30 @@ def _load_model(cfg, dist):
         from export.safetensors_utils import load_safetensors
         if dist.rank == 0:
             print(f"Loading model from SafeTensors: {safetensors_path}")
+
+        # Auto-detect model_id from SafeTensors metadata (don't override with config)
         model, metadata = load_safetensors(
             safetensors_path,
-            model_id=getattr(cfg, "model_id", None),
+            model_id=None,
             device=str(dist.device),
         )
         model = torch.compile(model, disable=True)
         if dist.rank == 0:
+            loaded_model_id = metadata.get("model_id", "unknown")
             dtype = metadata.get("quant_format", "fp32")
+            receptive_field = metadata.get("receptive_field", "unknown")
             param_count = sum(p.numel() for p in model.parameters())
+            print(f"  model_id: {loaded_model_id} (from SafeTensors metadata)")
+            print(f"  receptive_field: {receptive_field}")
             print(f"  dtype: {dtype}")
             print(f"  Model parameters: {param_count:,}")
+
+            # Warn if config model_id doesn't match file metadata
+            config_model_id = getattr(cfg, "model_id", None)
+            if config_model_id is not None and str(config_model_id) != str(loaded_model_id):
+                print(f"  Warning: config model_id={config_model_id} differs from file model_id={loaded_model_id}")
+                print(f"  Using model_id={loaded_model_id} from SafeTensors file")
+
         if metadata.get("quant_format") == "fp16":
             cfg.enable_fp16 = True
         return model
