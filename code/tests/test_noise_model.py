@@ -331,7 +331,6 @@ class TestNoiseModel(unittest.TestCase):
         )
 
 
-
 class TestNoiseModelUpscaling(unittest.TestCase):
     """Tests for surface-code training noise model upscaling (get_training_upscaled_noise_model)."""
 
@@ -339,13 +338,20 @@ class TestNoiseModelUpscaling(unittest.TestCase):
         """get_grouped_totals returns correct P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot and max_group."""
         nm = _noise_model_from_p(0.01)
         tot = get_grouped_totals(nm)
-        self.assertAlmostEqual(tot["p_prep"], 2.0 * 0.01 / 3.0 * 2, places=12)  # p_prep_X + p_prep_Z
+        self.assertAlmostEqual(
+            tot["p_prep"], 2.0 * 0.01 / 3.0 * 2, places=12
+        )  # p_prep_X + p_prep_Z
         self.assertAlmostEqual(tot["p_meas"], 2.0 * 0.01 / 3.0 * 2, places=12)
         self.assertAlmostEqual(tot["p_idle_cnot"], 0.01, places=12)
         self.assertAlmostEqual(tot["p_idle_spam"], nm.get_total_idle_spam_probability(), places=12)
         self.assertAlmostEqual(tot["p_cnot"], 0.01, places=12)
         self.assertGreater(tot["max_group"], 0)
-        self.assertEqual(tot["max_group"], max(tot["p_prep"], tot["p_meas"], tot["p_idle_cnot"], tot["p_idle_spam"], tot["p_cnot"]))
+        self.assertEqual(
+            tot["max_group"],
+            max(
+                tot["p_prep"], tot["p_meas"], tot["p_idle_cnot"], tot["p_idle_spam"], tot["p_cnot"]
+            )
+        )
 
     def test_upscale_small_noise(self):
         """When max_group < target, all 25 p's are scaled so that new max_group = target."""
@@ -358,9 +364,13 @@ class TestNoiseModelUpscaling(unittest.TestCase):
         self.assertFalse(info["downscale_skipped"])
         scale = info["scale_factor"]
         self.assertGreaterEqual(scale, 1.0)
-        self.assertAlmostEqual(scale, SURFACE_CODE_TRAINING_UPSCALE_TARGET / tot["max_group"], places=10)
+        self.assertAlmostEqual(
+            scale, SURFACE_CODE_TRAINING_UPSCALE_TARGET / tot["max_group"], places=10
+        )
         new_tot = get_grouped_totals(training_nm)
-        self.assertAlmostEqual(new_tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET, places=10)
+        self.assertAlmostEqual(
+            new_tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET, places=10
+        )
         # All params scaled by the same factor
         for k, v in nm.to_config_dict().items():
             self.assertAlmostEqual(training_nm.to_config_dict()[k], v * scale, places=12, msg=k)
@@ -376,7 +386,9 @@ class TestNoiseModelUpscaling(unittest.TestCase):
         training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
         self.assertTrue(info["applied_upscale"])
         self.assertAlmostEqual(info["scale_factor"], 1.0, places=10)
-        self.assertAlmostEqual(training_nm.get_total_cnot_probability(), nm.get_total_cnot_probability(), places=12)
+        self.assertAlmostEqual(
+            training_nm.get_total_cnot_probability(), nm.get_total_cnot_probability(), places=12
+        )
 
     def test_downscale_not_applied(self):
         """When max_group > target, parameters are NOT modified; downscale_skipped is True."""
@@ -428,7 +440,9 @@ class TestNoiseModelUpscaling(unittest.TestCase):
         nm = _noise_model_from_p(1e-4)
         tot = get_grouped_totals(nm)
         self.assertLess(tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code", skip_upscale=True)
+        training_nm, info = get_training_upscaled_noise_model(
+            nm, code_type="surface_code", skip_upscale=True
+        )
         self.assertIs(training_nm, nm)
         self.assertFalse(info["applied_upscale"])
         self.assertFalse(info["downscale_skipped"])
@@ -438,7 +452,9 @@ class TestNoiseModelUpscaling(unittest.TestCase):
     def test_skip_upscale_above_target(self):
         """skip_upscale=True also works when max_group > target (no warning about downscale)."""
         nm = _noise_model_from_p(1e-2)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code", skip_upscale=True)
+        training_nm, info = get_training_upscaled_noise_model(
+            nm, code_type="surface_code", skip_upscale=True
+        )
         self.assertIs(training_nm, nm)
         self.assertTrue(info["skipped_by_user"])
         self.assertFalse(info["applied_upscale"])

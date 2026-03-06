@@ -742,7 +742,9 @@ def main(cfg: DictConfig) -> None:
             if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
                 skip_upscale = True
             noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
-                noise_model_user_obj, code_type=code_type, skip_upscale=skip_upscale,
+                noise_model_user_obj,
+                code_type=code_type,
+                skip_upscale=skip_upscale,
             )
 
             # Force fixed-p mode with a conservative scalar placeholder when using noise_model.
@@ -772,27 +774,28 @@ def main(cfg: DictConfig) -> None:
                         f"target={SURFACE_CODE_TRAINING_UPSCALE_TARGET:.1e}. "
                         "Evaluation uses user-specified noise model as-is."
                     )
-                    print(f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}")
+                    print(
+                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
+                    )
                 if upscale_info.get("downscale_skipped"):
                     print(
-                        "\n"
-                        + "!" * 80 + "\n"
-                        + "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
+                        "\n" + "!" * 80 + "\n" +
+                        "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
                         "Parameters are unchanged. If you intended a lower noise regime, check your noise model "
-                        "parameter values (e.g. a typo may have set a single p too high).\n"
-                        + "!" * 80
+                        "parameter values (e.g. a typo may have set a single p too high).\n" +
+                        "!" * 80
                     )
                 if upscale_info.get("above_target_warning"):
                     print(
-                        "\n"
-                        + "#" * 80 + "\n"
-                        + "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
+                        "\n" + "#" * 80 + "\n" +
+                        "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
                         "target ({:.1e}). Surface code threshold is approximately {:.1e}. "
                         "You may be above threshold or have introduced a noise model that is not the one you intended "
-                        "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n".format(
-                            max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET, SURFACE_CODE_THRESHOLD_APPROX
-                        )
-                        + "#" * 80
+                        "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n"
+                        .format(
+                            max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET,
+                            SURFACE_CODE_THRESHOLD_APPROX
+                        ) + "#" * 80
                     )
                 print(
                     f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"

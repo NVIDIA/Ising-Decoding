@@ -469,7 +469,8 @@ def get_training_upscaled_noise_model(
         return (noise_model, info)
 
     if code_type != "surface_code":
-        info["message"] = f"Noise upscaling is not applied for code_type={code_type!r} (surface_code only)."
+        info["message"
+            ] = f"Noise upscaling is not applied for code_type={code_type!r} (surface_code only)."
         return (noise_model, info)
 
     if max_group <= 0.0:
