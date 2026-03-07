@@ -37,7 +37,7 @@ jobs:
   gpu-tests:
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
     container:
-      image: ubuntu:22.04
+      image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
@@ -81,14 +81,132 @@ jobs:
           SKIP_TESTS: "0"
           REQUIRE_GPU: "1"
 
-      - name: Smoke training + inference
+      - name: Training + inference with LER check
         shell: bash
         run: |
           source .venv_train_${{ matrix.python-version }}/bin/activate
-          bash code/scripts/smoke_run.sh
+          bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_train.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # 0.35: short run (16k samples, 2 epochs for stable LER across py versions)
+          python code/scripts/check_ler_from_log.py /tmp/ci_train.log --max-ler 0.35
         env:
-          EXPERIMENT_NAME: ci_smoke
-          PREDECODER_TRAIN_SAMPLES: "4096"
-          PREDECODER_VAL_SAMPLES: "512"
-          PREDECODER_TEST_SAMPLES: "512"
-          PREDECODER_TRAIN_EPOCHS: "1"
+          EXPERIMENT_NAME: ci_short
+          PREDECODER_TRAIN_SAMPLES: "16384"
+          PREDECODER_VAL_SAMPLES: "2048"
+          PREDECODER_TEST_SAMPLES: "2048"
+          PREDECODER_TRAIN_EPOCHS: "2"
+
+  # ---------------------------------------------------------------------------
+  # Mid-tier (~5-10 min): extended training + inference with LER check.
+  # Runs only after merge to main (not on PR branches) to save GPU time.
+  # Single Python version — multi-version coverage is handled by gpu-tests.
+  # ---------------------------------------------------------------------------
+  mid-gpu-tests:
+    if: github.ref == 'refs/heads/main'
+    needs: gpu-tests
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 20
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python3.13 python3.13-venv python3.13-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify GPU
+        run: nvidia-smi
+
+      - name: Install Python dependencies
+        run: |
+          python3.13 -m venv .venv_mid
+          . .venv_mid/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_train.txt
+
+      - name: Mid-tier training + inference with LER check (32k train, 2 epochs)
+        run: |
+          . .venv_mid/bin/activate
+          bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_mid.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # 0.2: mid-tier (32k/2 epochs); loosen if flaky
+          python code/scripts/check_ler_from_log.py /tmp/ci_mid.log --max-ler 0.2
+        env:
+          EXPERIMENT_NAME: ci_mid
+          PREDECODER_TRAIN_SAMPLES: "32768"
+          PREDECODER_VAL_SAMPLES: "4096"
+          PREDECODER_TEST_SAMPLES: "4096"
+          PREDECODER_TRAIN_EPOCHS: "2"
+
+  # ---------------------------------------------------------------------------
+  # GPU coverage: captures GPU-specific code paths missed by the CPU coverage job
+  # ---------------------------------------------------------------------------
+  gpu-coverage:
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 20
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify GPU
+        run: nvidia-smi
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .venv_gpu_cov
+          . .venv_gpu_cov/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_inference.txt
+          pip install -r code/requirements_ci.txt
+
+      - name: Run tests with GPU coverage
+        run: |
+          . .venv_gpu_cov/bin/activate
+          PYTHONPATH=code coverage run -m unittest discover -s code/tests -p "test_*.py"
+          coverage report
+          coverage html -d htmlcov-gpu
+          coverage xml -o coverage-gpu.xml
+
+      - name: Upload GPU coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpu-coverage-report
+          path: |
+            htmlcov-gpu/
+            coverage-gpu.xml
