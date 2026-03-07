@@ -409,7 +409,7 @@ class TestOraclePreDecoder(unittest.TestCase):
         _assert_residuals_zero_oracle(R_X, R_Z, "Z")
 
     def test_residuals_zero_multiple_batches(self):
-        """Residuals zero over several batches (smoke + stability)."""
+        """Residuals zero over several batches (stability check)."""
         for basis in ("X", "Z"):
             gen = self._make_generator(basis)
             for _ in range(3):

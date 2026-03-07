@@ -1,0 +1,313 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# Long-running GPU tests (20+ min each): statistical validation,
+# multi-orientation inference, LER regression, and full-epoch training.
+#
+# Schedule: daily at 02:00 UTC, but skipped if no commits landed on main
+# in the last 24 hours (saves GPU runner time on quiet days).
+# Manual dispatch always runs regardless of commit activity.
+# All jobs use Python 3.13 (multi-version coverage is handled by short-tier CI).
+# See code/tests/README_TEST_TIERS.md for the tier model.
+
+name: Long-running tests
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Comma-separated job names to run (empty = all)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  PIP_NO_CACHE_DIR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_PREFER_BINARY: "1"
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate: skip the whole workflow on schedule if main had no commits in 24h.
+  # Manual dispatch always passes through.
+  # ---------------------------------------------------------------------------
+  check-for-changes:
+    runs-on: linux-amd64-cpu4
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Manual dispatch — always run."
+          else
+            SINCE="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ')"
+            COUNT=$(git log --oneline --since="$SINCE" origin/main | wc -l)
+            if [[ "$COUNT" -gt 0 ]]; then
+              echo "has_changes=true" >> "$GITHUB_OUTPUT"
+              echo "$COUNT commit(s) on main in the last 24h — running long tests."
+            else
+              echo "has_changes=false" >> "$GITHUB_OUTPUT"
+              echo "No commits on main in the last 24h — skipping."
+            fi
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Statistical noise model tests (~15 min)
+  # Runs the full test suite with RUN_SLOW=1 to enable >=100k-shot tests.
+  # ---------------------------------------------------------------------------
+  statistical-noise-model:
+    needs: check-for-changes
+    if: >-
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'statistical-noise-model'))))
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 30
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install Python dependencies
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_inference.txt
+
+      - name: Verify GPU
+        run: |
+          nvidia-smi
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+
+      - name: Run statistical noise model tests (RUN_SLOW=1)
+        run: |
+          . .venv/bin/activate
+          RUN_SLOW=1 PYTHONPATH=code python -m unittest discover -s code/tests -p "test_noise_model.py" -v
+
+  # ---------------------------------------------------------------------------
+  # Multi-orientation inference (~30-60 min)
+  # Runs inference over all 4 surface code orientations (O1-O4). Asserts
+  # completion and that LER output was produced for all 4 (no numeric threshold).
+  # ---------------------------------------------------------------------------
+  orientation-inference:
+    needs: check-for-changes
+    if: >-
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'orientation-inference'))))
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 90
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install Python dependencies
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_train.txt
+
+      - name: Verify GPU
+        run: |
+          nvidia-smi
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+
+      - name: Multi-orientation inference (O1–O4) with LER output check
+        run: |
+          . .venv/bin/activate
+          ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh 2>&1 | tee /tmp/orient_inference.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # Require LER output from all 4 orientations (each inference run prints "LER - Avg")
+          count=$(grep -c "LER - Avg" /tmp/orient_inference.log || true)
+          if [ "$count" -lt 4 ]; then
+            echo "Expected at least 4 LER output blocks (one per orientation), got $count"
+            exit 1
+          fi
+        env:
+          EXPERIMENT_NAME: ci_orient
+          PREDECODER_INFERENCE_NUM_SAMPLES: "1024"
+          PREDECODER_INFERENCE_LATENCY_SAMPLES: "0"
+          PREDECODER_INFERENCE_NUM_WORKERS: "0"
+
+  # ---------------------------------------------------------------------------
+  # LER regression check (~30-60 min)
+  # Evaluates LER at multiple distances using pre-trained models.
+  # ---------------------------------------------------------------------------
+  ler-regression:
+    needs: check-for-changes
+    if: >-
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'ler-regression'))))
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 60
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install Python dependencies
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_inference.txt
+
+      - name: Verify GPU
+        run: |
+          nvidia-smi
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+
+      - name: LER regression (pre-trained models)
+        run: |
+          . .venv/bin/activate
+          PYTHONPATH=code python -m unittest code.tests.test_inference_public_model -v
+
+  # ---------------------------------------------------------------------------
+  # Full 1-epoch training + LER validation (~30-60 min)
+  # Trains 1 epoch with production-scale samples and validates LER threshold.
+  # ---------------------------------------------------------------------------
+  full-epoch-training:
+    needs: check-for-changes
+    if: >-
+      needs.check-for-changes.outputs.has_changes == 'true' &&
+      (github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.jobs == '' || contains(inputs.jobs, 'full-epoch-training'))))
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 90
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs gcc software-properties-common
+          add-apt-repository -y ppa:deadsnakes/ppa
+          apt-get update
+          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install Python dependencies
+        run: |
+          python${{ env.PYTHON_VERSION }} -m venv .venv
+          . .venv/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_train.txt
+
+      - name: Verify GPU
+        run: |
+          nvidia-smi
+          . .venv/bin/activate
+          python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
+
+      - name: Full 1-epoch training + inference with LER validation
+        run: |
+          . .venv/bin/activate
+          bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_full_epoch.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # 0.15: conservative for 2M samples / 1 epoch; tighten if runs are stable
+          python code/scripts/check_ler_from_log.py /tmp/ci_full_epoch.log --max-ler 0.15
+        env:
+          EXPERIMENT_NAME: ci_full_epoch
+          PREDECODER_TRAIN_SAMPLES: "2097152"
+          PREDECODER_VAL_SAMPLES: "65536"
+          PREDECODER_TEST_SAMPLES: "65536"
+          PREDECODER_TRAIN_EPOCHS: "1"

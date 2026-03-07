@@ -72,7 +72,7 @@ Inference note:
   - Keep `PREDECODER_TRAIN_SAMPLES >= per_device_batch_size * accumulate_steps * world_size`.
   - Note: the batch schedule jumps to 2048 after epoch 0, so epoch 1 uses
     `2048 * 2 * world_size` effective batch size.
-  - For quick smoke runs, use `GPUS=1` and `PREDECODER_TRAIN_SAMPLES >= 4096`.
+  - For quick short runs, use `GPUS=1` and `PREDECODER_TRAIN_SAMPLES >= 4096`.
 - **Segfaults during training startup (torch.compile)**:
   - Some environments crash during `torch.compile`.
   - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
@@ -370,4 +370,4 @@ dispatch:
 | `unit-tests-coverage` | CPU | Same suite with `coverage` reporting |
 | `python-compat` | CPU | Import/install check across Python 3.11 / 3.12 / 3.13 |
 | `gpu-tests` | GPU | Full test suite on a self-hosted GPU runner |
-| `smoke-test-gpu` | GPU | Short train + inference end-to-end smoke run |
+| `gpu-tests` (train+inference) | GPU | Short train + inference with LER check |
