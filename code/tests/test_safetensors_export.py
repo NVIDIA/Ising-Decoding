@@ -9,10 +9,13 @@
 # its affiliates is strictly prohibited.
 """Round-trip tests for SafeTensors export/load utilities."""
 
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -99,6 +102,94 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             save_safetensors(model, path, model_id=self.MODEL_ID, dtype="int8")
+
+
+class TestSafeTensorsRunPyIntegration(unittest.TestCase):
+    """Test PREDECODER_SAFETENSORS_CHECKPOINT code path in workflows/run.py."""
+
+    MODEL_ID = 1
+
+    def _make_dist(self):
+        dist = types.SimpleNamespace(rank=0, device=torch.device("cpu"))
+        return dist
+
+    def _make_cfg(self):
+        from omegaconf import OmegaConf
+        cfg = _build_minimal_cfg(self.MODEL_ID)
+        cfg = OmegaConf.merge(
+            cfg,
+            OmegaConf.create({
+                "workflow": {
+                    "task": "inference"
+                },
+                "enable_fp16": False,
+            }),
+        )
+        return cfg
+
+    def _run_load_model(self, safetensors_path, cfg=None, dist=None):
+        from workflows.run import _load_model
+        if cfg is None:
+            cfg = self._make_cfg()
+        if dist is None:
+            dist = self._make_dist()
+        # _ensure_inference_io_channels requires a full data pipeline; patch it out
+        # since we are only testing the SafeTensors loading code path.
+        with patch("workflows.run._ensure_inference_io_channels"), \
+             patch.dict(os.environ, {"PREDECODER_SAFETENSORS_CHECKPOINT": safetensors_path}):
+            return _load_model(cfg, dist), cfg
+
+    def test_env_var_loads_fp32_model(self):
+        """PREDECODER_SAFETENSORS_CHECKPOINT causes _load_model to load from .safetensors."""
+        model = ModelFactory.create_model(_build_minimal_cfg(self.MODEL_ID))
+        with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
+            path = f.name
+
+        save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
+        loaded, cfg = self._run_load_model(path)
+
+        self.assertEqual(next(iter(loaded.parameters())).dtype, torch.float32)
+        self.assertFalse(cfg.enable_fp16)
+        # Weights must match the original model
+        for key in model.state_dict():
+            torch.testing.assert_close(
+                model.state_dict()[key].float(),
+                loaded.state_dict()[key].float(),
+                atol=0.0,
+                rtol=0,
+            )
+
+    def test_env_var_loads_fp16_model_and_sets_flag(self):
+        """fp16 .safetensors sets cfg.enable_fp16 and returns a half-precision model."""
+        model = ModelFactory.create_model(_build_minimal_cfg(self.MODEL_ID)).half()
+        with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
+            path = f.name
+
+        save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp16")
+        loaded, cfg = self._run_load_model(path)
+
+        self.assertEqual(next(iter(loaded.parameters())).dtype, torch.float16)
+        self.assertTrue(cfg.enable_fp16)
+
+    def test_empty_env_var_skips_safetensors_path(self):
+        """When env var is unset, _load_model falls through to the normal .pt path."""
+        from workflows.run import _load_model
+        cfg = self._make_cfg()
+        dist = self._make_dist()
+
+        with patch("workflows.run._ensure_inference_io_channels"), \
+             patch("workflows.run.ModelFactory") as mock_factory, \
+             patch.dict(os.environ, {"PREDECODER_SAFETENSORS_CHECKPOINT": ""}):
+            mock_model = unittest.mock.MagicMock()
+            mock_factory.create_model.return_value = mock_model
+            mock_model.to.return_value = mock_model
+            # The normal path raises because no checkpoint dir exists; that is expected.
+            try:
+                _load_model(cfg, dist)
+            except Exception:
+                pass
+            # Key assertion: ModelFactory.create_model was called (not the safetensors path)
+            mock_factory.create_model.assert_called_once()
 
 
 if __name__ == "__main__":
