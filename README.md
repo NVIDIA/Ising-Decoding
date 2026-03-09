@@ -109,33 +109,28 @@ WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_ru
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
 `outputs/<EXPERIMENT_NAME>/run.log`.
 
-### Converting .pt checkpoints to SafeTensors (post-training)
+### Converting .pt checkpoints to SafeTensors (optional, post-training)
 
-Pre-trained models are distributed as `.pt` checkpoints. When you need a `.safetensors` file (e.g. for inference or tooling that expects SafeTensors), use the export script:
+By default, training produces `.pt` checkpoints under `outputs/<EXPERIMENT_NAME>/models/` and inference loads them directly. SafeTensors export is optional — use it when downstream tooling requires the SafeTensors format.
 
-**Convert a .pt checkpoint to a .safetensors file (fp16 or fp32):**
-
-```bash
-# fp16 (half precision, smaller file):
-PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
-    --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \
-    --model-id 1 --fp16
-
-# fp32 (full precision, default):
-PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
-    --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \
-    --model-id 1
-```
-
-Output is written next to the checkpoint (e.g. `PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors`). Use the result for inference by setting `PREDECODER_SAFETENSORS_CHECKPOINT`:
+**Step 1 — convert the best trained checkpoint:**
 
 ```bash
-PREDECODER_SAFETENSORS_CHECKPOINT=models/PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors \
-PREDECODER_INFERENCE_NUM_SAMPLES=65650 WORKFLOW=inference DISTANCE=9 N_ROUNDS=9 \
-EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
+PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
+    --checkpoint outputs/<EXPERIMENT_NAME>/models/<checkpoint>.pt \
+    --model-id <MODEL_ID> [--fp16]
 ```
 
-For model 4 (r13), use `--model-id 4` and a matching r13 `.pt` checkpoint (e.g. `PreDecoderModelMemory_r13_v1.0.86.pt`), then set `DISTANCE=13 N_ROUNDS=13`.
+Output is written next to the checkpoint (e.g. `<checkpoint>_fp16.safetensors`).
+
+**Step 2 — run inference from the SafeTensors file:**
+
+```bash
+PREDECODER_SAFETENSORS_CHECKPOINT=outputs/<EXPERIMENT_NAME>/models/<checkpoint>_fp16.safetensors \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+`MODEL_ID` is the public model identifier (1–5); see `model/registry.py` for the mapping.
 
 ### GPU selection
 

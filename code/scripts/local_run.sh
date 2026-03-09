@@ -18,13 +18,13 @@ set -euo pipefail
 #   WORKFLOW=inference bash code/scripts/local_run.sh
 #   GPUS=4 bash code/scripts/local_run.sh
 #   CUDA_VISIBLE_DEVICES=1 bash code/scripts/local_run.sh        # use only GPU 1
-#   PREDECODER_SAFETENSORS_CHECKPOINT=models/PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors \
-#     WORKFLOW=inference DISTANCE=9 N_ROUNDS=9 bash code/scripts/local_run.sh  # inference from .safetensors
 #
 # Notes:
 # - Public config is `conf/config_public.yaml`. Users should edit only that file.
 # - Training knobs are auto-managed in code (epochs, shots/epoch, batch schedule, etc.).
-# - To create a .safetensors file from a .pt checkpoint: code/export/checkpoint_to_safetensors.py (see README).
+# - SafeTensors (optional): after training, convert the best .pt checkpoint with
+#     code/export/checkpoint_to_safetensors.py (see README), then pass the result as:
+#     PREDECODER_SAFETENSORS_CHECKPOINT=<path>.safetensors WORKFLOW=inference bash code/scripts/local_run.sh
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-test1}"
 CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
