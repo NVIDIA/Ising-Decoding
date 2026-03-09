@@ -511,7 +511,7 @@ class TestTimelikeHEPipeline(unittest.TestCase):
         self.assertEqual(counts["total_accepted"], 0)
 
     def test_basis_Z(self):
-        """Smoke test with basis='Z'."""
+        """Quick check with basis='Z': output shape matches input."""
         d = 3
         hx, hz, _ = _build_parity_matrices(d)
         trainY = self._make_trainY(d, 4, batch=2, seed=10)
@@ -1216,7 +1216,7 @@ class TestHETorchIntegration(unittest.TestCase):
 
     def test_generate_batch_shapes_and_dtypes(self):
         """
-        Basic smoke test with HE cycles enabled.
+        Basic check with HE cycles enabled: shapes and dtypes.
 
         Verifies the integration path runs and returns tensors in the model format:
           trainX: (B, 4, R, D, D), float32

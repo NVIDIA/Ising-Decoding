@@ -59,7 +59,7 @@ def run_inference(model, device, dist, cfg) -> None:
     """
     Run a single inference evaluation and print a compact summary.
     """
-    # Optional smoke overrides (env-based) to keep inference lightweight.
+    # Optional overrides (env-based) to keep inference lightweight.
     try:
         test_cfg = getattr(cfg, "test", None)
         if test_cfg is not None:
