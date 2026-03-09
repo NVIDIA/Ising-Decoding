@@ -7,15 +7,5 @@
 # disclosure or distribution of this material and related documentation
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
-
-# Public inference requirements (Stim + PyTorch path).
-# Install a PyTorch build compatible with your Python/CUDA stack.
-# Target Python versions: 3.11, 3.12, 3.13
-hydra-core
-omegaconf
-numpy
-torch
-stim
-pymatching
-matplotlib
-safetensors>=0.4.0
+#
+# Export utilities: checkpoint_to_safetensors ( .pt -> .safetensors ) and safetensors_utils.
