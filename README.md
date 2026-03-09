@@ -116,9 +116,15 @@ Pre-trained models are distributed as `.pt` checkpoints. When you need a `.safet
 **Convert a .pt checkpoint to a .safetensors file (fp16 or fp32):**
 
 ```bash
+# fp16 (half precision, smaller file):
 PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
     --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \
-    --model-id 1 [--fp16]
+    --model-id 1 --fp16
+
+# fp32 (full precision, default):
+PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
+    --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \
+    --model-id 1
 ```
 
 Output is written next to the checkpoint (e.g. `PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors`). Use the result for inference by setting `PREDECODER_SAFETENSORS_CHECKPOINT`:

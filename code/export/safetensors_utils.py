@@ -116,10 +116,10 @@ def load_safetensors(
     cfg = _build_minimal_cfg(model_id)
     model = ModelFactory.create_model(cfg).to(device)
 
-    state_dict = load_file(safetensors_path, device=device)
-    model.load_state_dict(state_dict, strict=True)
-
     if metadata.get("quant_format") == "fp16":
         model = model.half()
+
+    state_dict = load_file(safetensors_path, device=device)
+    model.load_state_dict(state_dict, strict=True)
 
     return model, metadata
