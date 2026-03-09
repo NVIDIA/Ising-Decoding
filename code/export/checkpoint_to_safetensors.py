@@ -43,7 +43,9 @@ def _load_checkpoint_state_dict(checkpoint_path: str, device: str) -> dict:
     - {"state_dict": ...}
     Also strips the DDP "module." prefix if present.
     """
-    raw = torch.load(checkpoint_path, map_location=device, weights_only=False)  # legacy .pt may contain non-tensor objects
+    raw = torch.load(
+        checkpoint_path, map_location=device, weights_only=False
+    )  # legacy .pt may contain non-tensor objects
 
     if isinstance(raw, dict):
         if "model_state_dict" in raw:
