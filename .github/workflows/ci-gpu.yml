@@ -142,6 +142,7 @@ jobs:
           pip install -r code/requirements_public_train.txt
 
       - name: Mid-tier training + inference with LER check (32k train, 2 epochs)
+        shell: bash
         run: |
           . .venv_mid/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_mid.log
