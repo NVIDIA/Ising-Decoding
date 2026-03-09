@@ -175,6 +175,7 @@ jobs:
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: Multi-orientation inference (O1–O4) with LER output check
+        shell: bash
         run: |
           . .venv/bin/activate
           ORIENTATIONS_LONG_TASK=inference bash code/scripts/run_orientations_long.sh 2>&1 | tee /tmp/orient_inference.log
@@ -299,6 +300,7 @@ jobs:
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
       - name: Full 1-epoch training + inference with LER validation
+        shell: bash
         run: |
           . .venv/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_full_epoch.log
