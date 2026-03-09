@@ -15,7 +15,7 @@
 set -euo pipefail
 INSTALL_DIR="${INSTALL_DIR:-$HOME/predecoder_env}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
-TORCH_CUDA="${TORCH_CUDA:-}"
+TORCH_CUDA="${TORCH_CUDA:-cu121}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
@@ -43,7 +43,8 @@ if [ -z "$PYTHON_BIN" ]; then
   mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
   MINICONDA_DIR="${INSTALL_DIR}/miniconda3"
   if [ ! -d "$MINICONDA_DIR" ]; then
-    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+    ARCH=$(uname -m)
+    MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${ARCH}.sh"
     [ -n "$(command -v wget)" ] && wget -q "$MINICONDA_URL" -O miniconda.sh || curl -sL -o miniconda.sh "$MINICONDA_URL"
     bash miniconda.sh -b -p "$MINICONDA_DIR" && rm -f miniconda.sh
   fi
@@ -68,11 +69,10 @@ cd "$REPO_ROOT"
 
 # Use PyTorch CUDA index so torch is CUDA-built (on aarch64, PyPI serves CPU-only).
 # TORCH_CUDA e.g. cu121 or cu124; default cu121 to match nvidia/cuda:12.1 base image.
-PYTORCH_CUDA_TAG="${TORCH_CUDA:-cu121}"
-PYTORCH_INDEX="https://download.pytorch.org/whl/${PYTORCH_CUDA_TAG}"
-echo "Installing requirements (torch from CUDA index: ${PYTORCH_CUDA_TAG})..."
+PYTORCH_INDEX="https://download.pytorch.org/whl/${TORCH_CUDA}"
+echo "Installing requirements (torch from CUDA index: ${TORCH_CUDA})..."
 "$PYTHON_BIN" -m pip install -r code/requirements_public_train.txt \
-  --index-url "$PYTORCH_INDEX" --extra-index-url https://pypi.org/simple
+  --index-url "${PYTORCH_INDEX}" --extra-index-url https://pypi.org/simple
 
 "$PYTHON_BIN" -c "
 import torch

@@ -46,7 +46,7 @@
 #   EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8 \
 #   CONFIG_NAME=config_qec_decoder_r13_fp8 \
 #   GPUS=4 FRESH_START=1 \
-#     sbatch --partition=<4gpu-partition> --gres=gpu:4 \
+#     sbatch --partition=<4gpu-partition> --nodes=1 --gres=gpu:4 \
 #            --cpus-per-task=80 --mem=240G \
 #            code/scripts/sbatch_train.sh
 #
@@ -56,7 +56,7 @@
 #   GPUS=4 \
 #   PREDECODER_TRAIN_SAMPLES=8388608 \
 #   PREDECODER_LR_MILESTONES="1.0,2.0,4.0" \
-#     sbatch --partition=<4gpu-partition> --gres=gpu:4 \
+#     sbatch --partition=<4gpu-partition> --nodes=1 --gres=gpu:4 \
 #            --cpus-per-task=80 --mem=240G \
 #            code/scripts/sbatch_train.sh
 # ──────────────────────────────────────────────────────────────
@@ -77,7 +77,8 @@ log() { echo "[$(date -Iseconds)] $*"; }
 export PREDECODER_VERBOSE=1
 export PYTHONUNBUFFERED=1
 
-REPO_ROOT="${REPO_ROOT:-$(pwd)}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/../.." && pwd)}"
 SHARED_OUTPUT_DIR="${SHARED_OUTPUT_DIR:-$HOME/predecoder_outputs}"
 GPUS="${GPUS:-1}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-qec-decoder-depolarizing-r9-fp8}"
@@ -119,12 +120,17 @@ log "========== Checking for Docker =========="
 HOST_UID=$(id -u)
 HOST_GID=$(id -g)
 
+# Cluster-run defaults: disable SDR (expensive) and torch.compile (can crash in some envs).
+# Users can override either by setting the variable before calling sbatch.
+PREDECODER_DISABLE_SDR="${PREDECODER_DISABLE_SDR:-1}"
+PREDECODER_TORCH_COMPILE="${PREDECODER_TORCH_COMPILE:-0}"
+
 COMMON_ENV=(
   -e SHARED_OUTPUT_DIR=/data
   -e PYTHONUNBUFFERED=1
   -e PREDECODER_VERBOSE=1
-  -e "PREDECODER_TORCH_COMPILE=${PREDECODER_TORCH_COMPILE:-0}"
-  -e "PREDECODER_DISABLE_SDR=${PREDECODER_DISABLE_SDR:-1}"
+  -e "PREDECODER_TORCH_COMPILE=${PREDECODER_TORCH_COMPILE}"
+  -e "PREDECODER_DISABLE_SDR=${PREDECODER_DISABLE_SDR}"
   -e "GPUS=${GPUS}"
   -e "EXPERIMENT_NAME=${EXPERIMENT_NAME}"
   -e "CONFIG_NAME=${CONFIG_NAME}"
@@ -146,6 +152,7 @@ if command -v docker >/dev/null 2>&1 && docker image inspect "$DOCKER_IMAGE" >/d
     "${COMMON_ENV[@]}" \
     "$DOCKER_IMAGE" 2>&1
 elif command -v docker >/dev/null 2>&1 && docker run --rm --gpus all "$DOCKER_BASE_IMAGE" nvidia-smi -L >/dev/null 2>&1; then
+  log "Setting sticky bit on $SHARED_OUTPUT_DIR for NFS/Docker UID compatibility."
   chmod 1777 "$SHARED_OUTPUT_DIR" 2>/dev/null || true
   log "Using Docker base image $DOCKER_BASE_IMAGE (install + train)."
   docker run --rm --gpus all \
@@ -159,7 +166,7 @@ else
   log "No Docker. Running install + train on node."
   export SHARED_OUTPUT_DIR GPUS EXPERIMENT_NAME CONFIG_NAME
   export FRESH_START="${FRESH_START:-0}"
-  export PREDECODER_DISABLE_SDR="${PREDECODER_DISABLE_SDR:-1}"
+  export PREDECODER_DISABLE_SDR PREDECODER_TORCH_COMPILE
   INSTALL_DIR="${INSTALL_DIR:-$HOME/predecoder_env}"
   bash code/scripts/cluster_install_deps.sh
   export PREDECODER_PYTHON="${INSTALL_DIR}/venv/bin/python"

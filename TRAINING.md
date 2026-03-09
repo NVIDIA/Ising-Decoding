@@ -145,8 +145,8 @@ export CONFIG_NAME=config_qec_decoder_r13_fp8
 | `PREDECODER_TRAIN_SAMPLES` | config-defined | Samples per epoch. Bypasses auto-scaling when set explicitly. |
 | `PREDECODER_LR_MILESTONES` | config-defined | Comma-separated LR schedule milestone fractions (e.g. `0.25,0.5,1.0`). |
 | `PREDECODER_TIMING_RUN` | unset | Set `1` for timing/benchmarking mode (disables some overhead). |
-| `PREDECODER_TORCH_COMPILE` | unset | `0` to disable `torch.compile`, `1` to enable. |
-| `PREDECODER_DISABLE_SDR` | unset | `1` to skip Syndrome Density Reduction computation (saves time). |
+| `PREDECODER_TORCH_COMPILE` | `0` when run via `sbatch_train.sh`, otherwise unset | `0` to disable `torch.compile`, `1` to enable. |
+| `PREDECODER_DISABLE_SDR` | `1` when run via `sbatch_train.sh`, otherwise unset | `1` to skip Syndrome Density Reduction computation (saves time on cluster). |
 | `TORCH_COMPILE` | unset | Alternative way to control `torch.compile` (`0`/`1`). |
 | `TORCH_COMPILE_MODE` | unset | `default`, `reduce-overhead`, or `max-autotune`. |
 
@@ -159,8 +159,9 @@ export CONFIG_NAME=config_qec_decoder_r13_fp8
 | `TORCH_CUDA` | `cu121` | PyTorch CUDA wheel tag (e.g. `cu121`, `cu124`, `cu130`). |
 | `DOCKER_IMAGE` | `predecoder-train` | Pre-built Docker image name. |
 | `DOCKER_BASE_IMAGE` | `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04` | Fallback CUDA base image. |
+| `SHARED_LOG_DIR` | `$SHARED_OUTPUT_DIR/logs` | Override the logs root directory (advanced). |
 | `PREDECODER_BASE_OUTPUT_DIR` | `$SHARED_OUTPUT_DIR/outputs` | Override the outputs root (advanced). |
-| `PREDECODER_LOG_BASE_DIR` | `$SHARED_OUTPUT_DIR/logs` | Override the logs root (advanced). |
+| `PREDECODER_LOG_BASE_DIR` | `$SHARED_OUTPUT_DIR/logs` | Override the logs root (advanced, set by `cluster_train.sh` from `SHARED_LOG_DIR`). |
 
 ## Example SLURM configurations
 
@@ -190,7 +191,7 @@ EXPERIMENT_NAME=qec-decoder-depolarizing-r13-fp8-4gpu \
 CONFIG_NAME=config_qec_decoder_r13_fp8 \
 GPUS=4 FRESH_START=1 \
   sbatch --partition=<your-4gpu-partition> \
-         --gres=gpu:4 --cpus-per-task=80 --mem=240G \
+         --nodes=1 --gres=gpu:4 --cpus-per-task=80 --mem=240G \
          code/scripts/sbatch_train.sh
 ```
 
@@ -207,7 +208,7 @@ GPUS=4 \
 PREDECODER_TRAIN_SAMPLES=8388608 \
 PREDECODER_LR_MILESTONES="1.0,2.0,4.0" \
   sbatch --partition=<your-4gpu-partition> \
-         --gres=gpu:4 --cpus-per-task=80 --mem=240G \
+         --nodes=1 --gres=gpu:4 --cpus-per-task=80 --mem=240G \
          code/scripts/sbatch_train.sh
 ```
 
