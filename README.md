@@ -109,6 +109,29 @@ WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_ru
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
 `outputs/<EXPERIMENT_NAME>/run.log`.
 
+### Converting .pt checkpoints to SafeTensors (optional, post-training)
+
+By default, training produces `.pt` checkpoints under `outputs/<EXPERIMENT_NAME>/models/` and inference loads them directly. SafeTensors export is optional — use it when downstream tooling requires the SafeTensors format.
+
+**Step 1 — convert the best trained checkpoint:**
+
+```bash
+PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \
+    --checkpoint outputs/<EXPERIMENT_NAME>/models/<checkpoint>.pt \
+    --model-id <MODEL_ID> [--fp16]
+```
+
+Output is written next to the checkpoint (e.g. `<checkpoint>_fp16.safetensors`).
+
+**Step 2 — run inference from the SafeTensors file:**
+
+```bash
+PREDECODER_SAFETENSORS_CHECKPOINT=outputs/<EXPERIMENT_NAME>/models/<checkpoint>_fp16.safetensors \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+`MODEL_ID` is the public model identifier (1–5); see `model/registry.py` for the mapping.
+
 ### GPU selection
 
 - **Defaults**: if you do not set `CUDA_VISIBLE_DEVICES` or `GPUS`, all GPUs are used.

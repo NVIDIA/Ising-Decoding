@@ -22,6 +22,9 @@ set -euo pipefail
 # Notes:
 # - Public config is `conf/config_public.yaml`. Users should edit only that file.
 # - Training knobs are auto-managed in code (epochs, shots/epoch, batch schedule, etc.).
+# - SafeTensors (optional): after training, convert the best .pt checkpoint with
+#     code/export/checkpoint_to_safetensors.py (see README), then pass the result as:
+#     PREDECODER_SAFETENSORS_CHECKPOINT=<path>.safetensors WORKFLOW=inference bash code/scripts/local_run.sh
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-test1}"
 CONFIG_NAME="${CONFIG_NAME:-config_public}"   # conf/<name>.yaml (no extension)
