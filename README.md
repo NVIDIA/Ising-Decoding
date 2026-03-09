@@ -255,7 +255,54 @@ LOGICAL Z (lz):
 
 - `data.noise_model`: a **25-parameter circuit-level** noise model (SPAM, idles, and CNOT Pauli channels).
 
-Training may apply a **training-only** “noise floor” sparsity guard (scales probabilities up if the grouped totals are too small). Evaluation uses the user-specified noise model **as-is**. We have seen that it is preferrable to train on data that is more dense and then apply it to sparser data that training on the sparse data.
+#### Training noise upscaling (surface code)
+
+When training a surface-code pre-decoder the noise parameters you specify may be very small (e.g. `p = 1e-4`), which produces extremely sparse syndromes and slow convergence. To address this, the training pipeline **automatically upscales** all 25 noise-model parameters so that the largest grouped total `max(P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot)` equals a fixed target of **6 × 10⁻³** (just below the surface-code threshold of ~7.5 × 10⁻³).
+
+The five grouped totals are:
+
+| Group | Sum of |
+|-------|--------|
+| P_prep | `p_prep_X + p_prep_Z` |
+| P_meas | `p_meas_X + p_meas_Z` |
+| P_idle_cnot | `p_idle_cnot_X + p_idle_cnot_Y + p_idle_cnot_Z` |
+| P_idle_spam | `p_idle_spam_X + p_idle_spam_Y + p_idle_spam_Z` |
+| P_cnot | sum of all 15 `p_cnot_*` |
+
+**Upscaling rules:**
+
+- If `max_group < 6e-3`: all 25 p's are multiplied by `6e-3 / max_group` for training data generation only. Evaluation always uses the original user-specified noise model as-is.
+- If `max_group >= 6e-3`: parameters are **not** modified (the training log emits a warning in case this indicates a configuration error).
+- Non-surface-code types (`code_type != "surface_code"`) are never upscaled.
+
+We have found that training on denser syndromes and then evaluating on sparser data produces better results than training directly on sparse data.
+
+#### Skipping noise upscaling
+
+If you need to train with your **exact** noise parameters (e.g. for benchmarking or controlled experiments), you can disable upscaling via config or environment variable:
+
+**Config** (`conf/config_public.yaml`):
+
+```yaml
+data:
+  skip_noise_upscaling: true
+  noise_model:
+    p_prep_X: 0.002
+    # ... rest of 25 params
+```
+
+**Environment variable:**
+
+```bash
+PREDECODER_SKIP_NOISE_UPSCALING=1 bash code/scripts/local_run.sh
+```
+
+Either method causes the training pipeline to use the user-specified noise model verbatim — no scaling is applied. The training log will confirm:
+
+```
+[Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or PREDECODER_SKIP_NOISE_UPSCALING=1).
+```
+
 
 ### Precomputed frames (recommended)
 

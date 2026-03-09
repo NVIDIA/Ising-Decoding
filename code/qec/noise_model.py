@@ -37,8 +37,13 @@ Usage:
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+
+# Surface-code training upscale target (below threshold ~7.5e-3). Used when sampling training data.
+SURFACE_CODE_TRAINING_UPSCALE_TARGET = 6e-3
+# Approximate surface code threshold for user-facing warnings.
+SURFACE_CODE_THRESHOLD_APPROX = 7.5e-3
 
 
 # Internal helper for depolarizing-equivalent 25p mapping (tests/docs).
@@ -386,6 +391,119 @@ class NoiseModel:
             f"idle_spam=[X:{self.p_idle_spam_X:.4f}, Y:{self.p_idle_spam_Y:.4f}, Z:{self.p_idle_spam_Z:.4f}], "
             f"cnot_total={self.get_total_cnot_probability():.4f})"
         )
+
+
+def get_grouped_totals(nm: NoiseModel) -> Dict[str, float]:
+    """
+    Compute the sum of p's per fault channel (capital P's) for the 25-p noise model.
+
+    Returns:
+        Dict with keys: p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot, max_group.
+    """
+    p_prep = float(nm.p_prep_X + nm.p_prep_Z)
+    p_meas = float(nm.p_meas_X + nm.p_meas_Z)
+    p_idle_cnot = float(nm.get_total_idle_cnot_probability())
+    p_idle_spam = float(nm.get_total_idle_spam_probability())
+    p_cnot = float(nm.get_total_cnot_probability())
+    max_group = max(p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot)
+    return {
+        "p_prep": p_prep,
+        "p_meas": p_meas,
+        "p_idle_cnot": p_idle_cnot,
+        "p_idle_spam": p_idle_spam,
+        "p_cnot": p_cnot,
+        "max_group": max_group,
+    }
+
+
+def get_training_upscaled_noise_model(
+    noise_model: NoiseModel,
+    code_type: str = "surface_code",
+    skip_upscale: bool = False,
+) -> Tuple[NoiseModel, Dict[str, Any]]:
+    """
+    For surface code only: optionally upscale the noise model for training so that
+    max(P's) = SURFACE_CODE_TRAINING_UPSCALE_TARGET (6e-3). Training data sampling
+    should use the returned model; evaluation should use the original user-specified model.
+
+    - Upscaling (max_group < target): scale all 25 p's by target/max_group; info contains details.
+    - Downscaling (max_group > target): do NOT change parameters; info contains a clear warning.
+    - If max_group > target: info indicates the user may be above threshold / have made an error.
+
+    For code_type != "surface_code", returns (noise_model unchanged, info with applied=False).
+
+    Args:
+        noise_model: The user-specified NoiseModel.
+        code_type: Code type string (upscaling only for "surface_code").
+        skip_upscale: If True, skip upscaling entirely and return the original model unchanged.
+            Useful for training with exact user-specified noise parameters (e.g. benchmarking).
+
+    Returns:
+        (training_noise_model, info_dict) where info_dict has:
+        - applied_upscale: bool
+        - scale_factor: float (only if upscaling applied)
+        - max_group: float
+        - group_totals: dict (p_prep, p_meas, ...)
+        - above_target_warning: bool (max_group > UPSCALE_TARGET)
+        - downscale_skipped: bool (max_group > target, params not modified)
+        - skipped_by_user: bool (skip_upscale was True)
+    """
+    target = SURFACE_CODE_TRAINING_UPSCALE_TARGET
+    totals = get_grouped_totals(noise_model)
+    max_group = totals["max_group"]
+
+    info: Dict[str, Any] = {
+        "max_group": max_group,
+        "group_totals": totals,
+        "above_target_warning": max_group > target,
+        "downscale_skipped": False,
+        "applied_upscale": False,
+        "skipped_by_user": skip_upscale,
+    }
+
+    if skip_upscale:
+        info["message"] = (
+            "Noise upscaling SKIPPED by user (skip_noise_upscaling=true). "
+            f"Training will use the exact user-specified noise model (max_group={max_group:.6g})."
+        )
+        return (noise_model, info)
+
+    if code_type != "surface_code":
+        info["message"
+            ] = f"Noise upscaling is not applied for code_type={code_type!r} (surface_code only)."
+        return (noise_model, info)
+
+    if max_group <= 0.0:
+        raise ValueError(
+            "Invalid noise_model: all grouped totals are <= 0 "
+            f"(prep={totals['p_prep']}, meas={totals['p_meas']}, "
+            f"idle_cnot={totals['p_idle_cnot']}, idle_spam={totals['p_idle_spam']}, cnot={totals['p_cnot']})."
+        )
+
+    scale_factor = target / max_group
+
+    if scale_factor >= 1.0:
+        # Upscaling: apply scale to all 25 parameters
+        params = noise_model.to_config_dict()
+        scaled_params = {k: float(v) * scale_factor for k, v in params.items()}
+        training_nm = NoiseModel.from_config_dict(scaled_params)
+        training_nm._reference = dict(noise_model._reference)
+        info["applied_upscale"] = True
+        info["scale_factor"] = scale_factor
+        info["message"] = (
+            f"Upscaled training noise: max_group={max_group:.6g} -> target={target:.1e} "
+            f"(scale={scale_factor:.6g}). Evaluation uses user-specified noise model as-is."
+        )
+        return (training_nm, info)
+
+    # Downscaling: do not modify parameters
+    info["downscale_skipped"] = True
+    info["scale_factor"] = scale_factor
+    info["message"] = (
+        f"Downscale NOT applied: max_group={max_group:.6g} > target={target:.1e}. "
+        "Parameters unchanged. If you intended a lower noise regime, check your noise model values."
+    )
+    return (noise_model, info)
 
 
 def noise_model_from_config(cfg) -> Optional[NoiseModel]:

@@ -729,44 +729,23 @@ def main(cfg: DictConfig) -> None:
         if nm_dict is not None:
             noise_model_user_obj = NoiseModel.from_config_dict(dict(nm_dict))
 
-            # Training-only sparsity guard:
-            # We compute grouped totals per mechanism:
-            #   P_PREP, P_MEAS, P_IDLE_CNOT, P_IDLE_SPAM, P_CNOT
-            # If max(P_*) < 1e-3, we scale ALL 25 parameters by (1e-3 / max(P_*))
-            # for TRAINING DATA ONLY. Evaluation/inference uses the user-specified noise model as-is.
-            min_group_total = 1e-3
-            p_prep = float(noise_model_user_obj.p_prep_X + noise_model_user_obj.p_prep_Z)
-            p_meas = float(noise_model_user_obj.p_meas_X + noise_model_user_obj.p_meas_Z)
-            p_idle_cnot = float(noise_model_user_obj.get_total_idle_cnot_probability())
-            p_idle_spam = float(noise_model_user_obj.get_total_idle_spam_probability())
-            p_cnot = float(noise_model_user_obj.get_total_cnot_probability())
-            max_group = max(p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot)
-            if max_group <= 0.0:
-                raise ValueError(
-                    "Invalid noise_model: all grouped totals are <= 0 "
-                    f"(prep={p_prep}, meas={p_meas}, idle_cnot={p_idle_cnot}, idle_spam={p_idle_spam}, cnot={p_cnot})."
-                )
-
-            scale = 1.0
-            if max_group < min_group_total:
-                scale = float(min_group_total / max_group)
-                scaled = {
-                    k: float(v) * scale for k, v in noise_model_user_obj.to_config_dict().items()
-                }
-                noise_model_train_obj = NoiseModel.from_config_dict(scaled)
-            else:
-                noise_model_train_obj = noise_model_user_obj
-
-            # If sparsity guard triggered, be conservative:
-            # - reduce LR a bit
-            # - increase val/test sample sizes to get cleaner evaluation signals
-            if scale != 1.0:
-                try:
-                    cfg.optimizer.lr = float(cfg.optimizer.lr) * 0.75
-                except Exception:
-                    cfg.optimizer.lr = 0.75 * float(cfg.optimizer.lr)
-                cfg.val.num_samples = max(int(cfg.val.num_samples), 262144)
-                cfg.test.num_samples = max(int(cfg.test.num_samples), 1048576)
+            # Surface-code training upscaling: bring max(P's) to 6e-3 for training data only.
+            # Evaluation uses the user-specified noise model as-is.
+            # For other code types (e.g. color codes) upscaling is not applied by default.
+            from qec.noise_model import (
+                get_training_upscaled_noise_model,
+                SURFACE_CODE_TRAINING_UPSCALE_TARGET,
+                SURFACE_CODE_THRESHOLD_APPROX,
+            )
+            code_type = getattr(cfg.data, "code_type", "surface_code")
+            skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
+            if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
+                skip_upscale = True
+            noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
+                noise_model_user_obj,
+                code_type=code_type,
+                skip_upscale=skip_upscale,
+            )
 
             # Force fixed-p mode with a conservative scalar placeholder when using noise_model.
             # IMPORTANT: during training we apply drift (±2%) around the *training* noise model reference, so we
@@ -775,35 +754,53 @@ def main(cfg: DictConfig) -> None:
             p_min_value = p_error_value
             p_max_value = p_error_value
             if dist.rank == 0:
-                # Always print the grouped totals + decision to make verification easy from logs.
+                tot = upscale_info["group_totals"]
+                max_group = upscale_info["max_group"]
                 print(
                     "[Train] noise_model grouped totals: "
-                    f"prep={p_prep:.6g}, meas={p_meas:.6g}, "
-                    f"idle_cnot={p_idle_cnot:.6g}, idle_spam={p_idle_spam:.6g}, cnot={p_cnot:.6g}; "
+                    f"prep={tot['p_prep']:.6g}, meas={tot['p_meas']:.6g}, "
+                    f"idle_cnot={tot['p_idle_cnot']:.6g}, idle_spam={tot['p_idle_spam']:.6g}, cnot={tot['p_cnot']:.6g}; "
                     f"max_group={max_group:.6g}"
                 )
-                if scale != 1.0:
+                print(f"[Train] {upscale_info['message']}")
+                if upscale_info.get("skipped_by_user"):
                     print(
-                        f"[Train] noise_model sparsity guard: max_group={max_group:.6g} < {min_group_total:.1e}; "
-                        f"scaling training noise_model by {scale:.6g} (evaluation uses user noise_model as-is)."
+                        "[Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or "
+                        "PREDECODER_SKIP_NOISE_UPSCALING=1). Training uses exact user-specified parameters."
+                    )
+                if upscale_info.get("applied_upscale"):
+                    print(
+                        f"[Train] noise_model upscaling (surface code): scale_factor={upscale_info['scale_factor']:.6g}, "
+                        f"target={SURFACE_CODE_TRAINING_UPSCALE_TARGET:.1e}. "
+                        "Evaluation uses user-specified noise model as-is."
                     )
                     print(
-                        f"[Train] sparsity guard adjustments: lr*=0.75 -> {float(cfg.optimizer.lr):.6g}, "
-                        f"val.num_samples={int(cfg.val.num_samples):,}, test.num_samples={int(cfg.test.num_samples):,}"
+                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
                     )
-                else:
+                if upscale_info.get("downscale_skipped"):
                     print(
-                        f"[Train] noise_model sparsity guard: max_group={max_group:.6g} >= {min_group_total:.1e}; "
-                        "no scaling applied."
+                        "\n" + "!" * 80 + "\n" +
+                        "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
+                        "Parameters are unchanged. If you intended a lower noise regime, check your noise model "
+                        "parameter values (e.g. a typo may have set a single p too high).\n" +
+                        "!" * 80
+                    )
+                if upscale_info.get("above_target_warning"):
+                    print(
+                        "\n" + "#" * 80 + "\n" +
+                        "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
+                        "target ({:.1e}). Surface code threshold is approximately {:.1e}. "
+                        "You may be above threshold or have introduced a noise model that is not the one you intended "
+                        "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n"
+                        .format(
+                            max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET,
+                            SURFACE_CODE_THRESHOLD_APPROX
+                        ) + "#" * 80
                     )
                 print(
                     f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"
                 )
                 print(f"[Train] noise_model (user) summary: {noise_model_user_obj!r}")
-                if scale != 1.0:
-                    print(
-                        f"[Train] noise_model (training, scaled) summary: {noise_model_train_obj!r}"
-                    )
                 print(
                     "[Train] noise_model idle semantics: "
                     "bulk/CNOT-layer idles use p_idle_cnot_*, "
@@ -812,7 +809,7 @@ def main(cfg: DictConfig) -> None:
                 )
                 print(
                     "[Train] noise_model totals: "
-                    f"prep_total={p_prep:.6g}, meas_total={p_meas:.6g}, "
+                    f"prep_total={tot['p_prep']:.6g}, meas_total={tot['p_meas']:.6g}, "
                     f"idle_cnot_total={noise_model_user_obj.get_total_idle_cnot_probability():.6g}, "
                     f"idle_spam_total={noise_model_user_obj.get_total_idle_spam_probability():.6g}, "
                     f"cnot_total={noise_model_user_obj.get_total_cnot_probability():.6g}"
