@@ -65,3 +65,8 @@ logs/
 /MR_COMMENT_DRAFT.md
 /MR_REVIEW_SUMMARY.md
 /dev_history/
+
+# SLURM job logs
+predecoder_train_*.out
+predecoder_train_*.err
+sbatch_logs/

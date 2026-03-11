@@ -1,0 +1,12 @@
+outputs/
+logs/
+frames_data/
+models/
+dev_history/
+.git/
+.venv*/
+venv/
+__pycache__/
+*.out
+*.err
+*.html
