@@ -49,6 +49,7 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         model = self._make_model("fp32")
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
         loaded, metadata = load_safetensors(path, device="cpu")
@@ -62,6 +63,7 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         model = self._make_model("fp16")
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp16")
         loaded, metadata = load_safetensors(path, device="cpu")
@@ -77,6 +79,7 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         model = self._make_model("fp32")
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
         loaded, metadata = load_safetensors(path, model_id=None, device="cpu")
@@ -88,6 +91,7 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         from safetensors.torch import save_file
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         dummy = {"weight": torch.zeros(4)}
         save_file(dummy, path, metadata={"quant_format": "fp32"})  # no model_id key
@@ -99,6 +103,7 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         model = self._make_model("fp32")
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         with self.assertRaises(ValueError):
             save_safetensors(model, path, model_id=self.MODEL_ID, dtype="int8")
@@ -144,6 +149,7 @@ class TestSafeTensorsRunPyIntegration(unittest.TestCase):
         model = ModelFactory.create_model(_build_minimal_cfg(self.MODEL_ID))
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp32")
         loaded, cfg = self._run_load_model(path)
@@ -164,6 +170,7 @@ class TestSafeTensorsRunPyIntegration(unittest.TestCase):
         model = ModelFactory.create_model(_build_minimal_cfg(self.MODEL_ID)).half()
         with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
             path = f.name
+        self.addCleanup(os.unlink, path)
 
         save_safetensors(model, path, model_id=self.MODEL_ID, dtype="fp16")
         loaded, cfg = self._run_load_model(path)
