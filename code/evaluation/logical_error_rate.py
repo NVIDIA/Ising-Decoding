@@ -1033,6 +1033,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 onnx_workflow = OnnxWorkflow.TORCH_ONLY
         if dist.world_size > 1:
             torch.distributed.barrier()
+        # Re-derive engine_path from the final onnx_path (may have changed on quant fallback)
+        engine_path = onnx_path.replace(".onnx", ".engine")
         if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
             try:
                 import tensorrt as trt
