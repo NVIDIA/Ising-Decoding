@@ -50,6 +50,50 @@ def _detect_shm_bytes() -> Optional[int]:
         return None
 
 
+def _collect_calibration_dets(
+    test_dataloader,
+    num_obs: int,
+    target_samples: int,
+    expected_width: int,
+) -> "np.ndarray":
+    """Collect representative detector inputs from a dataloader for ONNX calibration.
+
+    Args:
+        test_dataloader: DataLoader yielding batches with a "dets_and_obs" key.
+        num_obs: Number of observable columns at the end of dets_and_obs to strip.
+        target_samples: Desired number of calibration rows.
+        expected_width: Expected number of detector columns after stripping observables.
+
+    Returns:
+        np.ndarray of shape (target_samples, expected_width), dtype uint8.
+    """
+    target_samples = max(int(target_samples), 1)
+    chunks = []
+    collected = 0
+    for calib_batch in test_dataloader:
+        dets_and_obs_batch = calib_batch["dets_and_obs"]
+        dets_only_batch = dets_and_obs_batch[:, :-num_obs].to(torch.uint8).contiguous()
+        if int(dets_only_batch.shape[1]) != int(expected_width):
+            raise RuntimeError(
+                f"Calibration det width {dets_only_batch.shape[1]} != expected {expected_width}"
+            )
+        if dets_only_batch.numel() == 0:
+            continue
+        take = min(target_samples - collected, int(dets_only_batch.shape[0]))
+        if take > 0:
+            chunks.append(dets_only_batch[:take].cpu().numpy())
+            collected += take
+        if collected >= target_samples:
+            break
+    if not chunks:
+        raise RuntimeError("No calibration samples could be collected from test_dataloader.")
+    calib = np.concatenate(chunks, axis=0)
+    if calib.shape[0] < target_samples:
+        reps = int(np.ceil(target_samples / float(calib.shape[0])))
+        calib = np.tile(calib, (reps, 1))[:target_samples]
+    return np.ascontiguousarray(calib, dtype=np.uint8)
+
+
 def _time_single_shot_latency_stim(
     matcher,
     baseline_syndromes: np.ndarray,
@@ -878,8 +922,15 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         if dist.rank == 0:
             print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
     trt_context = None  # (context, engine, device_id) when using TensorRT
-    onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.onnx")
-    engine_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.engine")
+    # --- QUANT_FORMAT: optional quantization (int8, fp8) applied to ONNX after FP32 export ---
+    quant_format = os.environ.get("QUANT_FORMAT", "").strip().lower()
+    if quant_format and quant_format not in ("int8", "fp8"):
+        if dist.rank == 0:
+            print(f"[LER] Invalid QUANT_FORMAT='{quant_format}', ignoring. Supported: int8, fp8")
+        quant_format = ""
+    quant_suffix = f"_{quant_format}" if quant_format else ""
+    onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.onnx")
+    engine_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.engine")
     half = (D * D - 1) // 2
     example_shape = (batch_size_original, 2 * T_original * half)
 
@@ -915,10 +966,17 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         if dist.rank == 0:
             try:
                 example_dets = torch.randint(0, 2, example_shape, dtype=torch.uint8, device=device)
+
+                # Step 1: Always export FP32 ONNX first
+                fp32_onnx_path = (
+                    onnx_path
+                    if not quant_format
+                    else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                )
                 torch.onnx.export(
                     pipeline_module,
                     example_dets,
-                    onnx_path,
+                    fp32_onnx_path,
                     opset_version=18,
                     external_data=False,
                     input_names=["dets"],
@@ -934,7 +992,41 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                     do_constant_folding=True,
                     dynamo=False,
                 )
-                print(f"[LER] Exported ONNX: {onnx_path}")
+                print(f"[LER] Exported FP32 ONNX: {fp32_onnx_path}")
+
+                # Step 2: If QUANT_FORMAT is set, apply ONNX-level quantization via modelopt.onnx
+                if quant_format:
+                    try:
+                        import modelopt.onnx.quantization as mq
+
+                        format_map = {"int8": "int8", "fp8": "fp8"}
+                        quant_mode = format_map[quant_format]
+
+                        num_obs_for_calib = circuit.num_observables
+                        calib_num_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
+                        print(
+                            f"[LER] Collecting {calib_num_samples} calibration samples "
+                            "from inference dataloader..."
+                        )
+                        calib_dets = _collect_calibration_dets(
+                            test_dataloader, num_obs_for_calib, calib_num_samples, example_shape[1]
+                        )
+
+                        print(f"[LER] Applying {quant_format.upper()} quantization to ONNX model...")
+                        mq.quantize(
+                            onnx_path=fp32_onnx_path,
+                            quantize_mode=quant_mode,
+                            calibration_data={"dets": calib_dets},
+                            output_path=onnx_path,
+                        )
+                        print(f"[LER] Exported quantized ONNX: {onnx_path}")
+                    except Exception as e:
+                        if quant_format == "fp8":
+                            raise RuntimeError(
+                                f"[LER] FP8 ONNX quantization failed (fail-fast): {e}"
+                            ) from e
+                        print(f"[LER] ONNX quantization failed: {e}; using FP32 ONNX.")
+                        onnx_path = fp32_onnx_path
             except Exception as e:
                 if dist.rank == 0:
                     print(f"[LER] ONNX export failed: {e}; falling back to PyTorch.")
