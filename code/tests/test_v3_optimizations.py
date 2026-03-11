@@ -1,0 +1,290 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+"""Tests for V3 optimization features in evaluation and training modules."""
+
+import os
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+import torch.nn as nn
+
+_repo_code = Path(__file__).resolve().parent.parent
+if str(_repo_code) not in sys.path:
+    sys.path.insert(0, str(_repo_code))
+
+from evaluation.logical_error_rate import _get_env_bool, CUDAPrefetcher
+
+
+# ---------------------------------------------------------------------------
+# _get_env_bool
+# ---------------------------------------------------------------------------
+class TestGetEnvBool(unittest.TestCase):
+
+    def test_default_when_unset(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(_get_env_bool("NONEXISTENT_VAR"))
+            self.assertTrue(_get_env_bool("NONEXISTENT_VAR", True))
+
+    def test_truthy_values(self):
+        for val in ("1", "true", "True", "TRUE", "yes", "YES", "on", "ON", "anything"):
+            with patch.dict(os.environ, {"TEST_VAR": val}):
+                self.assertTrue(_get_env_bool("TEST_VAR"), f"Expected True for {val!r}")
+
+    def test_falsy_values(self):
+        for val in ("0", "false", "False", "FALSE", "no", "NO", "off", "OFF", ""):
+            with patch.dict(os.environ, {"TEST_VAR": val}):
+                self.assertFalse(_get_env_bool("TEST_VAR"), f"Expected False for {val!r}")
+
+    def test_whitespace_stripped(self):
+        with patch.dict(os.environ, {"TEST_VAR": "  false  "}):
+            self.assertFalse(_get_env_bool("TEST_VAR"))
+        with patch.dict(os.environ, {"TEST_VAR": "  1  "}):
+            self.assertTrue(_get_env_bool("TEST_VAR"))
+
+
+# ---------------------------------------------------------------------------
+# CUDAPrefetcher (CPU fallback behavior)
+# ---------------------------------------------------------------------------
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA required for CUDAPrefetcher")
+class TestCUDAPrefetcher(unittest.TestCase):
+
+    def _make_loader(self, n_batches=3):
+        """Simulate a DataLoader yielding dicts of tensors."""
+        batches = []
+        for i in range(n_batches):
+            batches.append({
+                "x": torch.randn(4, 8),
+                "y": torch.randint(0, 2, (4,)),
+            })
+        return batches
+
+    def test_iterates_all_batches(self):
+        batches = self._make_loader(5)
+        prefetcher = CUDAPrefetcher(batches, torch.device("cuda"))
+        collected = list(prefetcher)
+        self.assertEqual(len(collected), 5)
+
+    def test_moves_to_cuda(self):
+        original = self._make_loader(2)
+        prefetcher = CUDAPrefetcher(original, torch.device("cuda"))
+        for batch in prefetcher:
+            self.assertTrue(batch["x"].is_cuda)
+            self.assertTrue(batch["y"].is_cuda)
+
+    def test_preserves_tensor_values(self):
+        original = self._make_loader(2)
+        prefetcher = CUDAPrefetcher(original, torch.device("cuda"))
+        for got, expected in zip(prefetcher, original):
+            self.assertTrue(torch.equal(got["x"].cpu(), expected["x"]))
+            self.assertTrue(torch.equal(got["y"].cpu(), expected["y"]))
+
+    def test_empty_loader(self):
+        prefetcher = CUDAPrefetcher([], torch.device("cuda"))
+        self.assertEqual(list(prefetcher), [])
+
+    def test_single_batch(self):
+        batches = self._make_loader(1)
+        prefetcher = CUDAPrefetcher(batches, torch.device("cuda"))
+        collected = list(prefetcher)
+        self.assertEqual(len(collected), 1)
+
+
+# ---------------------------------------------------------------------------
+# Vectorized EMA update vs per-parameter fallback
+# ---------------------------------------------------------------------------
+class TestEMAUpdate(unittest.TestCase):
+
+    def _make_models(self):
+        m1 = nn.Linear(8, 4, bias=True)
+        m2 = nn.Linear(8, 4, bias=True)
+        with torch.no_grad():
+            for p1, p2 in zip(m1.parameters(), m2.parameters()):
+                p2.data.copy_(p1.data)
+        return m1, m2
+
+    def test_foreach_matches_loop(self):
+        """Vectorized _foreach update must produce identical results to the per-parameter loop."""
+        ema_decay = 0.999
+        model, _ = self._make_models()
+        ema_loop, _ = self._make_models()
+        ema_vec, _ = self._make_models()
+
+        # Initialize both EMA copies identically
+        with torch.no_grad():
+            for p_el, p_ev in zip(ema_loop.parameters(), ema_vec.parameters()):
+                p_ev.data.copy_(p_el.data)
+
+        # Simulate a model update
+        with torch.no_grad():
+            for p in model.parameters():
+                p.data.add_(torch.randn_like(p) * 0.01)
+
+        # Per-parameter loop (fallback)
+        with torch.no_grad():
+            for ema_param, param in zip(ema_loop.parameters(), model.parameters()):
+                if ema_param.dtype.is_floating_point:
+                    ema_param.data.mul_(ema_decay).add_(
+                        param.data.to(ema_param.dtype), alpha=1.0 - ema_decay
+                    )
+
+        # Vectorized (V3)
+        with torch.no_grad():
+            ema_params = [p.data for p in ema_vec.parameters() if p.dtype.is_floating_point]
+            model_params = [
+                p.data.to(ep.dtype)
+                for p, ep in zip(model.parameters(), ema_vec.parameters())
+                if ep.dtype.is_floating_point
+            ]
+            torch._foreach_mul_(ema_params, ema_decay)
+            torch._foreach_add_(ema_params, model_params, alpha=1.0 - ema_decay)
+
+        for p_loop, p_vec in zip(ema_loop.parameters(), ema_vec.parameters()):
+            self.assertTrue(
+                torch.allclose(p_loop.data, p_vec.data, atol=1e-7),
+                f"EMA mismatch: max diff={float((p_loop.data - p_vec.data).abs().max())}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Inline sparsity guard logic
+# ---------------------------------------------------------------------------
+class TestSparsityGuard(unittest.TestCase):
+
+    def _run_guard(self, max_group):
+        """Replicate the V3 sparsity guard logic from train.py."""
+        min_group_total = 1e-3
+        scale = 1.0
+        if max_group < min_group_total:
+            scale = float(min_group_total / max_group)
+        return scale
+
+    def test_no_scaling_above_threshold(self):
+        self.assertEqual(self._run_guard(0.01), 1.0)
+        self.assertEqual(self._run_guard(1e-3), 1.0)
+        self.assertEqual(self._run_guard(0.5), 1.0)
+
+    def test_scaling_below_threshold(self):
+        scale = self._run_guard(1e-4)
+        self.assertAlmostEqual(scale, 10.0, places=5)
+
+    def test_very_small_noise(self):
+        scale = self._run_guard(1e-7)
+        self.assertAlmostEqual(scale, 1e4, places=1)
+
+    def test_scale_brings_to_target(self):
+        max_group = 5e-5
+        scale = self._run_guard(max_group)
+        self.assertAlmostEqual(max_group * scale, 1e-3, places=8)
+
+
+# ---------------------------------------------------------------------------
+# SDR threshold gate
+# ---------------------------------------------------------------------------
+class TestSDRThresholdGate(unittest.TestCase):
+
+    def _gate(self, sdr_value, threshold, current_metric, best_vloss):
+        """Replicate the SDR gate logic from train.py."""
+        syndrome_qualifies = (sdr_value is not None and sdr_value >= threshold)
+        sdr_not_computed = sdr_value is None
+        is_improvement = (current_metric < best_vloss and (syndrome_qualifies or sdr_not_computed))
+        return is_improvement
+
+    def test_improvement_when_sdr_qualifies(self):
+        self.assertTrue(
+            self._gate(sdr_value=2.0, threshold=1.5, current_metric=0.1, best_vloss=0.2)
+        )
+
+    def test_no_improvement_when_sdr_below_threshold(self):
+        self.assertFalse(
+            self._gate(sdr_value=1.2, threshold=1.5, current_metric=0.1, best_vloss=0.2)
+        )
+
+    def test_no_improvement_when_metric_worse(self):
+        self.assertFalse(
+            self._gate(sdr_value=2.0, threshold=1.5, current_metric=0.3, best_vloss=0.2)
+        )
+
+    def test_bypass_when_sdr_not_computed(self):
+        self.assertTrue(
+            self._gate(sdr_value=None, threshold=1.5, current_metric=0.1, best_vloss=0.2)
+        )
+
+    def test_no_bypass_when_metric_worse_and_sdr_none(self):
+        self.assertFalse(
+            self._gate(sdr_value=None, threshold=1.5, current_metric=0.3, best_vloss=0.2)
+        )
+
+    def test_percent_mode_threshold(self):
+        self.assertTrue(
+            self._gate(sdr_value=40.0, threshold=33.3, current_metric=0.1, best_vloss=0.2)
+        )
+        self.assertFalse(
+            self._gate(sdr_value=20.0, threshold=33.3, current_metric=0.1, best_vloss=0.2)
+        )
+
+    def test_exact_threshold_qualifies(self):
+        self.assertTrue(
+            self._gate(sdr_value=1.5, threshold=1.5, current_metric=0.1, best_vloss=0.2)
+        )
+
+
+# ---------------------------------------------------------------------------
+# PREDECODER_INLINE_INFERENCE env var toggle
+# ---------------------------------------------------------------------------
+class TestInlineInferenceFlag(unittest.TestCase):
+
+    def test_default_is_true(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
+
+    def test_disable_with_zero(self):
+        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "0"}):
+            self.assertFalse(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
+
+    def test_disable_with_false(self):
+        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "false"}):
+            self.assertFalse(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
+
+    def test_enable_explicitly(self):
+        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "1"}):
+            self.assertTrue(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
+
+
+# ---------------------------------------------------------------------------
+# ONNX_WORKFLOW + compile interaction
+# ---------------------------------------------------------------------------
+class TestOnnxCompileInteraction(unittest.TestCase):
+
+    def _will_export(self, inline, workflow):
+        """Replicate the logic from logical_error_rate.py."""
+        return not inline and workflow in (1, 2)
+
+    def test_inline_never_exports(self):
+        for wf in (0, 1, 2, 3):
+            self.assertFalse(self._will_export(True, wf))
+
+    def test_legacy_torch_only_no_export(self):
+        self.assertFalse(self._will_export(False, 0))
+
+    def test_legacy_load_engine_no_export(self):
+        self.assertFalse(self._will_export(False, 3))
+
+    def test_legacy_export_onnx(self):
+        self.assertTrue(self._will_export(False, 1))
+
+    def test_legacy_export_and_trt(self):
+        self.assertTrue(self._will_export(False, 2))
+
+
+if __name__ == "__main__":
+    unittest.main()

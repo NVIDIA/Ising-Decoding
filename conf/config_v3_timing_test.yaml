@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
+# property and proprietary rights in and to this material, related
+# documentation and any modifications thereto. Any use, reproduction,
+# disclosure or distribution of this material and related documentation
+# without an express license agreement from NVIDIA CORPORATION or
+# its affiliates is strictly prohibited.
+
+# Timing check config for v3 (Torch HE) branch.
+# Timing test: d=5, n_rounds=5, 25-param noise model (p=0.006).
+# Use PREDECODER_TIMING_RUN=1 env vars to scale down epochs/samples.
+
+model_id: 1
+
+distance: 5
+n_rounds: 5
+
+workflow:
+  task: train
+
+data:
+  code_rotation: O1
+  noise_model:
+    p_prep_X: 0.004
+    p_prep_Z: 0.004
+    p_meas_X: 0.004
+    p_meas_Z: 0.004
+    p_idle_cnot_X: 0.002
+    p_idle_cnot_Y: 0.002
+    p_idle_cnot_Z: 0.002
+    p_idle_spam_X: 0.003992
+    p_idle_spam_Y: 0.003992
+    p_idle_spam_Z: 0.003992
+    p_cnot_IX: 0.0004
+    p_cnot_IY: 0.0004
+    p_cnot_IZ: 0.0004
+    p_cnot_XI: 0.0004
+    p_cnot_XX: 0.0004
+    p_cnot_XY: 0.0004
+    p_cnot_XZ: 0.0004
+    p_cnot_YI: 0.0004
+    p_cnot_YX: 0.0004
+    p_cnot_YY: 0.0004
+    p_cnot_YZ: 0.0004
+    p_cnot_ZI: 0.0004
+    p_cnot_ZX: 0.0004
+    p_cnot_ZY: 0.0004
+    p_cnot_ZZ: 0.0004
