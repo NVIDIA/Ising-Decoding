@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+#
+# Config for: Model 1 (R=9), depolarizing p=0.006, experiment qec-decoder-depolarizing-r9-fp8.
+# Training uses receptive field 9; evaluation targets distance/n_rounds 9.
+# fp8 in the name is for the intended export target; training runs in fp32.
+#
+# This file only overrides model/data fields. Training hyperparameters (epochs, batch
+# size, LR schedule, etc.) come from internal defaults — see conf/config_public.yaml
+# for the user-facing training fields and their documented defaults.
+
+# === Model selection (Model 1 → receptive field 9) ===
+model_id: 1
+
+# === Evaluation window (training is clamped to R=9 internally) ===
+distance: 9
+n_rounds: 9
+
+# === Workflow ===
+workflow:
+  task: train
+
+# === Data ===
+data:
+  code_rotation: O1
+  # Circuit-level noise model for depolarizing p=0.006 (25-parameter mapping)
+  noise_model:
+    p_prep_X: 0.004   # 2*p/3
+    p_prep_Z: 0.004
+    p_meas_X: 0.004
+    p_meas_Z: 0.004
+    p_idle_cnot_X: 0.002   # p/3
+    p_idle_cnot_Y: 0.002
+    p_idle_cnot_Z: 0.002
+    p_idle_spam_X: 0.003984   # 2*p/3 - 4*p^2/9
+    p_idle_spam_Y: 0.003984
+    p_idle_spam_Z: 0.003984
+    p_cnot_IX: 0.0004   # p/15
+    p_cnot_IY: 0.0004
+    p_cnot_IZ: 0.0004
+    p_cnot_XI: 0.0004
+    p_cnot_XX: 0.0004
+    p_cnot_XY: 0.0004
+    p_cnot_XZ: 0.0004
+    p_cnot_YI: 0.0004
+    p_cnot_YX: 0.0004
+    p_cnot_YY: 0.0004
+    p_cnot_YZ: 0.0004
+    p_cnot_ZI: 0.0004
+    p_cnot_ZX: 0.0004
+    p_cnot_ZY: 0.0004
+    p_cnot_ZZ: 0.0004

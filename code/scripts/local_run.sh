@@ -111,7 +111,8 @@ OUTPUT_DIR="${BASE_OUTPUT_DIR}/${EXPERIMENT_NAME}"
 CHECKPOINT_DIR="${OUTPUT_DIR}/models"
 mkdir -p "${LOG_DIR}" "${OUTPUT_DIR}" "${CHECKPOINT_DIR}"
 
-OVERRIDES=""
+# Force Hydra run dir to writable OUTPUT_DIR (avoids read-only repo/outputs in containers)
+OVERRIDES="hydra.run.dir=${OUTPUT_DIR}"
 if [ -n "${DISTANCE}" ]; then OVERRIDES+=" distance=${DISTANCE}"; fi
 if [ -n "${N_ROUNDS}" ]; then OVERRIDES+=" n_rounds=${N_ROUNDS}"; fi
 if [ -n "${EXTRA_PARAMS}" ]; then OVERRIDES+=" ${EXTRA_PARAMS}"; fi
@@ -171,7 +172,8 @@ if [ -n "${TORCH_COMPILE_MODE}" ]; then
   export PREDECODER_TORCH_COMPILE_MODE="${TORCH_COMPILE_MODE}"
 fi
 
-PYTHON_BIN="${PYTHON_BIN:-python}"
+# Prefer PREDECODER_PYTHON (cluster/container venv) when set
+PYTHON_BIN="${PYTHON_BIN:-${PREDECODER_PYTHON:-python}}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   if command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
