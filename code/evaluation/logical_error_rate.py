@@ -929,8 +929,12 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             print(f"[LER] Invalid QUANT_FORMAT='{quant_format}', ignoring. Supported: int8, fp8")
         quant_format = ""
     quant_suffix = f"_{quant_format}" if quant_format else ""
-    onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.onnx")
-    engine_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.engine")
+    onnx_path = os.path.join(
+        os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.onnx"
+    )
+    engine_path = os.path.join(
+        os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.engine"
+    )
     half = (D * D - 1) // 2
     example_shape = (batch_size_original, 2 * T_original * half)
 
@@ -970,8 +974,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 # Step 1: Always export FP32 ONNX first
                 fp32_onnx_path = (
                     onnx_path
-                    if not quant_format
-                    else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                    if not quant_format else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
                 )
                 torch.onnx.export(
                     pipeline_module,

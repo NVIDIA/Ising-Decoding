@@ -82,12 +82,11 @@ class TestCollectCalibrationDets(unittest.TestCase):
         num_obs = self.NUM_OBS
 
         class CountingLoader:
+
             def __iter__(self):
                 for i in range(100):
                     consumed.append(i)
-                    dets_and_obs = torch.randint(
-                        0, 2, (32, num_dets + num_obs), dtype=torch.uint8
-                    )
+                    dets_and_obs = torch.randint(0, 2, (32, num_dets + num_obs), dtype=torch.uint8)
                     yield {"dets_and_obs": dets_and_obs}
 
         loader = CountingLoader()
@@ -179,7 +178,9 @@ class TestQuantFormatParsing(unittest.TestCase):
                 raise ValueError("simulated fp8 quantize failure")
             except Exception as e:
                 if quant_format == "fp8":
-                    raise RuntimeError(f"[LER] FP8 ONNX quantization failed (fail-fast): {e}") from e
+                    raise RuntimeError(
+                        f"[LER] FP8 ONNX quantization failed (fail-fast): {e}"
+                    ) from e
                 pass  # non-fp8 would fall through
 
     def test_non_fp8_failure_falls_back_to_fp32(self):
