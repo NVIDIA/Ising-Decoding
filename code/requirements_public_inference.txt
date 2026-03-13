@@ -19,3 +19,4 @@ stim
 pymatching
 matplotlib
 safetensors>=0.4.0
+nvidia-modelopt[onnx]

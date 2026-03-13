@@ -1013,11 +1013,16 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         )
 
                         print(f"[LER] Applying {quant_format.upper()} quantization to ONNX model...")
+                        quant_kwargs = {}
+                        if quant_format == "fp8":
+                            quant_kwargs["op_types_to_quantize"] = ["Conv"]
+                            quant_kwargs["high_precision_dtype"] = "fp16"
                         mq.quantize(
                             onnx_path=fp32_onnx_path,
                             quantize_mode=quant_mode,
                             calibration_data={"dets": calib_dets},
                             output_path=onnx_path,
+                            **quant_kwargs,
                         )
                         print(f"[LER] Exported quantized ONNX: {onnx_path}")
                     except Exception as e:
@@ -1041,14 +1046,17 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 logger = trt.Logger(trt.Logger.WARNING)
                 runtime = trt.Runtime(logger)
                 builder = trt.Builder(logger)
-                network = builder.create_network(
-                    1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-                )
+                net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+                if quant_format in ("fp8", "int8"):
+                    net_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+                network = builder.create_network(net_flags)
                 parser = trt.OnnxParser(network, logger)
                 with open(onnx_path, "rb") as f:
                     if not parser.parse(f.read()):
                         raise RuntimeError("TensorRT ONNX parse failed")
                 config = builder.create_builder_config()
+                if not quant_format:
+                    config.set_flag(trt.BuilderFlag.FP16)
                 # Uncomment this out to speedup engine build time.
                 # config.builder_optimization_level = 0
                 in_name = "dets"
@@ -1083,6 +1091,22 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 )
                 if dist.rank == 0:
                     print(f"[LER] TensorRT engine built from {onnx_path}")
+                    inspector = engine.create_engine_inspector()
+                    if inspector is not None:
+                        layer_info = inspector.get_engine_information(
+                            trt.LayerInformationFormat.JSON
+                        )
+                        import json as _json
+                        try:
+                            info = _json.loads(layer_info)
+                            layers = info.get("Layers", [])
+                            precision_counts: dict = {}
+                            for layer in layers:
+                                prec = layer.get("LayerPrecision", layer.get("Precision", "unknown"))
+                                precision_counts[prec] = precision_counts.get(prec, 0) + 1
+                            print(f"[LER] TensorRT engine layer precisions: {precision_counts}")
+                        except Exception:
+                            pass
             except Exception as e:
                 if dist.rank == 0:
                     print(f"[LER] TensorRT build/load failed: {e}; falling back to PyTorch.")
@@ -1124,11 +1148,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 int(dets.data_ptr()),
                 int(L_and_residual_dets.data_ptr()),
             ]
-            print(f"[LER] Executing TensorRT context with bindings...")
             t_execute_start = time.perf_counter()
             context.execute_v2(bindings=bindings)
             t_execute_end = time.perf_counter()
-            print(f"[LER] TensorRT execution completed in {t_execute_end - t_execute_start:.3f}s")
+            if batch_idx == 0 and dist.rank == 0:
+                print(f"[LER] TensorRT first batch executed in {t_execute_end - t_execute_start:.3f}s")
         else:
             L_and_residual_dets = pipeline_module(dets_only)
         pre_L = L_and_residual_dets[:, 0].to(torch.int32)
