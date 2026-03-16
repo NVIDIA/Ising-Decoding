@@ -283,6 +283,100 @@ class TestOrtQuantizeInt8(unittest.TestCase):
                     )
 
 
+_HAS_MODELOPT = __import__("importlib").util.find_spec("modelopt") is not None
+
+
+class TestModeloptQuantize(unittest.TestCase):
+    """End-to-end tests that call mq.quantize() on a real ONNX model.
+
+    Skipped when nvidia-modelopt is not installed.  On Python 3.13+ modelopt
+    must be installed with --ignore-requires-python (done by check_python_compat.sh
+    when MODE=train); these tests confirm it actually works at runtime, not just
+    that the import succeeds.
+    """
+
+    @unittest.skipUnless(_HAS_MODELOPT, "nvidia-modelopt not installed")
+    def _build_tiny_model(self):
+        """Return (fp32_path, calib_dets) for a minimal Gemm ONNX model."""
+        import tempfile
+
+        import numpy as np
+        import onnx
+        import onnx.helper as oh
+
+        X = oh.make_tensor_value_info("dets", onnx.TensorProto.FLOAT, [1, 4])
+        W_data = np.ones((4, 4), dtype=np.float32)
+        B_data = np.zeros((4,), dtype=np.float32)
+        W = oh.make_tensor("W", onnx.TensorProto.FLOAT, W_data.shape, W_data.flatten().tolist())
+        B = oh.make_tensor("B", onnx.TensorProto.FLOAT, B_data.shape, B_data.flatten().tolist())
+        Y = oh.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, [1, 4])
+        node = oh.make_node("Gemm", inputs=["dets", "W", "B"], outputs=["Y"])
+        graph = oh.make_graph([node], "tiny", [X], [Y], initializer=[W, B])
+        model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 17)])
+        model.ir_version = 8
+        onnx.checker.check_model(model)
+
+        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
+            fp32_path = f.name
+        self.addCleanup(os.unlink, fp32_path)
+        onnx.save(model, fp32_path)
+
+        calib = np.random.randint(0, 2, (16, 4), dtype=np.uint8)
+        return fp32_path, calib
+
+    @unittest.skipUnless(_HAS_MODELOPT, "nvidia-modelopt not installed")
+    def test_mq_quantize_int8_produces_valid_onnx(self):
+        """mq.quantize(quantize_mode='int8') must write a valid ONNX file."""
+        import tempfile
+
+        import modelopt.onnx.quantization as mq
+        import onnx
+
+        fp32_path, calib = self._build_tiny_model()
+        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
+            out_path = f.name
+        self.addCleanup(os.unlink, out_path)
+
+        mq.quantize(
+            onnx_path=fp32_path,
+            quantize_mode="int8",
+            calibration_data={"dets": calib},
+            output_path=out_path,
+        )
+
+        self.assertTrue(os.path.isfile(out_path), "quantized ONNX output file not created")
+        quant_model = onnx.load(out_path)
+        onnx.checker.check_model(quant_model)
+
+    @unittest.skipUnless(_HAS_MODELOPT, "nvidia-modelopt not installed")
+    def test_mq_quantize_int8_output_differs_from_fp32(self):
+        """The quantized model must differ from the FP32 source (QDQ nodes added)."""
+        import tempfile
+
+        import modelopt.onnx.quantization as mq
+        import onnx
+
+        fp32_path, calib = self._build_tiny_model()
+        with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as f:
+            out_path = f.name
+        self.addCleanup(os.unlink, out_path)
+
+        mq.quantize(
+            onnx_path=fp32_path,
+            quantize_mode="int8",
+            calibration_data={"dets": calib},
+            output_path=out_path,
+        )
+
+        fp32_model = onnx.load(fp32_path)
+        quant_model = onnx.load(out_path)
+        self.assertNotEqual(
+            len(fp32_model.graph.node),
+            len(quant_model.graph.node),
+            "quantized model should have more nodes (QDQ pairs) than the FP32 source",
+        )
+
+
 class TestModeloptPrerequisite(unittest.TestCase):
     """Verify quantization package prerequisites are correctly declared."""
 
