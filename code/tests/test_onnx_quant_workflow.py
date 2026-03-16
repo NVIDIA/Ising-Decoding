@@ -321,7 +321,7 @@ class TestModeloptQuantize(unittest.TestCase):
         self.addCleanup(os.unlink, fp32_path)
         onnx.save(model, fp32_path)
 
-        calib = np.random.randint(0, 2, (16, 4), dtype=np.uint8)
+        calib = np.random.randn(16, 4).astype(np.float32)
         return fp32_path, calib
 
     @unittest.skipUnless(_HAS_MODELOPT, "nvidia-modelopt not installed")
