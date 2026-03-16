@@ -1015,7 +1015,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                             test_dataloader, num_obs_for_calib, calib_num_samples, example_shape[1]
                         )
 
-                        print(f"[LER] Applying {quant_format.upper()} quantization to ONNX model...")
+                        print(
+                            f"[LER] Applying {quant_format.upper()} quantization to ONNX model..."
+                        )
                         quant_kwargs = {}
                         if quant_format == "fp8":
                             quant_kwargs["op_types_to_quantize"] = ["Conv"]
@@ -1105,7 +1107,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                             layers = info.get("Layers", [])
                             precision_counts: dict = {}
                             for layer in layers:
-                                prec = layer.get("LayerPrecision", layer.get("Precision", "unknown"))
+                                prec = layer.get(
+                                    "LayerPrecision", layer.get("Precision", "unknown")
+                                )
                                 precision_counts[prec] = precision_counts.get(prec, 0) + 1
                             print(f"[LER] TensorRT engine layer precisions: {precision_counts}")
                         except Exception:
@@ -1155,7 +1159,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             context.execute_v2(bindings=bindings)
             t_execute_end = time.perf_counter()
             if batch_idx == 0 and dist.rank == 0:
-                print(f"[LER] TensorRT first batch executed in {t_execute_end - t_execute_start:.3f}s")
+                print(
+                    f"[LER] TensorRT first batch executed in {t_execute_end - t_execute_start:.3f}s"
+                )
         else:
             L_and_residual_dets = pipeline_module(dets_only)
         pre_L = L_and_residual_dets[:, 0].to(torch.int32)

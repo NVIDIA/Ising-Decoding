@@ -14,3 +14,5 @@
 -r requirements_public_inference.txt
 tensorboard
 torchinfo
+# ONNX quantization (INT8/FP8 via QUANT_FORMAT). Not supported on Python 3.13+.
+nvidia-modelopt[onnx]; python_version < "3.13"

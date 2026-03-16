@@ -10,6 +10,7 @@
 """Tests for ONNX quantization workflow: _collect_calibration_dets helper and QUANT_FORMAT env var logic."""
 
 import os
+import re
 import sys
 import types
 import unittest
@@ -205,6 +206,45 @@ class TestQuantFormatParsing(unittest.TestCase):
             onnx_path = fp32_onnx_path
 
         self.assertEqual(onnx_path, fp32_onnx_path)
+
+
+class TestModeloptPrerequisite(unittest.TestCase):
+    """Verify nvidia-modelopt[onnx] is declared in the training requirements file."""
+
+    _TRAIN_REQS = Path(__file__).resolve().parent.parent / "requirements_public_train.txt"
+
+    def test_nvidia_modelopt_in_train_requirements(self):
+        """nvidia-modelopt[onnx] must be listed in requirements_public_train.txt."""
+        text = self._TRAIN_REQS.read_text()
+        # Match the package name, ignoring extras, markers, or version pins.
+        self.assertTrue(
+            re.search(r"(?m)^nvidia-modelopt", text),
+            "nvidia-modelopt[onnx] must appear in requirements_public_train.txt; "
+            "it is used conditionally via 'import modelopt.onnx.quantization' when "
+            "QUANT_FORMAT is set, and is not supported on Python 3.13+.",
+        )
+
+    def test_nvidia_modelopt_absent_from_inference_requirements(self):
+        """nvidia-modelopt must NOT appear in the inference requirements."""
+        infer_reqs = self._TRAIN_REQS.parent / "requirements_public_inference.txt"
+        text = infer_reqs.read_text()
+        self.assertFalse(
+            re.search(r"(?m)^nvidia-modelopt", text),
+            "nvidia-modelopt must not be in requirements_public_inference.txt: "
+            "pure inference does not require ONNX quantization, and the package "
+            "does not support Python 3.13.",
+        )
+
+    @unittest.skipUnless(
+        sys.version_info < (3, 13),
+        "nvidia-modelopt does not support Python 3.13+; skipping import check",
+    )
+    def test_modelopt_importable_when_installed(self):
+        """When nvidia-modelopt[onnx] is installed, modelopt.onnx.quantization must be importable."""
+        try:
+            import modelopt.onnx.quantization as mq  # noqa: F401
+        except ImportError:
+            self.skipTest("nvidia-modelopt[onnx] is not installed in this environment")
 
 
 if __name__ == "__main__":
