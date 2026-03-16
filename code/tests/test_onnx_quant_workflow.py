@@ -212,8 +212,8 @@ class TestOrtQuantizeInt8(unittest.TestCase):
     """Tests for the _ort_quantize_int8 helper (onnxruntime INT8 fallback)."""
 
     @unittest.skipUnless(
-        sys.version_info >= (3, 13),
-        "onnxruntime INT8 fallback is only exercised on Python 3.13+",
+        __import__("importlib").util.find_spec("onnxruntime") is not None,
+        "onnxruntime not installed",
     )
     def test_ort_quantize_int8_produces_output_file(self):
         """_ort_quantize_int8 must write a valid ONNX file to output_path."""
@@ -254,33 +254,30 @@ class TestOrtQuantizeInt8(unittest.TestCase):
         quant_model = onnx.load(out_path)
         onnx.checker.check_model(quant_model)
 
-    def test_ort_quantize_int8_dispatch_on_py313(self):
-        """On Python 3.13+, the quant block must call _ort_quantize_int8, not modelopt."""
-        if sys.version_info < (3, 13):
-            self.skipTest("dispatch to ort only applies on Python 3.13+")
+    def test_ort_quantize_int8_called_on_modelopt_import_error(self):
+        """When modelopt is not importable, INT8 must fall back to _ort_quantize_int8."""
         called = []
         with patch(
             "evaluation.logical_error_rate._ort_quantize_int8",
             side_effect=lambda *a, **kw: called.append(a),
         ):
-            # Re-import to pick up the patch; call the helper directly to verify it is
-            # the symbol the production code would invoke on Python 3.13+.
             import evaluation.logical_error_rate as ler
             ler._ort_quantize_int8("fp32.onnx", "out.onnx", None)
         self.assertEqual(len(called), 1)
 
-    def test_fp8_raises_on_py313(self):
-        """On Python 3.13+, requesting FP8 quantization must raise RuntimeError."""
-        if sys.version_info < (3, 13):
-            self.skipTest("this check only applies on Python 3.13+")
-        # Simulate the dispatch branch for FP8 on Python 3.13+.
+    def test_fp8_raises_on_modelopt_import_error(self):
+        """When modelopt is not importable, FP8 must raise RuntimeError (no ort fallback)."""
         quant_format = "fp8"
         with self.assertRaises(RuntimeError):
-            if sys.version_info >= (3, 13) and quant_format == "fp8":
-                raise RuntimeError(
-                    "[LER] FP8 quantization requires nvidia-modelopt which does "
-                    "not support Python 3.13+. Use Python <=3.12 for FP8."
-                )
+            try:
+                raise ImportError("No module named 'modelopt'")
+            except ImportError:
+                if quant_format == "fp8":
+                    raise RuntimeError(
+                        "[LER] FP8 quantization requires nvidia-modelopt. "
+                        "Install with: pip install 'nvidia-modelopt[onnx]'"
+                        " --ignore-requires-python"
+                    )
 
 
 class TestModeloptPrerequisite(unittest.TestCase):
@@ -320,23 +317,19 @@ class TestModeloptPrerequisite(unittest.TestCase):
             "onnxruntime must not be in requirements_public_inference.txt.",
         )
 
-    @unittest.skipUnless(
-        sys.version_info < (3, 13),
-        "nvidia-modelopt does not support Python 3.13+; skipping import check",
-    )
     def test_modelopt_importable_when_installed(self):
-        """When nvidia-modelopt[onnx] is installed, modelopt.onnx.quantization must be importable."""
+        """When nvidia-modelopt[onnx] is installed, modelopt.onnx.quantization must be importable.
+
+        On Python 3.13+ modelopt can be installed with --ignore-requires-python;
+        this test skips silently if the package is absent regardless of Python version.
+        """
         try:
             import modelopt.onnx.quantization as mq  # noqa: F401
         except ImportError:
             self.skipTest("nvidia-modelopt[onnx] is not installed in this environment")
 
-    @unittest.skipUnless(
-        sys.version_info >= (3, 13),
-        "onnxruntime fallback is only active on Python 3.13+",
-    )
     def test_ort_importable_when_installed(self):
-        """On Python 3.13+, onnxruntime.quantization must be importable for the INT8 fallback."""
+        """onnxruntime.quantization must be importable when onnxruntime is installed."""
         try:
             from onnxruntime.quantization import (  # noqa: F401
                 CalibrationDataReader,

@@ -1053,15 +1053,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         print(
                             f"[LER] Applying {quant_format.upper()} quantization to ONNX model..."
                         )
-                        import sys as _sys
-                        if _sys.version_info >= (3, 13):
-                            if quant_format == "fp8":
-                                raise RuntimeError(
-                                    "[LER] FP8 quantization requires nvidia-modelopt which does "
-                                    "not support Python 3.13+. Use Python <=3.12 for FP8."
-                                )
-                            _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
-                        else:
+                        # Prefer modelopt (INT8+FP8); fall back to onnxruntime (INT8 only)
+                        # when modelopt is not installed.  On Python 3.13+ modelopt can
+                        # be installed with: pip install nvidia-modelopt[onnx]
+                        #                                  --ignore-requires-python
+                        try:
                             import modelopt.onnx.quantization as mq
                             quant_kwargs = {}
                             if quant_format == "fp8":
@@ -1074,6 +1070,14 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                                 output_path=onnx_path,
                                 **quant_kwargs,
                             )
+                        except ImportError:
+                            if quant_format == "fp8":
+                                raise RuntimeError(
+                                    "[LER] FP8 quantization requires nvidia-modelopt. "
+                                    "Install with: pip install 'nvidia-modelopt[onnx]'"
+                                    " --ignore-requires-python"
+                                )
+                            _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
                         print(f"[LER] Exported quantized ONNX: {onnx_path}")
                     except Exception as e:
                         if quant_format == "fp8":
