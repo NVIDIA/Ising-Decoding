@@ -227,22 +227,27 @@ class TestOrtQuantizeInt8(unittest.TestCase):
         import tempfile
         import numpy as np
 
-        # Build a tiny single-Conv ONNX model compatible with quantize_static.
+        # Build a tiny Relu->Gemm ONNX model compatible with quantize_static.
+        # The Relu ensures the Gemm input is an *intermediate* tensor so ORT's
+        # MinMaxCalibrater can collect activation stats for it.  A graph input
+        # directly connected to a quantized node is not included in the augmented
+        # outputs and therefore has no calibration stats, which raises ValueError.
         X = oh.make_tensor_value_info("dets", onnx.TensorProto.FLOAT, [1, 4])
         W_data = np.ones((4, 4), dtype=np.float32)
         B_data = np.zeros((4,), dtype=np.float32)
         W = oh.make_tensor("W", onnx.TensorProto.FLOAT, W_data.shape, W_data.flatten().tolist())
         B = oh.make_tensor("B", onnx.TensorProto.FLOAT, B_data.shape, B_data.flatten().tolist())
         Y = oh.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, [1, 4])
-        node = oh.make_node("Gemm", inputs=["dets", "W", "B"], outputs=["Y"])
-        graph = oh.make_graph([node], "tiny", [X], [Y], initializer=[W, B])
+        relu_node = oh.make_node("Relu", inputs=["dets"], outputs=["dets_relu"])
+        gemm_node = oh.make_node("Gemm", inputs=["dets_relu", "W", "B"], outputs=["Y"])
+        graph = oh.make_graph([relu_node, gemm_node], "tiny", [X], [Y], initializer=[W, B])
         model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 17)])
         # Pin to IR version 8 (opset-17 minimum).  Newer ONNX packages default to
         # IR version 12, which onnxruntime-gpu 1.22.0 (a modelopt dependency) rejects.
         model.ir_version = 8
         onnx.checker.check_model(model)
 
-        calib = np.random.randint(0, 2, (8, 4), dtype=np.uint8)
+        calib = np.random.randn(8, 4).astype(np.float32)
 
         with tempfile.NamedTemporaryFile(suffix=".onnx", delete=False) as fp32_f:
             fp32_path = fp32_f.name

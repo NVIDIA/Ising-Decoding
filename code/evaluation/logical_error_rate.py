@@ -122,6 +122,9 @@ def _ort_quantize_int8(fp32_onnx_path: str, output_path: str, calib_dets: "np.nd
         def get_next(self):
             return next(self._iter, None)
 
+        def rewind(self):
+            self._iter = iter(self._rows)
+
     quantize_static(
         fp32_onnx_path,
         output_path,
