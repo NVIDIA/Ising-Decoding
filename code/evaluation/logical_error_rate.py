@@ -94,6 +94,44 @@ def _collect_calibration_dets(
     return np.ascontiguousarray(calib, dtype=np.uint8)
 
 
+def _ort_quantize_int8(fp32_onnx_path: str, output_path: str, calib_dets: "np.ndarray") -> None:
+    """INT8 static quantization via onnxruntime.quantization (Python 3.13+ fallback).
+
+    Used when nvidia-modelopt is unavailable (it does not support Python 3.13+).
+    Quantises all Conv and Gemm nodes with QInt8 weights and activations using
+    QDQ format, which is compatible with TensorRT INT8 parsing.
+
+    Args:
+        fp32_onnx_path: Path to the source FP32 ONNX model.
+        output_path: Destination path for the quantized ONNX model.
+        calib_dets: Calibration data array of shape (N, det_cols), dtype uint8.
+    """
+    from onnxruntime.quantization import (
+        CalibrationDataReader,
+        QuantFormat,
+        QuantType,
+        quantize_static,
+    )
+
+    class _DetCalibReader(CalibrationDataReader):
+
+        def __init__(self, data):
+            self._rows = [{"dets": data[i:i + 1].astype("float32")} for i in range(len(data))]
+            self._iter = iter(self._rows)
+
+        def get_next(self):
+            return next(self._iter, None)
+
+    quantize_static(
+        fp32_onnx_path,
+        output_path,
+        _DetCalibReader(calib_dets),
+        quant_format=QuantFormat.QDQ,
+        activation_type=QuantType.QInt8,
+        weight_type=QuantType.QInt8,
+    )
+
+
 def _time_single_shot_latency_stim(
     matcher,
     baseline_syndromes: np.ndarray,
@@ -997,14 +1035,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 )
                 print(f"[LER] Exported FP32 ONNX: {fp32_onnx_path}")
 
-                # Step 2: If QUANT_FORMAT is set, apply ONNX-level quantization via modelopt.onnx
+                # Step 2: If QUANT_FORMAT is set, apply ONNX-level quantization.
+                # Backend: nvidia-modelopt on Python <3.13; onnxruntime on Python 3.13+
+                # (nvidia-modelopt does not support Python 3.13+).
                 if quant_format:
                     try:
-                        import modelopt.onnx.quantization as mq
-
-                        format_map = {"int8": "int8", "fp8": "fp8"}
-                        quant_mode = format_map[quant_format]
-
                         num_obs_for_calib = circuit.num_observables
                         calib_num_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
                         print(
@@ -1018,17 +1053,27 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         print(
                             f"[LER] Applying {quant_format.upper()} quantization to ONNX model..."
                         )
-                        quant_kwargs = {}
-                        if quant_format == "fp8":
-                            quant_kwargs["op_types_to_quantize"] = ["Conv"]
-                            quant_kwargs["high_precision_dtype"] = "fp16"
-                        mq.quantize(
-                            onnx_path=fp32_onnx_path,
-                            quantize_mode=quant_mode,
-                            calibration_data={"dets": calib_dets},
-                            output_path=onnx_path,
-                            **quant_kwargs,
-                        )
+                        import sys as _sys
+                        if _sys.version_info >= (3, 13):
+                            if quant_format == "fp8":
+                                raise RuntimeError(
+                                    "[LER] FP8 quantization requires nvidia-modelopt which does "
+                                    "not support Python 3.13+. Use Python <=3.12 for FP8."
+                                )
+                            _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
+                        else:
+                            import modelopt.onnx.quantization as mq
+                            quant_kwargs = {}
+                            if quant_format == "fp8":
+                                quant_kwargs["op_types_to_quantize"] = ["Conv"]
+                                quant_kwargs["high_precision_dtype"] = "fp16"
+                            mq.quantize(
+                                onnx_path=fp32_onnx_path,
+                                quantize_mode=quant_format,
+                                calibration_data={"dets": calib_dets},
+                                output_path=onnx_path,
+                                **quant_kwargs,
+                            )
                         print(f"[LER] Exported quantized ONNX: {onnx_path}")
                     except Exception as e:
                         if quant_format == "fp8":
