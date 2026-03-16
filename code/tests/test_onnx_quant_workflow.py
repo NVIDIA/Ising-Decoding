@@ -237,6 +237,9 @@ class TestOrtQuantizeInt8(unittest.TestCase):
         node = oh.make_node("Gemm", inputs=["dets", "W", "B"], outputs=["Y"])
         graph = oh.make_graph([node], "tiny", [X], [Y], initializer=[W, B])
         model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", 17)])
+        # Pin to IR version 8 (opset-17 minimum).  Newer ONNX packages default to
+        # IR version 12, which onnxruntime-gpu 1.22.0 (a modelopt dependency) rejects.
+        model.ir_version = 8
         onnx.checker.check_model(model)
 
         calib = np.random.randint(0, 2, (8, 4), dtype=np.uint8)
