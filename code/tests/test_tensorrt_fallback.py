@@ -14,13 +14,14 @@ in CPU-only CI.  It is therefore documented as an optional prerequisite via a
 comment in requirements_public_inference.txt rather than as a pip requirement.
 These tests verify:
   1. The documentation comment exists in the inference requirements file.
-  2. Both TensorRT import sites fall back gracefully to trt_context=None when
-     the package is unavailable (simulated via ImportError).
-  3. When tensorrt is installed, its key symbols are importable (GPU CI only).
+  2. Both TensorRT import sites raise RuntimeError (not silently fall back to
+     PyTorch) when tensorrt is unavailable (simulated via ImportError).
+  3. Both sites still fall back gracefully for non-import TensorRT errors
+     (e.g. a corrupt engine file).
+  4. When tensorrt is installed, its key symbols are importable (GPU CI only).
 """
 
 import re
-import sys
 import unittest
 from pathlib import Path
 
@@ -55,49 +56,86 @@ class TestTensorrtDocumented(unittest.TestCase):
             )
 
 
-class TestTensorrtFallback(unittest.TestCase):
-    """Both TRT import sites must set trt_context=None on ImportError."""
+class TestTensorrtMissingRaisesError(unittest.TestCase):
+    """Both TRT import sites must raise RuntimeError when tensorrt is not installed.
 
-    def _simulate_trt_load_fallback(self, import_raises):
-        """Simulate the USE_ENGINE_ONLY trt_context assignment pattern."""
+    Silently falling back to PyTorch would mask misconfiguration: the user
+    explicitly chose ONNX_WORKFLOW=2 or 3, so a missing tensorrt install is
+    always a hard error.
+    """
+
+    # --- helpers that mirror the two import sites in logical_error_rate.py ---
+
+    def _simulate_trt_load(self, import_raises, other_error=False):
+        """Mirror the USE_ENGINE_ONLY (ONNX_WORKFLOW=3) import block."""
         trt_context = None
         try:
             if import_raises:
                 raise ImportError("No module named 'tensorrt'")
-            # If import succeeded we'd set trt_context here; not reached in tests.
+            if other_error:
+                raise RuntimeError("engine deserialize failed")
             trt_context = object()
-        except Exception:
-            trt_context = None
-        return trt_context
-
-    def _simulate_trt_build_fallback(self, import_raises):
-        """Simulate the EXPORT_AND_USE_TRT trt_context assignment pattern."""
-        trt_context = None
-        try:
-            if import_raises:
-                raise ImportError("No module named 'tensorrt'")
-            trt_context = object()
-        except Exception:
-            trt_context = None
-        return trt_context
-
-    def test_use_engine_only_falls_back_on_import_error(self):
-        """USE_ENGINE_ONLY: ImportError on 'import tensorrt' must yield trt_context=None."""
-        result = self._simulate_trt_load_fallback(import_raises=True)
-        self.assertIsNone(result)
-
-    def test_export_and_use_trt_falls_back_on_import_error(self):
-        """EXPORT_AND_USE_TRT: ImportError on 'import tensorrt' must yield trt_context=None."""
-        result = self._simulate_trt_build_fallback(import_raises=True)
-        self.assertIsNone(result)
-
-    def test_fallback_does_not_raise(self):
-        """Neither TRT path must propagate ImportError to the caller."""
-        try:
-            self._simulate_trt_load_fallback(import_raises=True)
-            self._simulate_trt_build_fallback(import_raises=True)
+        except ImportError as e:
+            raise RuntimeError(
+                "[LER] ONNX_WORKFLOW=3 (USE_ENGINE_ONLY) requires tensorrt to be installed. "
+                "Install with: pip install tensorrt"
+            ) from e
         except Exception as e:
-            self.fail(f"TRT fallback unexpectedly raised: {e}")
+            # Non-import failures (bad engine file, etc.) fall back gracefully.
+            trt_context = None
+        return trt_context
+
+    def _simulate_trt_build(self, import_raises, other_error=False):
+        """Mirror the EXPORT_AND_USE_TRT (ONNX_WORKFLOW=2) import block."""
+        trt_context = None
+        try:
+            if import_raises:
+                raise ImportError("No module named 'tensorrt'")
+            if other_error:
+                raise RuntimeError("TRT build failed")
+            trt_context = object()
+        except ImportError as e:
+            raise RuntimeError(
+                "[LER] ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT) requires tensorrt to be installed. "
+                "Install with: pip install tensorrt"
+            ) from e
+        except Exception as e:
+            trt_context = None
+        return trt_context
+
+    # --- import-error tests (must raise, not fall back) ---
+
+    def test_use_engine_only_raises_on_import_error(self):
+        """USE_ENGINE_ONLY: missing tensorrt must raise RuntimeError, not fall back."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._simulate_trt_load(import_raises=True)
+        self.assertIn("USE_ENGINE_ONLY", str(ctx.exception))
+        self.assertIn("pip install tensorrt", str(ctx.exception))
+
+    def test_export_and_use_trt_raises_on_import_error(self):
+        """EXPORT_AND_USE_TRT: missing tensorrt must raise RuntimeError, not fall back."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._simulate_trt_build(import_raises=True)
+        self.assertIn("EXPORT_AND_USE_TRT", str(ctx.exception))
+        self.assertIn("pip install tensorrt", str(ctx.exception))
+
+    def test_import_error_chained_to_runtime_error(self):
+        """The RuntimeError must chain the original ImportError as __cause__."""
+        with self.assertRaises(RuntimeError) as ctx:
+            self._simulate_trt_load(import_raises=True)
+        self.assertIsInstance(ctx.exception.__cause__, ImportError)
+
+    # --- non-import error tests (must still fall back gracefully) ---
+
+    def test_use_engine_only_falls_back_on_runtime_error(self):
+        """USE_ENGINE_ONLY: non-import TRT errors (bad engine) still fall back to PyTorch."""
+        result = self._simulate_trt_load(import_raises=False, other_error=True)
+        self.assertIsNone(result)
+
+    def test_export_and_use_trt_falls_back_on_runtime_error(self):
+        """EXPORT_AND_USE_TRT: non-import TRT errors (build failure) still fall back."""
+        result = self._simulate_trt_build(import_raises=False, other_error=True)
+        self.assertIsNone(result)
 
 
 class TestTensorrtImportable(unittest.TestCase):

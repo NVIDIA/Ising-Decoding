@@ -994,6 +994,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                     print(
                         f"[LER] TensorRT engine loaded from {engine_path} in {t_load_end - t_load_start:.3f}s"
                     )
+            except ImportError as e:
+                raise RuntimeError(
+                    "[LER] ONNX_WORKFLOW=3 (USE_ENGINE_ONLY) requires tensorrt to be installed. "
+                    "Install with: pip install tensorrt"
+                ) from e
             except Exception as e:
                 if dist.rank == 0:
                     print(f"[LER] TensorRT engine load failed: {e}; falling back to PyTorch.")
@@ -1163,6 +1168,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                             print(f"[LER] TensorRT engine layer precisions: {precision_counts}")
                         except Exception:
                             pass
+            except ImportError as e:
+                raise RuntimeError(
+                    "[LER] ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT) requires tensorrt to be installed. "
+                    "Install with: pip install tensorrt"
+                ) from e
             except Exception as e:
                 if dist.rank == 0:
                     print(f"[LER] TensorRT build/load failed: {e}; falling back to PyTorch.")
