@@ -174,6 +174,17 @@ jobs:
           . .venv/bin/activate
           python -c "import torch; assert torch.cuda.is_available(), 'CUDA not available'"
 
+      - name: Train all orientations (O1–O4)
+        run: |
+          . .venv/bin/activate
+          FRESH_START=1 ORIENTATIONS_LONG_TASK=train bash code/scripts/run_orientations_long.sh
+        env:
+          EXPERIMENT_NAME: ci_orient
+          PREDECODER_TRAIN_SAMPLES: "32768"
+          PREDECODER_VAL_SAMPLES: "4096"
+          PREDECODER_TEST_SAMPLES: "4096"
+          PREDECODER_TRAIN_EPOCHS: "1"
+
       - name: Multi-orientation inference (O1–O4) with LER output check
         shell: bash
         run: |
@@ -246,7 +257,7 @@ jobs:
       - name: LER regression (pre-trained models)
         run: |
           . .venv/bin/activate
-          PYTHONPATH=code python -m unittest code.tests.test_inference_public_model -v
+          PYTHONPATH=code python -m unittest discover -s code/tests -p "test_inference_public_model.py" -v
 
   # ---------------------------------------------------------------------------
   # Full 1-epoch training + LER validation (~30-60 min)
