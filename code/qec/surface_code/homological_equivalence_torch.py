@@ -80,9 +80,6 @@ class SpacelikeHECache:
     w4_bl: torch.Tensor
     w4_br: torch.Tensor
 
-    # 2-coloring data for parallel spacelike HE (OPT-1)
-    coloring: Optional[dict] = None
-
     # Precomputed data for compiled sequential spacelike HE (P2+P3)
     seq_compile_data: Optional[dict] = None
 
@@ -142,12 +139,7 @@ def build_spacelike_he_cache(
     basis: Optional[str] = None,
     device: Optional[torch.device] = None,
 ) -> SpacelikeHECache:
-    """
-    Precompute stabilizer metadata for fast spacelike HE.
-
-    If *basis* is provided ('X' or 'Z'), also precomputes a 2-coloring
-    dict that enables fully parallel spacelike HE (OPT-1).
-    """
+    """Precompute stabilizer metadata for fast spacelike HE."""
     parity_u8 = _as_uint8_binary(parity_matrix)
     num_stabs, D2 = parity_u8.shape
     if distance is None:
@@ -196,11 +188,6 @@ def build_spacelike_he_cache(
     support_sizes = support_masks.sum(dim=1, dtype=torch.int64)
     layers = tuple(torch.tensor(layer, dtype=torch.int64, device=device) for layer in layers_list)
 
-    coloring = None
-    if basis is not None:
-        fix_map = _build_fix_equiv_map(parity_cpu, d, basis.upper())
-        coloring = _build_spacelike_coloring(parity_cpu, fix_map, device)
-
     cache = SpacelikeHECache(
         distance=d,
         parity=parity_dev,
@@ -213,7 +200,6 @@ def build_spacelike_he_cache(
         w4_tr=w4_tr_cpu.to(device),
         w4_bl=w4_bl_cpu.to(device),
         w4_br=w4_br_cpu.to(device),
-        coloring=coloring,
     )
 
     if basis is not None:
@@ -221,252 +207,6 @@ def build_spacelike_he_cache(
         object.__setattr__(cache, "seq_compile_data", scd)
 
     return cache
-
-
-def _build_fix_equiv_map(
-    parity_matrix: torch.Tensor,
-    distance: int,
-    error_type: str,
-) -> torch.Tensor:
-    """
-    Precompute the fix_equivalence canonical mapping for each weight-4 stabilizer.
-    Returns (num_w4_stabs, 3, 4) int16 tensor on CPU.
-    For stabilizer i, pattern j (0=vertical, 1=horizontal, 2=diagonal):
-      [src_q0, src_q1, dst_q0, dst_q1]
-    """
-    num_stabs = parity_matrix.shape[0]
-    w4_maps = []
-
-    for s in range(num_stabs):
-        support = torch.nonzero(parity_matrix[s], as_tuple=True)[0].tolist()
-        if len(support) != 4:
-            continue
-
-        coords = sorted([(idx // distance, idx % distance, idx) for idx in support])
-        tl, tr, bl, br = coords[0], coords[1], coords[2], coords[3]
-
-        patterns = torch.full((3, 4), -1, dtype=torch.int16)
-        patterns[0] = torch.tensor([tl[2], bl[2], tr[2], br[2]], dtype=torch.int16)
-        patterns[1] = torch.tensor([bl[2], br[2], tl[2], tr[2]], dtype=torch.int16)
-        if error_type == "X":
-            patterns[2] = torch.tensor([tl[2], br[2], tr[2], bl[2]], dtype=torch.int16)
-        else:
-            patterns[2] = torch.tensor([tr[2], bl[2], tl[2], br[2]], dtype=torch.int16)
-        w4_maps.append(patterns)
-
-    if not w4_maps:
-        return torch.zeros((0, 3, 4), dtype=torch.int16)
-    return torch.stack(w4_maps, dim=0)
-
-
-def _build_spacelike_coloring(
-    parity_matrix: torch.Tensor,
-    fix_map: torch.Tensor,
-    device: torch.device,
-) -> dict:
-    """
-    2-color stabilizers for parallel spacelike HE. Within each color group
-    no two stabilizers share a qubit, enabling parallel matmul application.
-    """
-    parity_cpu = parity_matrix.cpu()
-    S, D2 = parity_cpu.shape
-
-    overlap = (parity_cpu.float() @ parity_cpu.float().T) > 0
-    overlap.fill_diagonal_(False)
-
-    color = [-1] * S
-    for start in range(S):
-        if color[start] >= 0:
-            continue
-        color[start] = 0
-        queue = [start]
-        while queue:
-            u = queue.pop(0)
-            for v in range(S):
-                if overlap[u, v] and color[v] < 0:
-                    color[v] = 1 - color[u]
-                    queue.append(v)
-
-    result: dict = {}
-    fmap_cpu = fix_map.cpu() if fix_map.shape[0] > 0 else None
-
-    for c in (0, 1):
-        idx_c = [i for i in range(S) if color[i] == c]
-        p_c = parity_cpu[idx_c].float().to(device)
-        w_c = parity_cpu[idx_c].sum(dim=1).int().to(device)
-        result[f"parity_c{c}"] = p_c
-        result[f"weights_c{c}"] = w_c
-
-        w4_global = [i for i in idx_c if int(parity_cpu[i].sum().item()) == 4]
-        w4_fix_patterns: list = []
-
-        if fmap_cpu is not None and len(w4_global) > 0:
-            w4_all = [i for i in range(S) if int(parity_cpu[i].sum().item()) == 4]
-            for g_idx in w4_global:
-                fm_row = w4_all.index(g_idx)
-                pats = []
-                for p in range(3):
-                    s0, s1 = int(fmap_cpu[fm_row, p, 0]), int(fmap_cpu[fm_row, p, 1])
-                    d0, d1 = int(fmap_cpu[fm_row, p, 2]), int(fmap_cpu[fm_row, p, 3])
-                    pats.append((s0, s1, d0, d1))
-                w4_fix_patterns.append(pats)
-
-            src_idx, dst_idx = [], []
-            for pat_i in range(3):
-                s_list, d_list = [], []
-                for stab_pats in w4_fix_patterns:
-                    s0, s1, d0, d1 = stab_pats[pat_i]
-                    s_list.append([s0, s1])
-                    d_list.append([d0, d1])
-                src_idx.append(torch.tensor(s_list, dtype=torch.long, device=device))
-                dst_idx.append(torch.tensor(d_list, dtype=torch.long, device=device))
-
-            result[f"w4_fix_c{c}"] = list(zip(src_idx, dst_idx))
-            result[f"w4_parity_c{c}"] = parity_cpu[w4_global].float().to(device)
-        else:
-            result[f"w4_fix_c{c}"] = []
-            result[f"w4_parity_c{c}"] = torch.zeros((0, D2), dtype=torch.float, device=device)
-
-    return result
-
-
-def _weight_reduction_colored(
-    error: torch.Tensor,
-    parity_group: torch.Tensor,
-    weights_group: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Fully vectorized weight reduction for one color group.
-    Since no two stabilizers in the group share a qubit, all can be
-    applied simultaneously.
-
-    Two-action semantics matching the sequential ``_weight_reduction``:
-      - act1 (zero): count==4 OR (count==2 AND boundary) -> clear all support qubits
-      - act2 (flip): count==3 -> XOR support qubits
-    act1 has priority: qubits touched by a zeroing stabilizer are not flipped.
-    """
-    # Binary {0,1} inputs, max count = stabilizer weight ≤ 4 for d ≤ 21,
-    # well within int8 range. int8 GEMM avoids float conversion for counting.
-    try:
-        counts = (error.to(torch.int8) @ parity_group.to(torch.int8).T).to(torch.int32)
-    except RuntimeError:
-        counts = (error.to(torch.float32) @ parity_group.to(torch.float32).T).to(torch.int32)
-    boundary = (weights_group == 2).unsqueeze(0).expand_as(counts)
-    act1 = (counts == 4) | ((counts == 2) & boundary)
-    act2 = (counts == 3)
-
-    if not act1.any() and not act2.any():
-        return error
-
-    zero_mask = ((act1.float() @ parity_group) > 0).to(torch.uint8)
-    flip_mask = ((act2.float() @ parity_group) > 0).to(torch.uint8
-                                                      ) & (~zero_mask.bool()).to(torch.uint8)
-
-    error = error & (~zero_mask.bool()).to(error.dtype)
-    error = error ^ flip_mask
-    return error
-
-
-def _fix_equivalence_colored(
-    error: torch.Tensor,
-    parity_w4: torch.Tensor,
-    fix_patterns: list,
-    claimed: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Vectorized fix_equivalence for one color group's weight-4 stabilizers.
-    Since stabilizers don't share qubits within a color group, all
-    can be checked in parallel.
-
-    Tracks ``claimed`` qubits across color groups so that overlapping
-    stabilizers from different colors don't double-modify the same qubit.
-
-    Returns (error, claimed) so the caller can thread claimed across colors.
-    """
-    N, D2 = error.shape
-    if claimed is None:
-        claimed = torch.zeros((N, D2), dtype=torch.bool, device=error.device)
-
-    if parity_w4.shape[0] == 0 or not fix_patterns:
-        return error, claimed
-
-    # Binary {0,1} inputs, max count = 4; int8 GEMM is exact and avoids float.
-    try:
-        counts = (error.to(torch.int8) @ parity_w4.to(torch.int8).T).to(torch.int32)
-    except RuntimeError:
-        counts = (error.to(torch.float32) @ parity_w4.to(torch.float32).T).to(torch.int32)
-    has_2 = (counts == 2)
-    if not has_2.any():
-        return error, claimed
-
-    error = error.clone()
-    handled = torch.zeros_like(has_2)
-
-    for src_idx, dst_idx in fix_patterns:
-        eligible = has_2 & ~handled
-        if not eligible.any():
-            break
-
-        all_qi = torch.cat([src_idx[:, 0], src_idx[:, 1], dst_idx[:, 0], dst_idx[:, 1]])
-        qi_exp = all_qi.unsqueeze(0).expand(N, -1)
-        has_overlap = torch.gather(claimed, 1, qi_exp).any(dim=1, keepdim=True)
-        has_overlap = has_overlap.expand_as(eligible)
-
-        src_vals = error[..., src_idx[:, 0]] & error[..., src_idx[:, 1]]
-        matches = eligible & (src_vals == 1) & (~has_overlap)
-        if not matches.any():
-            continue
-
-        zero = torch.tensor(0, dtype=torch.uint8, device=error.device)
-        one = torch.tensor(1, dtype=torch.uint8, device=error.device)
-        for k in range(2):
-            qi = src_idx[:, k]
-            error.scatter_(
-                -1,
-                qi.unsqueeze(0).expand(N, -1), torch.where(matches, zero, error[..., qi])
-            )
-        for k in range(2):
-            qi = dst_idx[:, k]
-            error.scatter_(
-                -1,
-                qi.unsqueeze(0).expand(N, -1), torch.where(matches, one, error[..., qi])
-            )
-
-        claim_qi = all_qi.unsqueeze(0).expand(N, -1)
-        claim_val = matches.any(dim=1, keepdim=True).expand(N, claim_qi.shape[1])
-        claimed = claimed.scatter(1, claim_qi, claimed.gather(1, claim_qi) | claim_val)
-
-        handled = handled | matches
-
-    return error, claimed
-
-
-def _simplify_spacelike_colored(
-    cfg: torch.Tensor,
-    coloring: dict,
-    max_iterations: int = 100,
-) -> torch.Tensor:
-    """
-    Fully vectorized spacelike HE using 2-color parallel application.
-    Each iteration: weight_reduction for both colors, then fix_equiv for
-    both colors with a shared ``claimed`` mask threaded across them so
-    overlapping stabilizers from different colors don't double-modify.
-    """
-    cfg = _ensure_uint8(cfg)
-    for _ in range(max_iterations):
-        prev = cfg
-        for c in (0, 1):
-            cfg = _weight_reduction_colored(
-                cfg, coloring[f"parity_c{c}"], coloring[f"weights_c{c}"]
-            )
-        claimed = None
-        for c in (0, 1):
-            cfg, claimed = _fix_equivalence_colored(
-                cfg, coloring[f"w4_parity_c{c}"], coloring[f"w4_fix_c{c}"], claimed=claimed
-            )
-        if torch.equal(cfg, prev):
-            break
-    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -537,125 +277,6 @@ def coset_minimum_weight(
         result[start:end] = candidates[torch.arange(end - start, device=cfg.device), best]
 
     return result
-
-
-# ---------------------------------------------------------------------------
-# Compile-safe ("nobreak") variants (OPT-2)
-# All-float, no .item(), no data-dependent branches, no in-place mutations.
-# Algebraic XOR: error ^ flip == error - 2*error*flip + flip  (exact for {0,1} floats).
-# ---------------------------------------------------------------------------
-
-
-def _wr_step_nobreak(
-    error_f: torch.Tensor,
-    parity: torch.Tensor,
-    is_boundary: torch.Tensor,
-) -> torch.Tensor:
-    """Compile-friendly weight reduction for one color group (all float, no early exits).
-
-    Two-action semantics: act1 (zero) has priority over act2 (flip).
-    Algebraic zero: ``error * (1 - zero_mask)`` clears qubits.
-    Algebraic XOR:  ``e - 2*e*f + f`` flips qubits (exact for {0,1} floats).
-    """
-    counts = error_f @ parity.T
-    act1 = (counts == 4.0) | ((counts == 2.0) & (is_boundary > 0.5))
-    act2 = (counts == 3.0)
-
-    zero_mask = (act1.float() @ parity).clamp(max=1.0)
-    flip_raw = (act2.float() @ parity).clamp(max=1.0)
-    flip_mask = flip_raw * (1.0 - zero_mask)
-
-    error_f = error_f * (1.0 - zero_mask)
-    return error_f - 2.0 * error_f * flip_mask + flip_mask
-
-
-def _fe_step_nobreak(
-    error_f: torch.Tensor,
-    src0: torch.Tensor,
-    src1: torch.Tensor,
-    dst0: torch.Tensor,
-    dst1: torch.Tensor,
-    parity_w4: torch.Tensor,
-    claimed_f: Optional[torch.Tensor] = None,
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compile-friendly fix-equivalence for one color group (all float, no early exits).
-
-    Tracks ``claimed_f`` (N, D2) float {0,1} across color groups so overlapping
-    stabilizers from different colors don't double-modify the same qubit.
-    Returns (error_f, claimed_f).
-    """
-    if claimed_f is None:
-        claimed_f = torch.zeros_like(error_f)
-
-    if parity_w4.shape[0] == 0:
-        return error_f, claimed_f
-
-    N = error_f.shape[0]
-    counts = error_f @ parity_w4.T
-    has_2 = (counts == 2.0)
-    handled = torch.zeros_like(has_2)
-
-    for p in range(3):
-        s0, s1 = src0[p], src1[p]
-        d0, d1 = dst0[p], dst1[p]
-        eligible = has_2 & ~handled
-
-        all_qi = torch.cat([s0, s1, d0, d1])
-        qi_exp = all_qi.unsqueeze(0).expand(N, -1)
-        has_overlap = (torch.gather(claimed_f, 1, qi_exp) > 0.5).any(dim=1, keepdim=True)
-        has_overlap = has_overlap.expand_as(eligible)
-
-        v0 = torch.gather(error_f, 1, s0.unsqueeze(0).expand(N, -1))
-        v1 = torch.gather(error_f, 1, s1.unsqueeze(0).expand(N, -1))
-        match = eligible & (v0 == 1.0) & (v1 == 1.0) & (~has_overlap)
-        match_f = match.float()
-
-        for qi in (s0, s1):
-            idx = qi.unsqueeze(0).expand(N, -1)
-            old = torch.gather(error_f, 1, idx)
-            error_f = error_f.scatter(1, idx, old * (1 - match_f))
-
-        for qi in (d0, d1):
-            idx = qi.unsqueeze(0).expand(N, -1)
-            old = torch.gather(error_f, 1, idx)
-            error_f = error_f.scatter(1, idx, old * (1 - match_f) + match_f)
-
-        claim_any = match.any(dim=1, keepdim=True).float().expand(N, qi_exp.shape[1])
-        old_claim = torch.gather(claimed_f, 1, qi_exp)
-        claimed_f = claimed_f.scatter(1, qi_exp, (old_claim + claim_any).clamp(max=1.0))
-
-        handled = handled | match
-
-    return error_f, claimed_f
-
-
-def _pack_coloring_for_compile(coloring: dict, device: torch.device) -> dict:
-    """Convert coloring dict into compile-friendly flat tensors (called once at init)."""
-    packed: dict = {}
-    for c in (0, 1):
-        packed[f"parity_c{c}"] = coloring[f"parity_c{c}"]
-        packed[f"is_boundary_c{c}"] = (coloring[f"weights_c{c}"] == 2).float().unsqueeze(0)
-        packed[f"w4_parity_c{c}"] = coloring[f"w4_parity_c{c}"]
-
-        fix_list = coloring[f"w4_fix_c{c}"]
-        if fix_list:
-            s0_list, s1_list, d0_list, d1_list = [], [], [], []
-            for src_idx, dst_idx in fix_list:
-                s0_list.append(src_idx[:, 0])
-                s1_list.append(src_idx[:, 1])
-                d0_list.append(dst_idx[:, 0])
-                d1_list.append(dst_idx[:, 1])
-            packed[f"src0_c{c}"] = torch.stack(s0_list)
-            packed[f"src1_c{c}"] = torch.stack(s1_list)
-            packed[f"dst0_c{c}"] = torch.stack(d0_list)
-            packed[f"dst1_c{c}"] = torch.stack(d1_list)
-        else:
-            S_w4 = coloring[f"w4_parity_c{c}"].shape[0]
-            packed[f"src0_c{c}"] = torch.zeros(3, max(S_w4, 1), dtype=torch.long, device=device)
-            packed[f"src1_c{c}"] = torch.zeros(3, max(S_w4, 1), dtype=torch.long, device=device)
-            packed[f"dst0_c{c}"] = torch.zeros(3, max(S_w4, 1), dtype=torch.long, device=device)
-            packed[f"dst1_c{c}"] = torch.zeros(3, max(S_w4, 1), dtype=torch.long, device=device)
-    return packed
 
 
 def _simplify_time_w1_step_nobreak(
@@ -770,15 +391,8 @@ def _apply_corner_update(
 
 
 def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) -> torch.Tensor:
-    # DEPRECATED: Use _fix_equivalence_colored instead for better performance.
-    # This sequential path is kept for backward compatibility and testing.
     """
     Equivalence fixing with overlap handling (sequential over stabilizers).
-
-    .. deprecated::
-        Use ``_fix_equivalence_colored`` via the colored path instead.
-        This sequential fallback is retained for edge cases where coloring
-        is unavailable but should not be called in the hot path.
 
     basis selects the diagonal rule for weight-4 stabilizers:
       - basis='X': diagonal TL+BR -> TR+BL
@@ -1450,46 +1064,6 @@ def _simplify_spacelike_seq_compiled(
     return cfg
 
 
-def _simplify_spacelike_compiled(
-    cfg: torch.Tensor,
-    cache: SpacelikeHECache,
-    max_iterations: int = 100,
-    compute_dtype: torch.dtype = torch.float32,
-    coloring_override: Optional[dict] = None,
-) -> torch.Tensor:
-    """Run spacelike HE through torch.compile with chunked early-exit (OPT-3 + S5).
-
-    A compiled inner function runs _SPACELIKE_CHUNK iterations, then
-    convergence is checked outside the compiled boundary.  This avoids
-    running all max_iterations when the pattern converges early.
-    """
-    coloring = coloring_override if coloring_override is not None else cache.coloring
-    assert coloring is not None, "Compiled spacelike requires coloring (pass basis= to build_spacelike_he_cache)"
-    packed = _pack_coloring_for_compile(coloring, cfg.device)
-    chunk_fn = _get_compiled_spacelike_chunk()
-    if cfg.dtype != torch.uint8:
-        cfg = _as_uint8_binary(cfg)
-    cfg_f = cfg.to(compute_dtype)
-    args: list = []
-    for key in (
-        "parity_c0", "is_boundary_c0", "w4_parity_c0", "src0_c0", "src1_c0", "dst0_c0", "dst1_c0",
-        "parity_c1", "is_boundary_c1", "w4_parity_c1", "src0_c1", "src1_c1", "dst0_c1", "dst1_c1"
-    ):
-        v = packed[key]
-        args.append(v.to(compute_dtype) if v.is_floating_point() else v)
-
-    prev = cfg_f.round().to(torch.uint8)
-    for _ in range(0, max_iterations, _SPACELIKE_CHUNK):
-        torch.compiler.cudagraph_mark_step_begin()
-        cfg_f = chunk_fn(cfg_f, *args).clone()
-        curr = cfg_f.round().to(torch.uint8)
-        if torch.equal(curr, prev):
-            break
-        prev = curr
-
-    return cfg_f.round().to(torch.uint8)
-
-
 def _simplify_spacelike(
     cfg: torch.Tensor,
     cache: SpacelikeHECache,
@@ -1501,24 +1075,11 @@ def _simplify_spacelike(
     use_coset_search: bool = False,
     parity: Optional[torch.Tensor] = None,
     coset_max_generators: int = 20,
-    use_colored_spacelike: bool = False,
 ) -> torch.Tensor:
-    coloring = cache.coloring if use_colored_spacelike else None
-
-    if use_compile and coloring is not None:
-        cfg = _simplify_spacelike_compiled(
-            cfg,
-            cache,
-            max_iterations=max_iterations,
-            compute_dtype=compute_dtype,
-            coloring_override=coloring
-        )
-    elif use_compile and cache.seq_compile_data is not None:
+    if use_compile and cache.seq_compile_data is not None:
         cfg = _simplify_spacelike_seq_compiled(
             cfg, cache, max_iterations=max_iterations, basis=basis
         )
-    elif coloring is not None:
-        cfg = _simplify_spacelike_colored(cfg, coloring, max_iterations=max_iterations)
     else:
         if cfg.dtype != torch.uint8:
             cfg = _as_uint8_binary(cfg)
@@ -1551,7 +1112,6 @@ def apply_homological_equivalence_torch_vmap(
     compute_dtype: torch.dtype = torch.float32,
     use_coset_search: bool = False,
     coset_max_generators: int = 20,
-    use_colored_spacelike: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Torch spacelike HE implementation.
@@ -1563,8 +1123,6 @@ def apply_homological_equivalence_torch_vmap(
             coset representatives and pick the minimum-weight one (P12 / NEW-4).
         coset_max_generators: Guard against exponential blowup — skip coset
             search if the stabilizer count exceeds this value.
-        use_colored_spacelike: If True, use 2-color parallel spacelike path (OPT-1).
-            If False, use legacy sequential path.
     """
     z = _as_uint8_binary(z_diffs)
     x = _as_uint8_binary(x_diffs)
@@ -1594,7 +1152,6 @@ def apply_homological_equivalence_torch_vmap(
         use_coset_search=use_coset_search,
         parity=parity_X,
         coset_max_generators=coset_max_generators,
-        use_colored_spacelike=use_colored_spacelike
     )
     z_can = _simplify_spacelike(
         z_flat,
@@ -1606,7 +1163,6 @@ def apply_homological_equivalence_torch_vmap(
         use_coset_search=use_coset_search,
         parity=parity_Z,
         coset_max_generators=coset_max_generators,
-        use_colored_spacelike=use_colored_spacelike
     )
 
     return z_can.reshape(B, T, D2), x_can.reshape(B, T, D2)
@@ -2439,7 +1995,6 @@ def apply_weight1_timelike_homological_equivalence_torch(
     cache_X_w2: Optional[Weight2TimelikeCache] = None,
     use_coset_search: bool = False,
     coset_max_generators: int = 20,
-    use_colored_spacelike: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Torch HE: spacelike + timelike weight-1 (+ optional weight-2).
@@ -2460,7 +2015,6 @@ def apply_weight1_timelike_homological_equivalence_torch(
         use_coset_search: If True, after greedy spacelike canonicalization,
             enumerate all coset representatives and pick the minimum-weight one (P12 / NEW-4).
         coset_max_generators: Skip coset search if S exceeds this (exponential guard).
-        use_colored_spacelike: If True, use 2-color parallel spacelike path.
     """
     z_diffs, x_diffs = _cumulative_to_diffs_torch(z_errors, x_errors)
     sx = _as_uint8_binary(s1s2_x)
@@ -2498,7 +2052,6 @@ def apply_weight1_timelike_homological_equivalence_torch(
         compute_dtype=dt,
         use_coset_search=use_coset_search,
         coset_max_generators=coset_max_generators,
-        use_colored_spacelike=use_colored_spacelike,
     )
 
     for _ in range(int(num_he_cycles)):
@@ -2582,96 +2135,8 @@ def apply_weight1_timelike_homological_equivalence_torch(
 # torch.compile caches and warmup (OPT-6)
 # ---------------------------------------------------------------------------
 
-_compiled_spacelike_cache: dict = {}
 _compiled_timelike_cache: dict = {}
 _compiled_weight2_cache: dict = {}
-
-_SPACELIKE_CHUNK = 4
-
-
-def _get_compiled_spacelike_chunk():
-    """Return a compiled spacelike HE chunk function (runs _SPACELIKE_CHUNK iterations)."""
-    key = _SPACELIKE_CHUNK
-    if key in _compiled_spacelike_cache:
-        return _compiled_spacelike_cache[key]
-
-    chunk = _SPACELIKE_CHUNK
-
-    def _spacelike_chunk(
-        error_f,
-        par_c0,
-        bnd_c0,
-        w4par_c0,
-        s0_c0,
-        s1_c0,
-        d0_c0,
-        d1_c0,
-        par_c1,
-        bnd_c1,
-        w4par_c1,
-        s0_c1,
-        s1_c1,
-        d0_c1,
-        d1_c1,
-    ):
-        for _ in range(chunk):
-            error_f = _wr_step_nobreak(error_f, par_c0, bnd_c0)
-            error_f = _wr_step_nobreak(error_f, par_c1, bnd_c1)
-            claimed_f = torch.zeros_like(error_f)
-            error_f, claimed_f = _fe_step_nobreak(
-                error_f, s0_c0, s1_c0, d0_c0, d1_c0, w4par_c0, claimed_f
-            )
-            error_f, claimed_f = _fe_step_nobreak(
-                error_f, s0_c1, s1_c1, d0_c1, d1_c1, w4par_c1, claimed_f
-            )
-        return error_f
-
-    compiled = torch.compile(_spacelike_chunk, mode="reduce-overhead", fullgraph=True)
-    _compiled_spacelike_cache[key] = compiled
-    return compiled
-
-
-def _get_compiled_spacelike(max_iters: int):
-    """Return a compiled spacelike HE function for the given iteration count.
-
-    Kept for backward compatibility with warmup_he_compile; the actual
-    execution now uses the chunked path via _get_compiled_spacelike_chunk.
-    """
-    if max_iters in _compiled_spacelike_cache:
-        return _compiled_spacelike_cache[max_iters]
-
-    def _spacelike_compiled(
-        error_f,
-        par_c0,
-        bnd_c0,
-        w4par_c0,
-        s0_c0,
-        s1_c0,
-        d0_c0,
-        d1_c0,
-        par_c1,
-        bnd_c1,
-        w4par_c1,
-        s0_c1,
-        s1_c1,
-        d0_c1,
-        d1_c1,
-    ):
-        for _ in range(max_iters):
-            error_f = _wr_step_nobreak(error_f, par_c0, bnd_c0)
-            error_f = _wr_step_nobreak(error_f, par_c1, bnd_c1)
-            claimed_f = torch.zeros_like(error_f)
-            error_f, claimed_f = _fe_step_nobreak(
-                error_f, s0_c0, s1_c0, d0_c0, d1_c0, w4par_c0, claimed_f
-            )
-            error_f, claimed_f = _fe_step_nobreak(
-                error_f, s0_c1, s1_c1, d0_c1, d1_c1, w4par_c1, claimed_f
-            )
-        return error_f
-
-    compiled = torch.compile(_spacelike_compiled, mode="reduce-overhead", fullgraph=True)
-    _compiled_spacelike_cache[max_iters] = compiled
-    return compiled
 
 
 def _get_compiled_timelike_loop(
@@ -2952,10 +2417,6 @@ def warmup_he_compile(
     min_t_z = 1 if str(basis).upper() == "Z" else 0
 
     if apply_spacelike:
-        sp_iters = max(int(distance), 10)
-        _get_compiled_spacelike(sp_iters)
-        # Pre-compile sequential WR for common layer counts.
-        # Exact count depends on parity matrix, but d ± 1 covers typical cases.
         for nl in range(max(1, int(distance) - 1), int(distance) + 2):
             _get_compiled_seq_wr(nl)
 

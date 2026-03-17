@@ -141,7 +141,6 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "use_coset_search": False,
                 "coset_max_generators": 20,
                 "use_dense_overlap": False,
-                "use_colored_spacelike": False,
                 "decompose_y": True,
                 "p_error": None,
                 "p_min": 0.001,

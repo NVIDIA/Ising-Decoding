@@ -47,7 +47,6 @@ class QCDataGeneratorTorch:
         use_coset_search=False,
         coset_max_generators=20,
         use_dense_overlap=False,
-        use_colored_spacelike=False,
         **_ignored,
     ):
         if global_rank is None:
@@ -143,7 +142,6 @@ class QCDataGeneratorTorch:
             use_coset_search=use_coset_search,
             coset_max_generators=coset_max_generators,
             use_dense_overlap=use_dense_overlap,
-            use_colored_spacelike=use_colored_spacelike,
         )
 
         if self._mixed:
