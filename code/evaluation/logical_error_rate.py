@@ -55,7 +55,10 @@ from enum import IntEnum
 from typing import Optional
 
 _compile_disabled = os.environ.get("PREDECODER_TORCH_COMPILE", "").strip().lower() in (
-    "0", "false", "no", "off",
+    "0",
+    "false",
+    "no",
+    "off",
 )
 
 
