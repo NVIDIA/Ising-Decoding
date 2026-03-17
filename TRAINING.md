@@ -145,7 +145,7 @@ export CONFIG_NAME=config_qec_decoder_r13_fp8
 | `PREDECODER_TRAIN_SAMPLES` | config-defined | Samples per epoch. Bypasses auto-scaling when set explicitly. |
 | `PREDECODER_LR_MILESTONES` | config-defined | Comma-separated LR schedule milestone fractions (e.g. `0.25,0.5,1.0`). |
 | `PREDECODER_TIMING_RUN` | unset | Set `1` for timing/benchmarking mode (disables some overhead). |
-| `PREDECODER_TORCH_COMPILE` | `0` when run via `sbatch_train.sh`, otherwise unset | `0` to disable `torch.compile`, `1` to enable. |
+| `PREDECODER_TORCH_COMPILE` | `0` when run via `sbatch_train.sh` or CI coverage, otherwise unset | `0` to disable `torch.compile` everywhere (training, inference, HE kernels), `1` to enable. Useful for CI/coverage runs where compile+autotune overhead can cause timeouts. |
 | `PREDECODER_DISABLE_SDR` | `1` when run via `sbatch_train.sh`, otherwise unset | `1` to skip Syndrome Density Reduction computation (saves time on cluster). |
 | `TORCH_COMPILE` | unset | Alternative way to control `torch.compile` (`0`/`1`). |
 | `TORCH_COMPILE_MODE` | unset | `default`, `reduce-overhead`, or `max-autotune`. |

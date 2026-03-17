@@ -202,6 +202,8 @@ jobs:
           coverage report
           coverage html -d htmlcov-gpu
           coverage xml -o coverage-gpu.xml
+        env:
+          PREDECODER_TORCH_COMPILE: "0"
 
       - name: Upload GPU coverage artifacts
         if: always()

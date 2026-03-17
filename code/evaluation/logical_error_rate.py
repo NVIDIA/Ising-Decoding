@@ -22,8 +22,9 @@
 #       3 = load pre-built TRT engine
 #
 # Performance features (composable -- each works with both inference paths):
-#   torch.compile        Always applied (reduce-overhead mode), except when
-#                        ONNX export is active (ONNX_WORKFLOW=1 or 2).
+#   torch.compile        Applied by default (reduce-overhead mode), unless
+#                        ONNX export is active (ONNX_WORKFLOW=1 or 2) or
+#                        PREDECODER_TORCH_COMPILE=0 (useful for CI/coverage).
 #   channels_last_3d     Always applied to model memory format.
 #   CUDAPrefetcher       Async data prefetch on any CUDA device.
 #   Non-blocking xfer    GPU->CPU via non_blocking=True + stream sync.
@@ -52,6 +53,10 @@ import sys
 import os
 from enum import IntEnum
 from typing import Optional
+
+_compile_disabled = os.environ.get("PREDECODER_TORCH_COMPILE", "").strip().lower() in (
+    "0", "false", "no", "off",
+)
 
 
 class OnnxWorkflow(IntEnum):
@@ -818,8 +823,8 @@ def run_inference_and_decode_pre_decoder_memory(
     _applied_compile = False
     if not _will_export_onnx:
         try:
-            model = torch.compile(model, mode="reduce-overhead")
-            _applied_compile = True
+            model = torch.compile(model, mode="reduce-overhead", disable=_compile_disabled)
+            _applied_compile = not _compile_disabled
         except Exception as e:
             if dist.rank == 0:
                 print(f"[LER] torch.compile not applied: {e}")
@@ -830,7 +835,7 @@ def run_inference_and_decode_pre_decoder_memory(
         print(
             f"[LER Config] inference={'inline' if use_inline_inference else 'legacy'}"
             f" | ONNX_WORKFLOW={_onnx_label}"
-            f" | torch.compile={'on' if _applied_compile else ('skipped(ONNX)' if _will_export_onnx else 'off')}"
+            f" | torch.compile={'on' if _applied_compile else ('disabled(env)' if _compile_disabled else ('skipped(ONNX)' if _will_export_onnx else 'off'))}"
             f" | channels_last_3d={'on' if _applied_channels_last else 'off'}"
             f" | prefetcher={'on' if device.type == 'cuda' else 'off(cpu)'}"
             f" | timing={'on' if enable_timing_instrumentation else 'off'}"
@@ -1688,7 +1693,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
 
     model.eval()
     try:
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model, mode="reduce-overhead", disable=_compile_disabled)
     except Exception:
         pass
     try:

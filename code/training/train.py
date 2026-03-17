@@ -1136,14 +1136,16 @@ def main(cfg: DictConfig) -> None:
             should_compile = False
         elif env_val in ("1", "true", "yes", "on"):
             should_compile = True
-    if should_compile:
-        if dist.rank == 0:
+    if dist.rank == 0:
+        if should_compile:
             print(f"Compiling model with torch.compile(mode='{compile_mode}')...")
-        try:
-            base_model = torch.compile(base_model, mode=compile_mode)
-        except Exception as exc:
-            if dist.rank == 0:
-                print(f"[Train] torch.compile failed ({exc}); continuing without compile.")
+        else:
+            print("[Train] torch.compile disabled.")
+    try:
+        base_model = torch.compile(base_model, mode=compile_mode, disable=not should_compile)
+    except Exception as exc:
+        if dist.rank == 0:
+            print(f"[Train] torch.compile failed ({exc}); continuing without compile.")
 
     # Wrap for DDP
     model = base_model

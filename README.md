@@ -73,9 +73,12 @@ Inference note:
   - Note: the batch schedule jumps to 2048 after epoch 0, so epoch 1 uses
     `2048 * 2 * world_size` effective batch size.
   - For quick short runs, use `GPUS=1` and `PREDECODER_TRAIN_SAMPLES >= 4096`.
-- **Segfaults during training startup (torch.compile)**:
-  - Some environments crash during `torch.compile`.
-  - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
+- **Segfaults or timeouts from torch.compile**:
+  - Some environments crash during `torch.compile`; CI coverage runs may
+    time out due to autotune overhead.
+  - Disable compile globally: `PREDECODER_TORCH_COMPILE=0` (applies to
+    training, inference, and HE kernels).
+  - Via local_run.sh: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
   - Or try a safer mode: `TORCH_COMPILE=1 TORCH_COMPILE_MODE=reduce-overhead bash code/scripts/local_run.sh`.
 
 ### Inference (pre-trained models)
