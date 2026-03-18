@@ -36,18 +36,10 @@ Performance strategy
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import torch
-
-_compile_disabled = os.environ.get("PREDECODER_TORCH_COMPILE", "").strip().lower() in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
 
 
 def _as_uint8_binary(x: torch.Tensor) -> torch.Tensor:
@@ -826,9 +818,7 @@ def _get_compiled_seq_wr(num_layers: int):
     def _wr_fn(error_f, padded_masks, is_boundary, layer_valid):
         return _wr_seq_step_nobreak(error_f, padded_masks, is_boundary, layer_valid, nl)
 
-    compiled = torch.compile(
-        _wr_fn, mode="reduce-overhead", fullgraph=True, disable=_compile_disabled
-    )
+    compiled = torch.compile(_wr_fn, mode="reduce-overhead", fullgraph=True)
     _compiled_seq_wr_cache[key] = compiled
     return compiled
 
@@ -2226,9 +2216,7 @@ def _get_compiled_timelike_loop(
 
         return x_work, z_work, sz_work, sx_work
 
-    compiled = torch.compile(
-        _timelike_loop, mode="reduce-overhead", fullgraph=True, disable=_compile_disabled
-    )
+    compiled = torch.compile(_timelike_loop, mode="reduce-overhead", fullgraph=True)
     _compiled_timelike_cache[key] = compiled
     return compiled
 
@@ -2296,9 +2284,7 @@ def _get_compiled_weight2_loop(
 
         return x_work, z_work, sz_work, sx_work
 
-    compiled = torch.compile(
-        _w2_loop, mode="max-autotune", fullgraph=True, disable=_compile_disabled
-    )
+    compiled = torch.compile(_w2_loop, mode="max-autotune", fullgraph=True)
     _compiled_weight2_cache[key] = compiled
     return compiled
 

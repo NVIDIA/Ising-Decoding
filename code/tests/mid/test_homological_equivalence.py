@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from qec.surface_code.memory_circuit import SurfaceCode
 from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch

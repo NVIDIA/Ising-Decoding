@@ -8,7 +8,7 @@ import sys
 import unittest
 from pathlib import Path
 
-_repo_code = Path(__file__).resolve().parent.parent
+_repo_code = Path(__file__).resolve().parent.parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
