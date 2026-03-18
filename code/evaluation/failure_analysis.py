@@ -141,6 +141,7 @@ def decoder_ablation_study(model, device, dist, cfg):
         random.seed(rank_seed)
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
+        cfg_copy.test.meas_basis_test = basis
         test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
     finally:
         torch.set_rng_state(torch_state)
