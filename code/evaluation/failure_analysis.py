@@ -11,7 +11,6 @@
 Decoder ablation study: apply multiple global decoders of varying complexity
 to the same pre-decoder residual syndromes and compare logical error rates.
 """
-import inspect
 import os
 import random
 
@@ -21,9 +20,16 @@ import torch
 from evaluation.logical_error_rate import (
     _build_stab_maps,
     _decode_batch,
+    _PYMATCHING_SUPPORTS_CORRELATIONS,
     map_grid_to_stabilizer_tensor,
     sample_predictions,
 )
+
+# LDPC-based decoders built by _build_ldpc_decoders.
+LDPC_DECODER_NAMES = ("Union-Find", "BP-only", "BP+LSD-0")
+
+# Ordered names of all decoders run by decoder_ablation_study.
+DECODER_NAMES = ("No-op",) + LDPC_DECODER_NAMES + ("Uncorr-PM", "Corr-PM")
 
 
 def _build_ldpc_decoders(det_model):
@@ -46,13 +52,14 @@ def _build_ldpc_decoders(det_model):
     # Clamp priors away from 0/1 for BP stability
     priors = np.clip(priors, 1e-9, 1.0 - 1e-9)
 
+    _uf, _bp, _bplsd = LDPC_DECODER_NAMES
     decoders = {}
-    decoders["Union-Find"] = (UnionFindDecoder(H, uf_method="peeling"), L_dense)
-    decoders["BP-only"] = (
+    decoders[_uf] = (UnionFindDecoder(H, uf_method="peeling"), L_dense)
+    decoders[_bp] = (
         BpDecoder(H, error_channel=priors, bp_method="product_sum", max_iter=10, schedule="parallel"),
         L_dense,
     )
-    decoders["BP+LSD-0"] = (
+    decoders[_bplsd] = (
         BpLsdDecoder(
             H,
             error_channel=priors,
@@ -148,11 +155,7 @@ def decoder_ablation_study(model, device, dist, cfg):
 
     # DEM and matchers from Stim circuit (includes boundary detectors)
     det_model = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
-    _supports_corr = "enable_correlations" in inspect.signature(
-        pymatching.Matching.from_detector_error_model
-    ).parameters
-
-    if _supports_corr:
+    if _PYMATCHING_SUPPORTS_CORRELATIONS:
         matcher_corr = pymatching.Matching.from_detector_error_model(det_model, enable_correlations=True)
         matcher_uncorr = pymatching.Matching.from_detector_error_model(det_model, enable_correlations=False)
     else:
@@ -216,7 +219,7 @@ def decoder_ablation_study(model, device, dist, cfg):
     N = len(test_dataset)
     num_batches = (N + batch_size - 1) // batch_size
 
-    decoder_names = ["No-op", "Union-Find", "BP-only", "BP+LSD-0", "Uncorr-PM", "Corr-PM"]
+    decoder_names = list(DECODER_NAMES)
     total_scanned = 0
     baseline_errors = 0
     decoder_errors = {name: 0 for name in decoder_names}
@@ -355,22 +358,23 @@ def decoder_ablation_study(model, device, dist, cfg):
         noop_final = pre_L_np % 2
 
         # 2. Union-Find (ldpc)
+        _uf, _bp, _bplsd = LDPC_DECODER_NAMES
         _t0 = _time.perf_counter()
-        uf_dec, uf_L = ldpc_decoders["Union-Find"]
+        uf_dec, uf_L = ldpc_decoders[_uf]
         uf_obs = _decode_ldpc_batch(uf_dec, uf_L, residual_np)
         uf_final = (pre_L_np + uf_obs) % 2
         _timing["uf_decode"] += _time.perf_counter() - _t0
 
         # 3. BP-only (no LSD fallback)
         _t0 = _time.perf_counter()
-        bp_dec, bp_L = ldpc_decoders["BP-only"]
+        bp_dec, bp_L = ldpc_decoders[_bp]
         bp_obs = _decode_ldpc_batch(bp_dec, bp_L, residual_np)
         bp_final = (pre_L_np + bp_obs) % 2
         _timing["bp_only_decode"] += _time.perf_counter() - _t0
 
         # 4. BP+LSD-0 (ldpc)
         _t0 = _time.perf_counter()
-        bplsd_dec, bplsd_L = ldpc_decoders["BP+LSD-0"]
+        bplsd_dec, bplsd_L = ldpc_decoders[_bplsd]
         bplsd_obs = _decode_ldpc_batch(bplsd_dec, bplsd_L, residual_np)
         bplsd_final = (pre_L_np + bplsd_obs) % 2
         _timing["bplsd_decode"] += _time.perf_counter() - _t0
@@ -391,12 +395,12 @@ def decoder_ablation_study(model, device, dist, cfg):
 
         _t0 = _time.perf_counter()
         all_finals = {
-            "No-op": noop_final,
-            "Union-Find": uf_final,
-            "BP-only": bp_final,
-            "BP+LSD-0": bplsd_final,
-            "Uncorr-PM": uncorr_final,
-            "Corr-PM": corr_final,
+            DECODER_NAMES[0]: noop_final,
+            _uf: uf_final,
+            _bp: bp_final,
+            _bplsd: bplsd_final,
+            DECODER_NAMES[4]: uncorr_final,
+            DECODER_NAMES[5]: corr_final,
         }
 
         for name in decoder_names:
