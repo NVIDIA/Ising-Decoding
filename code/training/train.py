@@ -16,16 +16,11 @@ All file-based dataset and epoch-config paths have been removed.
 V3 Training Configuration Reference
 ====================================
 
-Noise model scaling (controls how training noise is adjusted):
-  cfg.data.use_legacy_noise_upscaling  (bool, default: false)
-  PREDECODER_USE_LEGACY_NOISE_UPSCALING  (0/1, default: 0)
-      false/0 = V3 inline sparsity guard (default):
-          When max(grouped noise totals) < 1e-3, scales all 25 noise
-          parameters by (1e-3 / max) for training data only. Also reduces
-          LR by 25% and increases val/test sample counts.
-      true/1  = Legacy surface-code upscaling via
-          get_training_upscaled_noise_model. Supports cfg.data.code_type,
-          cfg.data.skip_noise_upscaling, PREDECODER_SKIP_NOISE_UPSCALING.
+Noise model scaling:
+  Surface-code training noise upscaling via get_training_upscaled_noise_model.
+  cfg.data.skip_noise_upscaling  (bool, default: false)
+  PREDECODER_SKIP_NOISE_UPSCALING  (0/1, default: 0)
+      Skips upscaling entirely; training uses exact user-specified parameters.
   Evaluation/inference always uses the user-specified noise model as-is.
 
 Performance:
@@ -793,56 +788,22 @@ def main(cfg: DictConfig) -> None:
                     f"(prep={p_prep}, meas={p_meas}, idle_cnot={p_idle_cnot}, idle_spam={p_idle_spam}, cnot={p_cnot})."
                 )
 
-            # V3 sparsity guard (default): inline scaling when max(grouped totals) < 1e-3.
-            # Legacy path: get_training_upscaled_noise_model (surface-code aware upscaling).
-            # Set cfg.data.use_legacy_noise_upscaling=true or PREDECODER_USE_LEGACY_NOISE_UPSCALING=1
-            # to use the legacy path instead.
-            use_legacy_upscale = bool(getattr(cfg.data, "use_legacy_noise_upscaling", False))
-            if os.environ.get("PREDECODER_USE_LEGACY_NOISE_UPSCALING", "0") == "1":
-                use_legacy_upscale = True
-
-            scale = 1.0
-            if use_legacy_upscale:
-                # Legacy surface-code training upscaling: bring max(P's) to target for training
-                # data only. Evaluation uses the user-specified noise model as-is.
-                from qec.noise_model import (
-                    get_training_upscaled_noise_model,
-                    SURFACE_CODE_TRAINING_UPSCALE_TARGET,
-                    SURFACE_CODE_THRESHOLD_APPROX,
-                )
-                code_type = getattr(cfg.data, "code_type", "surface_code")
-                skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
-                if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
-                    skip_upscale = True
-                noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
-                    noise_model_user_obj,
-                    code_type=code_type,
-                    skip_upscale=skip_upscale,
-                )
-            else:
-                # V3 inline sparsity guard: if max(grouped totals) < 1e-3, scale ALL 25
-                # parameters by (1e-3 / max) for TRAINING DATA ONLY.
-                min_group_total = 1e-3
-                if max_group < min_group_total:
-                    scale = float(min_group_total / max_group)
-                    scaled = {
-                        k: float(v) * scale
-                        for k, v in noise_model_user_obj.to_config_dict().items()
-                    }
-                    noise_model_train_obj = NoiseModel.from_config_dict(scaled)
-                else:
-                    noise_model_train_obj = noise_model_user_obj
-
-                # If sparsity guard triggered, be conservative:
-                # - reduce LR by 25%
-                # - increase val/test sample sizes for cleaner evaluation signals
-                if scale != 1.0:
-                    try:
-                        cfg.optimizer.lr = float(cfg.optimizer.lr) * 0.75
-                    except Exception:
-                        cfg.optimizer.lr = 0.75 * float(cfg.optimizer.lr)
-                    cfg.val.num_samples = max(int(cfg.val.num_samples), 262144)
-                    cfg.test.num_samples = max(int(cfg.test.num_samples), 1048576)
+            # Surface-code training upscaling: bring max(P's) to target for training
+            # data only. Evaluation uses the user-specified noise model as-is.
+            from qec.noise_model import (
+                get_training_upscaled_noise_model,
+                SURFACE_CODE_TRAINING_UPSCALE_TARGET,
+                SURFACE_CODE_THRESHOLD_APPROX,
+            )
+            code_type = getattr(cfg.data, "code_type", "surface_code")
+            skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
+            if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
+                skip_upscale = True
+            noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
+                noise_model_user_obj,
+                code_type=code_type,
+                skip_upscale=skip_upscale,
+            )
 
             # Force fixed-p mode with a conservative scalar placeholder when using noise_model.
             # IMPORTANT: during training we apply drift (±2%) around the *training* noise model reference, so we
@@ -858,68 +819,48 @@ def main(cfg: DictConfig) -> None:
                     f"idle_cnot={p_idle_cnot:.6g}, idle_spam={p_idle_spam:.6g}, cnot={p_cnot:.6g}; "
                     f"max_group={max_group:.6g}"
                 )
-                if use_legacy_upscale:
-                    print(f"[Train] {upscale_info['message']}")
-                    if upscale_info.get("skipped_by_user"):
-                        print(
-                            "[Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or "
-                            "PREDECODER_SKIP_NOISE_UPSCALING=1). Training uses exact user-specified parameters."
-                        )
-                    if upscale_info.get("applied_upscale"):
-                        print(
-                            f"[Train] noise_model upscaling (surface code): scale_factor={upscale_info['scale_factor']:.6g}, "
-                            f"target={SURFACE_CODE_TRAINING_UPSCALE_TARGET:.1e}. "
-                            "Evaluation uses user-specified noise model as-is."
-                        )
-                        print(
-                            f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
-                        )
-                    if upscale_info.get("downscale_skipped"):
-                        print(
-                            "\n" + "!" * 80 + "\n" +
-                            "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
-                            "Parameters are unchanged. If you intended a lower noise regime, check your noise model "
-                            "parameter values (e.g. a typo may have set a single p too high).\n" +
-                            "!" * 80
-                        )
-                    if upscale_info.get("above_target_warning"):
-                        print(
-                            "\n" + "#" * 80 + "\n" +
-                            "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
-                            "target ({:.1e}). Surface code threshold is approximately {:.1e}. "
-                            "You may be above threshold or have introduced a noise model that is not the one you intended "
-                            "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n"
-                            .format(
-                                max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET,
-                                SURFACE_CODE_THRESHOLD_APPROX
-                            ) + "#" * 80
-                        )
-                else:
-                    if scale != 1.0:
-                        print(
-                            f"[Train] noise_model sparsity guard: max_group={max_group:.6g} < {min_group_total:.1e}; "
-                            f"scaling training noise_model by {scale:.6g} (evaluation uses user noise_model as-is)."
-                        )
-                        print(
-                            f"[Train] sparsity guard adjustments: lr*=0.75 -> {float(cfg.optimizer.lr):.6g}, "
-                            f"val.num_samples={int(cfg.val.num_samples):,}, test.num_samples={int(cfg.test.num_samples):,}"
-                        )
-                    else:
-                        print(
-                            f"[Train] noise_model sparsity guard: max_group={max_group:.6g} >= {min_group_total:.1e}; "
-                            "no scaling applied."
-                        )
+                print(f"[Train] {upscale_info['message']}")
+                if upscale_info.get("skipped_by_user"):
+                    print(
+                        "[Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or "
+                        "PREDECODER_SKIP_NOISE_UPSCALING=1). Training uses exact user-specified parameters."
+                    )
+                if upscale_info.get("applied_upscale"):
+                    print(
+                        f"[Train] noise_model upscaling (surface code): scale_factor={upscale_info['scale_factor']:.6g}, "
+                        f"target={SURFACE_CODE_TRAINING_UPSCALE_TARGET:.1e}. "
+                        "Evaluation uses user-specified noise model as-is."
+                    )
+                    print(
+                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
+                    )
+                if upscale_info.get("downscale_skipped"):
+                    print(
+                        "\n" + "!" * 80 + "\n" +
+                        "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
+                        "Parameters are unchanged. If you intended a lower noise regime, check your noise model "
+                        "parameter values (e.g. a typo may have set a single p too high).\n" +
+                        "!" * 80
+                    )
+                if upscale_info.get("above_target_warning"):
+                    print(
+                        "\n" + "#" * 80 + "\n" +
+                        "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
+                        "target ({:.1e}). Surface code threshold is approximately {:.1e}. "
+                        "You may be above threshold or have introduced a noise model that is not the one you intended "
+                        "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n"
+                        .format(
+                            max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET,
+                            SURFACE_CODE_THRESHOLD_APPROX
+                        ) + "#" * 80
+                    )
                 print(
                     f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"
                 )
                 print(f"[Train] noise_model (user) summary: {noise_model_user_obj!r}")
-                if use_legacy_upscale and upscale_info.get("applied_upscale"):
+                if upscale_info.get("applied_upscale"):
                     print(
                         f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
-                    )
-                elif not use_legacy_upscale and scale != 1.0:
-                    print(
-                        f"[Train] noise_model (training, scaled) summary: {noise_model_train_obj!r}"
                     )
                 print(
                     "[Train] noise_model idle semantics: "

@@ -127,7 +127,7 @@ class QCDataGeneratorTorch:
                     device=self.device,
                     export=False,
                     return_artifacts=True,
-                    # TODO: pass noise_model=noise_model here once the guard above is removed
+                    # TODO: pass noise_model=noise_model here for circuit-level noise support
                 )
 
         _he_kwargs = dict(

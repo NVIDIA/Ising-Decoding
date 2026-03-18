@@ -156,38 +156,6 @@ class TestEMAUpdate(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Inline sparsity guard logic
-# ---------------------------------------------------------------------------
-class TestSparsityGuard(unittest.TestCase):
-
-    def _run_guard(self, max_group):
-        """Replicate the V3 sparsity guard logic from train.py."""
-        min_group_total = 1e-3
-        scale = 1.0
-        if max_group < min_group_total:
-            scale = float(min_group_total / max_group)
-        return scale
-
-    def test_no_scaling_above_threshold(self):
-        self.assertEqual(self._run_guard(0.01), 1.0)
-        self.assertEqual(self._run_guard(1e-3), 1.0)
-        self.assertEqual(self._run_guard(0.5), 1.0)
-
-    def test_scaling_below_threshold(self):
-        scale = self._run_guard(1e-4)
-        self.assertAlmostEqual(scale, 10.0, places=5)
-
-    def test_very_small_noise(self):
-        scale = self._run_guard(1e-7)
-        self.assertAlmostEqual(scale, 1e4, places=1)
-
-    def test_scale_brings_to_target(self):
-        max_group = 5e-5
-        scale = self._run_guard(max_group)
-        self.assertAlmostEqual(max_group * scale, 1e-3, places=8)
-
-
-# ---------------------------------------------------------------------------
 # SDR threshold gate
 # ---------------------------------------------------------------------------
 class TestSDRThresholdGate(unittest.TestCase):
