@@ -32,6 +32,161 @@ LDPC_DECODER_NAMES = ("Union-Find", "BP-only", "BP+LSD-0")
 DECODER_NAMES = ("No-op",) + LDPC_DECODER_NAMES + ("Uncorr-PM", "Corr-PM")
 
 
+def _build_cudaq_decoders(det_model):
+    """
+    Build GPU-accelerated cudaq-qec nv-qldpc-decoder instances from a Stim DEM.
+    Returns dict of {name: (decoder, L_dense)} mirroring _build_ldpc_decoders.
+
+    Decoder variants:
+      - "cudaq-BP":        sum-product BP (bp_method=0), no OSD
+      - "cudaq-MinSum":    min-sum BP (bp_method=1), no OSD
+      - "cudaq-BP+OSD-0":  sum-product BP + OSD order 0
+      - "cudaq-BP+OSD-7":  sum-product BP + OSD order 7
+      - "cudaq-MemBP":     min-sum+mem BP (bp_method=2, uniform gamma)
+      - "cudaq-MemBP+OSD": min-sum+mem BP + OSD order 7
+      - "cudaq-RelayBP":   sequential relay (composition=1, bp_method=3)
+    """
+    import cudaq_qec
+    import scipy.sparse as sp
+    from beliefmatching.belief_matching import detector_error_model_to_check_matrices
+
+    matrices = detector_error_model_to_check_matrices(det_model)
+    H_sparse = sp.csc_matrix(matrices.check_matrix)
+    L = matrices.observables_matrix
+    priors = np.array(matrices.priors, dtype=np.float64)
+    L_dense = np.asarray(L.toarray(), dtype=np.uint8)
+
+    # cudaq-qec expects a dense row-major (C-contiguous) H matrix (uint8)
+    H_dense = np.ascontiguousarray(H_sparse.toarray(), dtype=np.uint8)
+
+    # Per-edge priors clamped for numerical stability
+    priors_list = np.clip(priors, 1e-9, 1.0 - 1e-9).tolist()
+
+    # Enable num_iter reporting in opt_results for all decoders
+    opt_res = {"num_iter": True}
+
+    # max_iterations=50 for standard BP/MinSum/OSD
+    bp_kwargs = dict(max_iterations=50, error_rate_vec=priors_list, opt_results=opt_res)
+    # max_iterations=100 for MemBP and RelayBP (need more iterations to converge)
+    mem_kwargs = dict(max_iterations=100, error_rate_vec=priors_list, opt_results=opt_res)
+
+    decoders = {}
+
+    # --- Standard BP variants (max_iterations=10) ---
+    # Sum-product BP (no OSD)
+    decoders["cudaq-BP"] = (
+        cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=0, use_osd=0, **bp_kwargs),
+        L_dense,
+    )
+    # Min-sum BP (no OSD)
+    decoders["cudaq-MinSum"] = (
+        cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=1, use_osd=0, **bp_kwargs),
+        L_dense,
+    )
+    # Sum-product BP + OSD-0
+    decoders["cudaq-BP+OSD-0"] = (
+        cudaq_qec.get_decoder(
+            "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=0, **bp_kwargs
+        ),
+        L_dense,
+    )
+    # Sum-product BP + OSD-7
+    decoders["cudaq-BP+OSD-7"] = (
+        cudaq_qec.get_decoder(
+            "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=7, **bp_kwargs
+        ),
+        L_dense,
+    )
+
+    # --- Memory BP variants (max_iterations=100) ---
+    try:
+        decoders["cudaq-MemBP"] = (
+            cudaq_qec.get_decoder(
+                "nv-qldpc-decoder",
+                H_dense,
+                bp_method=2,
+                use_sparsity=True,
+                gamma0=0.5,
+                use_osd=0,
+                **mem_kwargs
+            ),
+            L_dense,
+        )
+        decoders["cudaq-MemBP+OSD"] = (
+            cudaq_qec.get_decoder(
+                "nv-qldpc-decoder",
+                H_dense,
+                bp_method=2,
+                use_sparsity=True,
+                gamma0=0.5,
+                use_osd=1,
+                osd_order=7,
+                **mem_kwargs
+            ),
+            L_dense,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"cudaq-qec MemBP unavailable: {e}")
+
+    # --- RelayBP (max_iterations=100) ---
+    # composition=1 (sequential relay), bp_method=3 (min-sum+dmem)
+    # gamma_dist=[-0.254, 0.985] optimized for surface codes
+    try:
+        srelay_cfg = {
+            "pre_iter": 10,
+            "num_sets": 5,
+            "stopping_criterion": "FirstConv",
+        }
+        # Note: opt_results num_iter not supported for composition=1 per docs
+        relay_kwargs = dict(max_iterations=100, error_rate_vec=priors_list)
+        decoders["cudaq-RelayBP"] = (
+            cudaq_qec.get_decoder(
+                "nv-qldpc-decoder",
+                H_dense,
+                composition=1,
+                bp_method=3,
+                use_sparsity=True,
+                gamma0=0.5,
+                gamma_dist=[-0.254, 0.985],
+                srelay_config=srelay_cfg,
+                **relay_kwargs
+            ),
+            L_dense,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"cudaq-qec RelayBP unavailable: {e}")
+
+    return decoders
+
+
+def _decode_cudaq_batch(decoder, L_dense, syndromes_np):
+    """
+    Decode a batch of syndromes with a cudaq-qec nv-qldpc-decoder (single-shot loop).
+    Returns (obs, stats) where:
+      - obs: observable predictions as np.ndarray of shape (B,)
+      - stats: dict with per-sample convergence flags, iteration counts
+    The decoder.decode() takes list[float] and returns DecoderResult with .result (list[float]).
+    """
+    B = syndromes_np.shape[0]
+    obs = np.zeros(B, dtype=np.uint8)
+    converged_flags = np.zeros(B, dtype=bool)
+    iter_counts = np.zeros(B, dtype=np.int32)
+    for i in range(B):
+        syndrome_list = syndromes_np[i].astype(np.float64).tolist()
+        result = decoder.decode(syndrome_list)
+        correction = np.array(result.result, dtype=np.uint8)
+        obs[i] = int((L_dense @ correction).item() %
+                     2) if L_dense.shape[0] == 1 else int((L_dense @ correction)[0] % 2)
+        converged_flags[i] = result.converged
+        # Collect iteration count if available via opt_results
+        opt = getattr(result, 'opt_results', None)
+        if opt and isinstance(opt, dict) and 'num_iter' in opt:
+            iter_counts[i] = opt['num_iter']
+    return obs, {"converged_flags": converged_flags, "iter_counts": iter_counts}
+
+
 def _build_ldpc_decoders(det_model):
     """
     Convert a Stim DetectorErrorModel to an H matrix and build ldpc decoders.
@@ -173,6 +328,16 @@ def decoder_ablation_study(model, device, dist, cfg):
     # Build ldpc decoders from the same DEM (with boundary detectors)
     ldpc_decoders = _build_ldpc_decoders(det_model)
 
+    # Build cudaq-qec GPU-accelerated decoders
+    cudaq_decoders = {}
+    try:
+        cudaq_decoders = _build_cudaq_decoders(det_model)
+        if dist.rank == 0:
+            print(f"[Decoder Ablation] cudaq-qec decoders loaded: {list(cudaq_decoders.keys())}")
+    except Exception as e:
+        if dist.rank == 0:
+            print(f"[Decoder Ablation] cudaq-qec decoders unavailable: {e}")
+
     # Stim baseline detectors and ground truth observables
     stim_dets = np.asarray(test_dataset.dets_and_obs[:, :-num_obs], dtype=np.uint8)
     assert stim_dets.shape[1] == det_model.num_detectors, \
@@ -218,9 +383,9 @@ def decoder_ablation_study(model, device, dist, cfg):
             f"[Decoder Ablation] DEM detectors: {det_model.num_detectors}"
             f" (incl. {num_boundary_dets} boundary)"
         )
+        cudaq_names_str = ", ".join(cudaq_decoders.keys()) if cudaq_decoders else "(none)"
         print(
-            f"[Decoder Ablation] Decoders: No-op, Union-Find, BP+LSD-0,"
-            f" Uncorr PM, Corr PM, + Baseline PM"
+            f"[Decoder Ablation] Decoders: No-op, Union-Find, BP+LSD-0, Uncorr PM, Corr PM, {cudaq_names_str}, + Baseline PM"
         )
 
     batch_size = int(getattr(cfg.test.dataloader, "batch_size", 2048))
@@ -228,6 +393,10 @@ def decoder_ablation_study(model, device, dist, cfg):
     num_batches = (N + batch_size - 1) // batch_size
 
     decoder_names = list(DECODER_NAMES)
+    # Append cudaq decoder names dynamically
+    cudaq_decoder_names = sorted(cudaq_decoders.keys())
+    decoder_names.extend(cudaq_decoder_names)
+
     total_scanned = 0
     baseline_errors = 0
     decoder_errors = {name: 0 for name in decoder_names}
@@ -247,6 +416,10 @@ def decoder_ablation_study(model, device, dist, cfg):
         "corr_pm": 0.0,
         "bookkeeping": 0.0,
     }
+    _cudaq_stats = {}
+    for cn in cudaq_decoder_names:
+        _timing[f"{cn}_decode"] = 0.0
+        _cudaq_stats[cn] = {"converged_flags": [], "iter_counts": [], "error_flags": []}
 
     for batch_idx in range(num_batches):
         start = batch_idx * batch_size
@@ -401,6 +574,23 @@ def decoder_ablation_study(model, device, dist, cfg):
         corr_final = (pre_L_np + corr_pred) % 2
         _timing["corr_pm"] += _time.perf_counter() - _t0
 
+        # 7. cudaq-qec GPU-accelerated decoders
+        cudaq_finals = {}
+        for cn in cudaq_decoder_names:
+            _t0 = _time.perf_counter()
+            cdec, cL = cudaq_decoders[cn]
+            c_obs, c_stats = _decode_cudaq_batch(cdec, cL, residual_np)
+            c_final = (pre_L_np + c_obs) % 2
+            cudaq_finals[cn] = c_final
+            _timing[f"{cn}_decode"] += _time.perf_counter() - _t0
+            # Accumulate per-sample convergence, iteration, and error stats
+            conv_flags = c_stats["converged_flags"]
+            iters = c_stats["iter_counts"]
+            fails = (c_final != gt_obs_np)
+            _cudaq_stats[cn]["converged_flags"].append(conv_flags)
+            _cudaq_stats[cn]["iter_counts"].append(iters)
+            _cudaq_stats[cn]["error_flags"].append(fails)
+
         _t0 = _time.perf_counter()
         all_finals = {
             DECODER_NAMES[0]: noop_final,
@@ -410,6 +600,7 @@ def decoder_ablation_study(model, device, dist, cfg):
             DECODER_NAMES[4]: uncorr_final,
             DECODER_NAMES[5]: corr_final,
         }
+        all_finals.update(cudaq_finals)
 
         for name in decoder_names:
             fails = all_finals[name] != gt_obs_np
@@ -468,6 +659,61 @@ def decoder_ablation_study(model, device, dist, cfg):
         for name in decoder_names:
             ler = decoder_errors[name] / max(1, total_scanned)
             print(f"  {name:<25s}  LER = {ler:.6f}  ({decoder_errors[name]} errors)")
+
+        # cudaq decoder convergence and iteration stats
+        if _cudaq_stats:
+            print(f"\n--- cudaq-qec BP Convergence & Iteration Breakdown ---")
+            print(
+                f"  {'Decoder':<20s} {'Conv%':>7s} {'AvgIt':>6s} "
+                f"{'Conv.It':>8s} {'Conv.LER':>9s} {'Conv.Err':>9s} "
+                f"{'!Conv.It':>8s} {'!Conv.LER':>10s} {'!Conv.Err':>10s}"
+            )
+            for cn in cudaq_decoder_names:
+                st = _cudaq_stats[cn]
+                conv_all = np.concatenate(st["converged_flags"])
+                iters_all = np.concatenate(st["iter_counts"])
+                errs_all = np.concatenate(st["error_flags"])
+                N = len(conv_all)
+                n_conv = int(conv_all.sum())
+                n_noconv = N - n_conv
+                conv_pct = n_conv / max(1, N) * 100
+                has_iters = iters_all.sum() > 0
+
+                # Converged subset
+                if n_conv > 0 and has_iters:
+                    conv_avg_it = iters_all[conv_all].mean()
+                    conv_ler = errs_all[conv_all].mean()
+                    conv_errs = int(errs_all[conv_all].sum())
+                else:
+                    conv_avg_it = conv_ler = 0.0
+                    conv_errs = 0
+
+                # Non-converged subset
+                if n_noconv > 0 and has_iters:
+                    noconv_avg_it = iters_all[~conv_all].mean()
+                    noconv_ler = errs_all[~conv_all].mean()
+                    noconv_errs = int(errs_all[~conv_all].sum())
+                else:
+                    noconv_avg_it = noconv_ler = 0.0
+                    noconv_errs = 0
+
+                if has_iters:
+                    avg_it_str = f"{iters_all.mean():5.1f}"
+                    conv_it_str = f"{conv_avg_it:7.1f}"
+                    noconv_it_str = f"{noconv_avg_it:7.1f}" if n_noconv > 0 else "    N/A"
+                else:
+                    avg_it_str = "  N/A"
+                    conv_it_str = "    N/A"
+                    noconv_it_str = "    N/A"
+
+                noconv_ler_str = f"{noconv_ler:9.6f}" if n_noconv > 0 else "      N/A"
+                noconv_err_str = f"{noconv_errs:>9d}" if n_noconv > 0 else "      N/A"
+
+                print(
+                    f"  {cn:<20s} {conv_pct:>6.1f}% {avg_it_str} "
+                    f"{conv_it_str} {conv_ler:>9.6f} {conv_errs:>9d} "
+                    f"{noconv_it_str} {noconv_ler_str} {noconv_err_str}"
+                )
 
         agreement_rate = n_all_agree / max(1, total_scanned)
         print(f"\n--- Decoder Agreement ---")
@@ -570,9 +816,13 @@ def _plot_conditional_ler(weight_bucket_stats, decoder_names, basis, cfg):
     buckets = sorted(weight_bucket_stats.keys())
     labels = [f"{w}+" if w == 7 else str(w) for w in buckets]
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    colors = ["#999999", "#E24A33", "#348ABD", "#FBC15E", "#8EBA42"]
-    markers = ["x", "s", "D", "^", "o"]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    colors = [
+        "#999999", "#E24A33", "#348ABD", "#FBC15E", "#8EBA42", "#988ED5", "#777B7E", "#76B900",
+        "#FF6F61", "#2CA02C", "#D62728", "#9467BD", "#17BECF"
+    ]
+    markers = ["x", "s", "D", "^", "o", "v", "P", "*", "h", "d", "<", ">", "X"]
+
     for idx, name in enumerate(decoder_names):
         lers = []
         x_pos = []
