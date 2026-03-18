@@ -81,10 +81,16 @@ def run_surface(cfg: DictConfig):
         train_loader, _ = DatapipeFactory.create_dataloader(cfg, dist.world_size, dist.rank)
         for j, dl in enumerate(train_loader):
             print(f"Batch {j}: syndrome_shape: {dl['syndrome'].shape}")
+    elif cfg.workflow.task == "decoder_ablation":
+        from evaluation.failure_analysis import decoder_ablation_study
+        DistributedManager.initialize()
+        dist = DistributedManager()
+        model = _load_model(cfg, dist)
+        decoder_ablation_study(model, dist.device, dist, cfg)
     elif cfg.workflow.task in ("sampling", "visualize"):
         raise ValueError(
             f"workflow.task={cfg.workflow.task!r} is not supported in the early-access public release. "
-            "Supported workflows: train, inference."
+            "Supported workflows: train, inference, decoder_ablation."
         )
 
 
