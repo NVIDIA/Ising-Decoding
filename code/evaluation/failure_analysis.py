@@ -56,7 +56,9 @@ def _build_ldpc_decoders(det_model):
     decoders = {}
     decoders[_uf] = (UnionFindDecoder(H, uf_method="peeling"), L_dense)
     decoders[_bp] = (
-        BpDecoder(H, error_channel=priors, bp_method="product_sum", max_iter=10, schedule="parallel"),
+        BpDecoder(
+            H, error_channel=priors, bp_method="product_sum", max_iter=10, schedule="parallel"
+        ),
         L_dense,
     )
     decoders[_bplsd] = (
@@ -84,9 +86,8 @@ def _decode_ldpc_batch(decoder, L_dense, syndromes_np):
     for i in range(B):
         correction = decoder.decode(syndromes_np[i])
         obs[i] = (
-            int((L_dense @ correction).item() % 2)
-            if L_dense.shape[0] == 1
-            else int((L_dense @ correction)[0] % 2)
+            int((L_dense @ correction).item() %
+                2) if L_dense.shape[0] == 1 else int((L_dense @ correction)[0] % 2)
         )
     return obs
 
@@ -155,10 +156,16 @@ def decoder_ablation_study(model, device, dist, cfg):
     assert num_obs == 1
 
     # DEM and matchers from Stim circuit (includes boundary detectors)
-    det_model = circuit.detector_error_model(decompose_errors=True, approximate_disjoint_errors=True)
+    det_model = circuit.detector_error_model(
+        decompose_errors=True, approximate_disjoint_errors=True
+    )
     if _PYMATCHING_SUPPORTS_CORRELATIONS:
-        matcher_corr = pymatching.Matching.from_detector_error_model(det_model, enable_correlations=True)
-        matcher_uncorr = pymatching.Matching.from_detector_error_model(det_model, enable_correlations=False)
+        matcher_corr = pymatching.Matching.from_detector_error_model(
+            det_model, enable_correlations=True
+        )
+        matcher_uncorr = pymatching.Matching.from_detector_error_model(
+            det_model, enable_correlations=False
+        )
     else:
         matcher_corr = pymatching.Matching.from_detector_error_model(det_model)
         matcher_uncorr = matcher_corr
@@ -249,8 +256,10 @@ def decoder_ablation_study(model, device, dist, cfg):
         # Collate batch from dataset items
         _t0 = _time.perf_counter()
         items = [test_dataset[i] for i in range(start, end)]
-        x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]).to(device=device, dtype=torch.int32)
-        z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]).to(device=device, dtype=torch.int32)
+        x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]
+                                ).to(device=device, dtype=torch.int32)
+        z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]
+                                ).to(device=device, dtype=torch.int32)
         trainX = torch.stack([it["trainX"] for it in items]).to(device=device)
         _timing["collate"] += _time.perf_counter() - _t0
 
@@ -312,13 +321,11 @@ def decoder_ablation_study(model, device, dist, cfg):
 
         # Logical frame from data corrections
         if basis == "X":
-            pre_L_t = torch.einsum(
-                "ld,bdt->blt", Lx.to(torch.float32), z_flat.to(torch.float32)
-            ).remainder_(2).to(torch.int32)
+            pre_L_t = torch.einsum("ld,bdt->blt", Lx.to(torch.float32),
+                                   z_flat.to(torch.float32)).remainder_(2).to(torch.int32)
         else:
-            pre_L_t = torch.einsum(
-                "ld,bdt->blt", Lz.to(torch.float32), x_flat.to(torch.float32)
-            ).remainder_(2).to(torch.int32)
+            pre_L_t = torch.einsum("ld,bdt->blt", Lz.to(torch.float32),
+                                   x_flat.to(torch.float32)).remainder_(2).to(torch.int32)
         pre_L = pre_L_t.sum(dim=2).remainder_(2).view(-1)
 
         # Build residual detectors (matching logical_error_rate.py exactly)
@@ -508,9 +515,7 @@ def decoder_ablation_study(model, device, dist, cfg):
             "residual_weights": all_residual_weights,
             "weight_bucket_stats": weight_bucket_stats,
             "agreement_count": n_all_agree,
-        }
-        if dist.rank == 0
-        else {}
+        } if dist.rank == 0 else {}
     )
 
 
@@ -538,8 +543,15 @@ def _plot_residual_weight_histogram(weights, basis, cfg):
     n_zero = int((weights_arr == 0).sum())
     pct_zero = n_zero / max(1, len(weights_arr)) * 100
     ax.axvline(x=0, color="red", linestyle="--", alpha=0.5)
-    ax.text(0.5, 0.95, f"Weight-0: {pct_zero:.1f}%", transform=ax.transAxes,
-            fontsize=11, verticalalignment="top", color="red")
+    ax.text(
+        0.5,
+        0.95,
+        f"Weight-0: {pct_zero:.1f}%",
+        transform=ax.transAxes,
+        fontsize=11,
+        verticalalignment="top",
+        color="red"
+    )
     plt.tight_layout()
     output_dir = os.path.join(cfg.output, "plots")
     os.makedirs(output_dir, exist_ok=True)
