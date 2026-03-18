@@ -198,20 +198,23 @@ class TestDecoderAblationStudy(unittest.TestCase):
         from evaluation.failure_analysis import decoder_ablation_study
         real_ds = self._build_datapipe(basis)
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(tmpdir, distance=self._D, n_rounds=self._T, basis=basis,
-                            n_samples=self._N)
+            cfg = _make_cfg(
+                tmpdir, distance=self._D, n_rounds=self._T, basis=basis, n_samples=self._N
+            )
             with patch("data.factory.DatapipeFactory") as mock_factory:
                 mock_factory.create_datapipe_inference.return_value = real_ds
-                result = decoder_ablation_study(
-                    _ZeroModel(), _FakeDist.device, _FakeDist(), cfg
-                )
+                result = decoder_ablation_study(_ZeroModel(), _FakeDist.device, _FakeDist(), cfg)
         return result
 
     def test_return_keys_present(self):
         result = self._run("X")
         for key in (
-            "total_samples", "baseline_errors", "decoder_errors",
-            "residual_weights", "weight_bucket_stats", "agreement_count",
+            "total_samples",
+            "baseline_errors",
+            "decoder_errors",
+            "residual_weights",
+            "weight_bucket_stats",
+            "agreement_count",
         ):
             self.assertIn(key, result, f"Missing key in result: {key}")
 
