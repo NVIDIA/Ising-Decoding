@@ -14,3 +14,7 @@
 -r requirements_public_inference.txt
 tensorboard
 torchinfo
+# decoder_ablation workflow
+scipy
+ldpc
+beliefmatching
