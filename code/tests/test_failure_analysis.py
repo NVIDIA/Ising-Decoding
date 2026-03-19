@@ -21,15 +21,9 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-try:
-    import ldpc
-    import beliefmatching
-    import scipy
-    _HAS_LDPC_DEPS = True
-except ImportError:
-    _HAS_LDPC_DEPS = False
-
-_skip_ldpc = unittest.skipUnless(_HAS_LDPC_DEPS, "ldpc/beliefmatching/scipy not installed")
+import ldpc
+import beliefmatching
+import scipy
 
 
 def _make_tiny_dem(distance=3, n_rounds=3, basis="X", code_rotation="XV"):
@@ -95,7 +89,6 @@ class _DummyDist:
     device = torch.device("cpu")
 
 
-@_skip_ldpc
 class TestBuildLdpcDecoders(unittest.TestCase):
     """_build_ldpc_decoders must return correctly keyed decoder objects with consistent shapes."""
 
@@ -124,7 +117,6 @@ class TestBuildLdpcDecoders(unittest.TestCase):
         self.assertEqual(len(set(widths)), 1, "All L_dense must have the same column count")
 
 
-@_skip_ldpc
 class TestDecodeLdpcBatch(unittest.TestCase):
     """_decode_ldpc_batch must return correct shape/dtype; zero syndrome decodes to 0."""
 
@@ -171,7 +163,6 @@ class TestDecodeLdpcBatch(unittest.TestCase):
                 )
 
 
-@_skip_ldpc
 class TestDecoderAblationStudy(unittest.TestCase):
     """
     Smoke test: decoder_ablation_study must complete, return expected keys,
@@ -266,7 +257,6 @@ class _DummyCudaqDecoder:
         return _DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64))
 
 
-@_skip_ldpc
 class TestDecodeCudaqBatch(unittest.TestCase):
     """_decode_cudaq_batch must return correct shape/dtype and collect stats"""
 
@@ -334,7 +324,6 @@ class TestDecodeCudaqBatch(unittest.TestCase):
         self.assertTrue(np.all((obs == 0) | (obs == 1)))
 
 
-@_skip_ldpc
 class TestBuildCudaqDecoders(unittest.TestCase):
     """_build_cudaq_decoders must return correctly keyed entries when cudaq_qec is available"""
 
@@ -401,7 +390,6 @@ class TestBuildCudaqDecoders(unittest.TestCase):
             self.assertIn(name, decoders)
 
 
-@_skip_ldpc
 class TestDecoderAblationStudyWithCudaq(unittest.TestCase):
     """
     Smoke test: decoder_ablation_study must include cudaq decoder keys in results
