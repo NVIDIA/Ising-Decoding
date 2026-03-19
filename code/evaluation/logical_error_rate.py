@@ -15,6 +15,7 @@ import torch.nn as nn
 import sys
 import os
 from enum import IntEnum
+from pathlib import Path
 from typing import Optional
 
 
@@ -1074,7 +1075,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                             mq.quantize(
                                 onnx_path=fp32_onnx_path,
                                 quantize_mode=quant_format,
-                                calibration_data={"dets": calib_dets},
+                                calibration_data={"dets": calib_dets.astype("float32")},
                                 output_path=onnx_path,
                                 **quant_kwargs,
                             )
@@ -1101,7 +1102,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         if dist.world_size > 1:
             torch.distributed.barrier()
         # Re-derive engine_path from the final onnx_path (may have changed on quant fallback)
-        engine_path = onnx_path.replace(".onnx", ".engine")
+        engine_path = str(Path(onnx_path).with_suffix(".engine"))
         if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
             try:
                 import tensorrt as trt

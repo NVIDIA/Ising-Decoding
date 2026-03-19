@@ -296,7 +296,6 @@ class TestModeloptQuantize(unittest.TestCase):
     that the import succeeds.
     """
 
-    @unittest.skipUnless(_HAS_MODELOPT, "nvidia-modelopt not installed")
     def _build_tiny_model(self):
         """Return (fp32_path, calib_dets) for a minimal Gemm ONNX model."""
         import tempfile

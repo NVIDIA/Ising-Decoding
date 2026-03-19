@@ -144,7 +144,7 @@ inference with `local_run.sh`:
 | `ONNX_WORKFLOW` | Behavior |
 |---|---|
 | `0` (default) | PyTorch inference only, no ONNX export |
-| `1` | Export ONNX model and stop |
+| `1` | Export ONNX model and run inference with PyTorch |
 | `2` | Export ONNX model and run inference via TensorRT |
 | `3` | Load a pre-existing TensorRT engine file and run inference |
 
