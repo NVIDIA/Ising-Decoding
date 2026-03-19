@@ -8,8 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
-import inspect
-
 import pymatching
 import numpy as np
 import torch
@@ -19,17 +17,8 @@ import os
 from enum import IntEnum
 from typing import Optional
 
-_PYMATCHING_SUPPORTS_CORRELATIONS = "enable_correlations" in inspect.signature(
-    pymatching.Matching.from_detector_error_model
-).parameters
-
-
 def _decode_batch(matcher, detectors, enable_correlated):
-    """Wrapper for decode_batch that handles older pymatching versions."""
-    if _PYMATCHING_SUPPORTS_CORRELATIONS:
-        return matcher.decode_batch(detectors, enable_correlations=enable_correlated)
-    else:
-        return matcher.decode_batch(detectors)
+    return matcher.decode_batch(detectors, enable_correlations=enable_correlated)
 
 
 class OnnxWorkflow(IntEnum):

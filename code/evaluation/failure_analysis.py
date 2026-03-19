@@ -20,7 +20,6 @@ import torch
 from evaluation.logical_error_rate import (
     _build_stab_maps,
     _decode_batch,
-    _PYMATCHING_SUPPORTS_CORRELATIONS,
     map_grid_to_stabilizer_tensor,
     sample_predictions,
 )
@@ -314,16 +313,12 @@ def decoder_ablation_study(model, device, dist, cfg):
     det_model = circuit.detector_error_model(
         decompose_errors=True, approximate_disjoint_errors=True
     )
-    if _PYMATCHING_SUPPORTS_CORRELATIONS:
-        matcher_corr = pymatching.Matching.from_detector_error_model(
-            det_model, enable_correlations=True
-        )
-        matcher_uncorr = pymatching.Matching.from_detector_error_model(
-            det_model, enable_correlations=False
-        )
-    else:
-        matcher_corr = pymatching.Matching.from_detector_error_model(det_model)
-        matcher_uncorr = matcher_corr
+    matcher_corr = pymatching.Matching.from_detector_error_model(
+        det_model, enable_correlations=True
+    )
+    matcher_uncorr = pymatching.Matching.from_detector_error_model(
+        det_model, enable_correlations=False
+    )
 
     # Build ldpc decoders from the same DEM (with boundary detectors)
     ldpc_decoders = _build_ldpc_decoders(det_model)
