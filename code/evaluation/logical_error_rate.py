@@ -816,10 +816,9 @@ def run_inference_and_decode_pre_decoder_memory(
             print(f"[LER] channels_last_3d not applied: {e}")
 
     _applied_compile = False
-    if not _will_export_onnx:
-    _applied_compile = False
     _compile_enabled = _get_env_bool("PREDECODER_TORCH_COMPILE", True)
     if not _will_export_onnx and _compile_enabled:
+        try:
             model = torch.compile(model, mode="reduce-overhead")
             _applied_compile = True
         except Exception as e:
@@ -832,7 +831,7 @@ def run_inference_and_decode_pre_decoder_memory(
         print(
             f"[LER Config] inference={'inline' if use_inline_inference else 'legacy'}"
             f" | ONNX_WORKFLOW={_onnx_label}"
-            f" | torch.compile={'on' if _applied_compile else ('skipped(ONNX)' if _will_export_onnx else 'off')}"
+            f" | torch.compile={'on' if _applied_compile else ('skipped(ONNX)' if _will_export_onnx else ('off(env)' if not _compile_enabled else 'off'))}"
             f" | channels_last_3d={'on' if _applied_channels_last else 'off'}"
             f" | prefetcher={'on' if device.type == 'cuda' else 'off(cpu)'}"
             f" | timing={'on' if enable_timing_instrumentation else 'off'}"
