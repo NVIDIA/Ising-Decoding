@@ -82,6 +82,11 @@ def _collect_calibration_dets(
     Returns:
         np.ndarray of shape (target_samples, expected_width), dtype uint8.
     """
+    if num_obs < 1:
+        raise ValueError(
+            f"num_obs must be >= 1, got {num_obs}. "
+            "dets_and_obs[:, :-0] would silently return an empty tensor."
+        )
     target_samples = max(int(target_samples), 1)
     chunks = []
     collected = 0
