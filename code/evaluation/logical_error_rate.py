@@ -17,6 +17,7 @@ import os
 from enum import IntEnum
 from typing import Optional
 
+
 def _decode_batch(matcher, detectors, enable_correlated):
     return matcher.decode_batch(detectors, enable_correlations=enable_correlated)
 
