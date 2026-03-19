@@ -396,6 +396,7 @@ def decoder_ablation_study(model, device, dist, cfg):
     baseline_errors = 0
     decoder_errors = {name: 0 for name in decoder_names}
     all_residual_weights = []
+    all_baseline_weights = []
     weight_bucket_stats = {}
     n_all_agree = 0
 
@@ -438,6 +439,7 @@ def decoder_ablation_study(model, device, dist, cfg):
         # --- Baseline: Stim detectors (with boundary dets), Stim ground truth ---
         baseline_detectors_batch = stim_dets[start:end]
         gt_obs_batch = stim_obs[start:end]
+        all_baseline_weights.extend(baseline_detectors_batch.sum(axis=1).tolist())
 
         _t0 = _time.perf_counter()
         baseline_pred_obs = _decode_batch(matcher_corr, baseline_detectors_batch, True)
@@ -754,6 +756,7 @@ def decoder_ablation_study(model, device, dist, cfg):
             "baseline_errors": baseline_errors,
             "decoder_errors": decoder_errors,
             "residual_weights": all_residual_weights,
+            "baseline_weights": all_baseline_weights,
             "weight_bucket_stats": weight_bucket_stats,
             "agreement_count": n_all_agree,
         } if dist.rank == 0 else {}

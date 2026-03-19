@@ -232,6 +232,25 @@ class TestDecoderAblationStudy(unittest.TestCase):
         self.assertGreaterEqual(result["agreement_count"], 0)
         self.assertLessEqual(result["agreement_count"], result["total_samples"])
 
+    def test_predecoder_changes_residual_syndromes(self):
+        """
+        Residual syndromes must differ from the baseline Stim syndromes when the
+        pre-decoder applies non-trivial corrections.
+        """
+        result = self._run("X")
+        self.assertIn("baseline_weights", result)
+        self.assertIn("residual_weights", result)
+
+        self.assertEqual(len(result["baseline_weights"]), result["total_samples"])
+        self.assertEqual(len(result["residual_weights"]), result["total_samples"])
+
+        self.assertNotEqual(
+            result["residual_weights"],
+            result["baseline_weights"],
+            "Pre-decoder with all-ones corrections produced identical residual "
+            "and baseline syndrome weights - transformation is likely a no-op.",
+        )
+
     def test_z_basis_runs_and_returns_correct_structure(self):
         result = self._run("Z")
         self.assertEqual(result["total_samples"], self._N)
