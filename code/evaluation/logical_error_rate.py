@@ -51,6 +51,20 @@ def _detect_shm_bytes() -> Optional[int]:
         return None
 
 
+def _parse_quant_format(rank: int = 0) -> str:
+    """Read and validate the QUANT_FORMAT environment variable.
+
+    Returns the validated format string ('int8' or 'fp8'), or '' if unset or invalid.
+    Prints a warning on rank 0 when the value is set but not recognised.
+    """
+    quant_format = os.environ.get("QUANT_FORMAT", "").strip().lower()
+    if quant_format and quant_format not in ("int8", "fp8"):
+        if rank == 0:
+            print(f"[LER] Invalid QUANT_FORMAT='{quant_format}', ignoring. Supported: int8, fp8")
+        quant_format = ""
+    return quant_format
+
+
 def _collect_calibration_dets(
     test_dataloader,
     num_obs: int,
@@ -965,11 +979,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
     trt_context = None  # (context, engine, device_id) when using TensorRT
     # --- QUANT_FORMAT: optional quantization (int8, fp8) applied to ONNX after FP32 export ---
-    quant_format = os.environ.get("QUANT_FORMAT", "").strip().lower()
-    if quant_format and quant_format not in ("int8", "fp8"):
-        if dist.rank == 0:
-            print(f"[LER] Invalid QUANT_FORMAT='{quant_format}', ignoring. Supported: int8, fp8")
-        quant_format = ""
+    quant_format = _parse_quant_format(rank=dist.rank)
     quant_suffix = f"_{quant_format}" if quant_format else ""
     onnx_path = os.path.join(
         os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}{quant_suffix}.onnx"

@@ -24,7 +24,11 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-from evaluation.logical_error_rate import _collect_calibration_dets, _ort_quantize_int8
+from evaluation.logical_error_rate import (
+    _collect_calibration_dets,
+    _ort_quantize_int8,
+    _parse_quant_format,
+)
 
 
 def _make_fake_dataloader(num_batches: int, batch_size: int, num_dets: int, num_obs: int):
@@ -100,13 +104,9 @@ class TestQuantFormatParsing(unittest.TestCase):
     """Test QUANT_FORMAT env var parsing and routing logic (no GPU, no modelopt needed)."""
 
     def _run_quant_block(self, quant_format_env: str, mock_mq=None, mock_export=None):
-        """Simulate the QUANT_FORMAT parsing + routing logic extracted from LER."""
+        """Invoke the real _parse_quant_format() from LER under a controlled env."""
         with patch.dict(os.environ, {"QUANT_FORMAT": quant_format_env}):
-            quant_format = os.environ.get("QUANT_FORMAT", "").strip().lower()
-            valid = ("int8", "fp8")
-            if quant_format and quant_format not in valid:
-                quant_format = ""
-            return quant_format
+            return _parse_quant_format(rank=0)
 
     def test_invalid_quant_format_ignored(self):
         result = self._run_quant_block("bad_format")
