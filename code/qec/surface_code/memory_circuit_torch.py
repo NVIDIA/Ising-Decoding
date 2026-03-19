@@ -245,7 +245,10 @@ class MemoryCircuitTorch:
           data generation, HE, format, and total.
         """
         if self._compile_thread is not None:
-            self._compile_thread.join()
+            # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
+            self._compile_thread.join(timeout=1200)
+            if self._compile_thread.is_alive():
+                raise RuntimeError("warmup_he_compile thread did not finish within 20 min")
             self._compile_thread = None
 
         if collect_timing:

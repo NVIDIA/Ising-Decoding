@@ -197,7 +197,10 @@ class QCDataGeneratorTorch:
     def generate_batch(self, step, batch_size):
         if self._early_compile_threads:
             for t in self._early_compile_threads:
-                t.join()
+                # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
+                t.join(timeout=1200)
+                if t.is_alive():
+                    raise RuntimeError("warmup_he_compile thread did not finish within 20 min")
             self._early_compile_threads.clear()
 
         if self._mixed:

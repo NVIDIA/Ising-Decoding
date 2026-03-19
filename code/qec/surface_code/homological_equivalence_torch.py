@@ -36,6 +36,7 @@ Performance strategy
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -338,6 +339,17 @@ def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tenso
     cfg_i8 = cfg.to(torch.int8)
     support_masks_i8 = cache.support_masks.to(torch.int8)  # (S, D2)
     support_sizes = cache.support_sizes  # (S,)
+
+    # Int8 matmul is ~2x faster than float32 on GPU, but has two failure modes:
+    #  1) RuntimeError on backends that don't support int8 GEMM (older PyTorch,
+    #     certain devices, or torch.compile Triton failures).
+    #  2) Silent overflow when the accumulation dimension D2 >= 128 (distance >= 12),
+    #     since int8 accumulators wrap at [-128, 127].
+    # The try/except below catches case (1) and falls back to float32 for the
+    # rest of the call.  Case (2) is safe here because error_counts values are
+    # at most 4 (stabilizer support size) and act1/act2 are bool→int8 with at
+    # most L ones, so intermediate sums stay well within int8 range as long as
+    # L < 128 (true for practical surface code distances).
     _use_int8 = True
 
     for layer_idx in cache.layers:
@@ -354,7 +366,12 @@ def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tenso
                 set_to_zero_mask = ((act1.to(torch.int8) @ masks_i8).to(torch.int32) > 0)
                 flip_mask = ((act2.to(torch.int8) @ masks_i8).to(torch.int32)
                              > 0) & (~set_to_zero_mask)
-            except RuntimeError:
+            except RuntimeError as exc:
+                warnings.warn(
+                    f"Int8 GEMM failed, falling back to float32 for weight reduction: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
                 _use_int8 = False
                 masks_f = cache.support_masks.to(torch.float32).index_select(0, layer_idx)
                 error_counts = (cfg.to(torch.float32) @ masks_f.t()).to(torch.int32)
