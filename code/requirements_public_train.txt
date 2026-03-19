@@ -14,3 +14,10 @@
 -r requirements_public_inference.txt
 tensorboard
 torchinfo
+# ONNX quantization (INT8/FP8 via QUANT_FORMAT).
+# nvidia-modelopt[onnx] officially caps at Python <3.13 but works on 3.13 in practice.
+# check_python_compat.sh installs it with --ignore-requires-python on Python 3.13+.
+# For manual installs on Python 3.13+: pip install nvidia-modelopt[onnx] --ignore-requires-python
+# onnxruntime is the INT8-only fallback when modelopt is not importable.
+nvidia-modelopt[onnx]; python_version < "3.13"
+onnxruntime; python_version >= "3.13"

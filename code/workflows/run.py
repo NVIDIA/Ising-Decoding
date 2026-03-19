@@ -108,29 +108,60 @@ def find_best_model(path, *, rank: int = 0):
                 max_value = value
                 best_file = filename
         except (IndexError, ValueError) as e:
-            print(f"⚠️  Warning: Could not parse epoch from filename {filename}: {e}")
+            print(f"Warning: could not parse epoch from filename {filename}: {e}")
             continue
 
     if rank == 0:
-        print(f"📊 Found {len(model_files)} model files:")
+        print(f"Found {len(model_files)} model files:")
         for filename, epoch in sorted(model_files, key=lambda x: x[1]):
-            marker = "👑" if filename == best_file else "  "
-            print(f"  {marker} {filename} (epoch {epoch})")
+            marker = "*" if filename == best_file else " "
+            print(f"  [{marker}] {filename} (epoch {epoch})")
 
     if best_file is None:
-        raise FileNotFoundError(f"❌ No valid PreDecoderModelMemory files found in {path}")
+        raise FileNotFoundError(f"No valid PreDecoderModelMemory files found in {path}")
 
-    best_model_path = path + "/" + best_file
+    best_model_path = os.path.join(path, best_file)
     if rank == 0:
-        print(f"✅ Selected best model: {best_file} (epoch {max_value})")
-        print(f"📁 Full path: {best_model_path}")
+        print(f"Selected best model: {best_file} (epoch {max_value})")
 
     return best_model_path
 
 
+def _resolve_dir(path: str) -> str:
+    """Return an absolute version of path, resolving relative paths from the repo root."""
+    if os.path.isabs(path):
+        return path
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(repo_root, path)
+
+
+def _load_state_dict_from_pt(model_path: str, device) -> dict:
+    """Load a state dict from a .pt checkpoint, handling multiple saved formats.
+
+    Supports:
+    - bare state dict (keys are layer names)
+    - {"model_state_dict": ...}
+    - {"state_dict": ...}
+    Also strips the DDP "module." prefix if present.
+    """
+    raw = torch.load(model_path, map_location=device, weights_only=False)
+    if isinstance(raw, dict):
+        if "model_state_dict" in raw:
+            state_dict = raw["model_state_dict"]
+        elif "state_dict" in raw:
+            state_dict = raw["state_dict"]
+        else:
+            state_dict = raw
+    else:
+        raise ValueError(f"Unexpected checkpoint format: expected a dict, got {type(raw).__name__}")
+    return {
+        (k[len("module."):] if k.startswith("module.") else k): v for k, v in state_dict.items()
+    }
+
+
 def _load_model(cfg, dist):
     if dist.rank == 0:
-        print(f"🚀 Loading model for task: {cfg.workflow.task}")
+        print(f"Loading model for task: {cfg.workflow.task}")
 
     _ensure_inference_io_channels(cfg)
 
@@ -147,7 +178,6 @@ def _load_model(cfg, dist):
             model_id=None,
             device=str(dist.device),
         )
-        model = torch.compile(model, disable=True)
         if dist.rank == 0:
             loaded_model_id = metadata.get("model_id", "unknown")
             dtype = metadata.get("quant_format", "fp32")
@@ -156,15 +186,15 @@ def _load_model(cfg, dist):
             print(f"  model_id: {loaded_model_id} (from SafeTensors metadata)")
             print(f"  receptive_field: {receptive_field}")
             print(f"  dtype: {dtype}")
-            print(f"  Model parameters: {param_count:,}")
+            print(f"  parameters: {param_count:,}")
 
             # Warn if config model_id doesn't match file metadata
             config_model_id = getattr(cfg, "model_id", None)
             if config_model_id is not None and str(config_model_id) != str(loaded_model_id):
                 print(
-                    f"  Warning: config model_id={config_model_id} differs from file model_id={loaded_model_id}"
+                    f"  Warning: config model_id={config_model_id} differs from "
+                    f"file model_id={loaded_model_id}; using {loaded_model_id}"
                 )
-                print(f"  Using model_id={loaded_model_id} from SafeTensors file")
 
         if metadata.get("quant_format") == "fp16":
             cfg.enable_fp16 = True
@@ -172,77 +202,43 @@ def _load_model(cfg, dist):
 
     model = ModelFactory.create_model(cfg).to(dist.device)
 
-    if dist.rank == 0:
-        print(f"Model architecture created and moved to device: {dist.device}")
-
-    # Convert model to fp16 if enabled (consistent with training)
     if cfg.enable_fp16:
         model = model.half()
         if dist.rank == 0:
-            print(f"Model converted to float16 for fp16 inference")
-
-    model = torch.compile(model, disable=True)
-
-    if dist.rank == 0:
-        print(f"Model compilation disabled (for compatibility)")
+            print("Model converted to float16 for fp16 inference")
 
     # Determine model directory
     # Priority: 1) model_checkpoint_dir (for inference configs)
     #           2) cfg.output/models (for training configs)
     model_checkpoint_dir = getattr(cfg, 'model_checkpoint_dir', None)
-
-    # Determine which model to load based on use_model_checkpoint
     use_checkpoint = getattr(cfg.test, 'use_model_checkpoint', -1)
 
     if use_checkpoint == -1:
-        # Load best model from best_model folder
-        if model_checkpoint_dir:
-            model_dir = os.path.join(model_checkpoint_dir, "best_model")
-        else:
-            model_dir = f"{cfg.output}/models/best_model"
-
+        model_dir = _resolve_dir(
+            os.path.join(model_checkpoint_dir, "best_model")
+            if model_checkpoint_dir else f"{cfg.output}/models/best_model"
+        )
         if dist.rank == 0:
-            print(f"📂 Loading best model (use_model_checkpoint=-1)")
+            print(f"Loading best model from: {model_dir}")
 
-        # If model_dir is relative, make it absolute
-        if not os.path.isabs(model_dir):
-            current_file = os.path.abspath(__file__)
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-            model_dir = os.path.join(project_root, model_dir)
-
-        if dist.rank == 0:
-            print(f"🔍 Resolved model directory: {model_dir}")
-
-        # Fallback: older runs may not create a best_model/ folder; fall back to cfg.output/models.
+        # Fallback: older runs may not have a best_model/ folder
         if not os.path.isdir(model_dir):
-            fallback_dir = model_checkpoint_dir if model_checkpoint_dir else f"{cfg.output}/models"
-            if not os.path.isabs(fallback_dir):
-                current_file = os.path.abspath(__file__)
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-                fallback_dir = os.path.join(project_root, fallback_dir)
+            fallback_dir = _resolve_dir(
+                model_checkpoint_dir if model_checkpoint_dir else f"{cfg.output}/models"
+            )
             if dist.rank == 0:
-                print(f"⚠️  best_model folder not found; falling back to: {fallback_dir}")
+                print(f"best_model/ not found; falling back to: {fallback_dir}")
             model_dir = fallback_dir
 
         model_path = find_best_model(model_dir, rank=dist.rank)
     else:
-        # Load specific checkpoint from models folder
-        if model_checkpoint_dir:
-            checkpoint_dir = model_checkpoint_dir
-        else:
-            checkpoint_dir = f"{cfg.output}/models"
-
+        checkpoint_dir = _resolve_dir(
+            model_checkpoint_dir if model_checkpoint_dir else f"{cfg.output}/models"
+        )
         if dist.rank == 0:
-            print(f"📂 Loading checkpoint {use_checkpoint} (use_model_checkpoint={use_checkpoint})")
+            print(f"Loading checkpoint {use_checkpoint} from: {checkpoint_dir}")
 
-        # If checkpoint_dir is relative, make it absolute
-        if not os.path.isabs(checkpoint_dir):
-            current_file = os.path.abspath(__file__)
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
-            checkpoint_dir = os.path.join(project_root, checkpoint_dir)
-
-        # Resolve checkpoint file: prefer any PreDecoderModelMemory_* ending with .0.{checkpoint}.pt
-        # (e.g. PreDecoderModelMemory_r9_v1.0.77.pt or PreDecoderModelMemory_v1.0.77.pt)
+        # Prefer any PreDecoderModelMemory_* file ending with .0.{use_checkpoint}.pt
         target_suffix = f".0.{use_checkpoint}.pt"
         checkpoint_filename = None
         try:
@@ -256,23 +252,18 @@ def _load_model(cfg, dist):
             checkpoint_filename = f"PreDecoderModelMemory_v1.0.{use_checkpoint}.pt"
         model_path = os.path.join(checkpoint_dir, checkpoint_filename)
 
-        if dist.rank == 0:
-            print(f"🔍 Resolved checkpoint path: {model_path}")
-
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"❌ Checkpoint not found: {model_path}")
+            raise FileNotFoundError(f"Checkpoint not found: {model_path}")
 
     if dist.rank == 0:
-        print(f"📥 Loading model parameters from: {model_path}")
+        print(f"Loading model parameters from: {model_path}")
 
-    model_params = torch.load(model_path, map_location=dist.device)
-    model.load_state_dict(model_params)
+    state_dict = _load_state_dict_from_pt(model_path, dist.device)
+    model.load_state_dict(state_dict)
 
     if dist.rank == 0:
-        print(f"✅ Model loaded successfully!")
-        # Show model size info
         param_count = sum(p.numel() for p in model.parameters())
-        print(f"📊 Model parameters: {param_count:,}")
+        print(f"Model loaded ({param_count:,} parameters)")
 
     return model
 

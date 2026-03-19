@@ -72,6 +72,17 @@ if [[ -n "${TORCH_WHL_INDEX}" || -n "${TORCH_CUDA}" ]]; then
 fi
 
 pip install -r "${REQ_FILE}"
+
+# nvidia-modelopt[onnx] caps its Python requirement at <3.13, but works on 3.13
+# in practice.  Re-install with --ignore-requires-python so train CI on 3.13+
+# uses modelopt (INT8+FP8) rather than the onnxruntime-only fallback.
+if [[ "${MODE}" == "train" ]]; then
+  if python -c "import sys; exit(0 if sys.version_info >= (3, 13) else 1)" 2>/dev/null; then
+    echo "Python 3.13+: installing nvidia-modelopt[onnx] --ignore-requires-python"
+    pip install "nvidia-modelopt[onnx]" --ignore-requires-python
+  fi
+fi
+
 if [[ -n "${EXTRA_PKGS}" ]]; then
   pip install ${EXTRA_PKGS}
 fi

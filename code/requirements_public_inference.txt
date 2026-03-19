@@ -19,3 +19,7 @@ stim
 pymatching
 matplotlib
 safetensors>=0.4.0
+# Optional GPU-only prerequisite (not pip-installed here due to size and CUDA dependency):
+#   tensorrt  -- required for ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT) and ONNX_WORKFLOW=3
+#               (USE_ENGINE_ONLY). Install via: pip install tensorrt
+#               Absent at runtime raises RuntimeError (workflows 2/3 require TensorRT).
