@@ -249,6 +249,412 @@ def _decode_ldpc_batch(decoder, L_dense, syndromes_np):
     return obs
 
 
+def _build_all_decoders(det_model, dist):
+    """Build all decoders (PyMatching, LDPC, cudaq-qec) from the DEM"""
+    import pymatching
+    matcher_corr = pymatching.Matching.from_detector_error_model(
+        det_model, enable_correlations=True
+    )
+    matcher_uncorr = pymatching.Matching.from_detector_error_model(
+        det_model, enable_correlations=False
+    )
+    ldpc_decoders = _build_ldpc_decoders(det_model)
+    cudaq_decoders = {}
+    try:
+        cudaq_decoders = _build_cudaq_decoders(det_model)
+        if dist.rank == 0:
+            print(f"[Decoder Ablation] cudaq-qec decoders loaded: {list(cudaq_decoders.keys())}")
+    except Exception as e:
+        if dist.rank == 0:
+            print(f"[Decoder Ablation] cudaq-qec decoders unavailable: {e}")
+    return matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders
+
+
+def _build_logical_operators(D, code_rotation, device):
+    """Build parity-check index tensors and logical operator masks for the surface code"""
+    maps = _build_stab_maps(D, code_rotation)
+    Hx_idx = maps["Hx_idx"].to(device=device, dtype=torch.long)
+    Hz_idx = maps["Hz_idx"].to(device=device, dtype=torch.long)
+    Hx_mask = maps["Hx_mask"].to(device=device, dtype=torch.bool)
+    Hz_mask = maps["Hz_mask"].to(device=device, dtype=torch.bool)
+    stab_indices_x = maps["stab_x"].to(device=device, dtype=torch.long)
+    stab_indices_z = maps["stab_z"].to(device=device, dtype=torch.long)
+    Kx, Kz = maps["Kx"], maps["Kz"]
+    D2 = D * D
+    if code_rotation.upper() in ("XV", "ZH"):
+        Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
+        Lx[0, :D] = 1
+        Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
+        Lz[0, ::D] = 1
+    else:
+        Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
+        Lx[0, ::D] = 1
+        Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
+        Lz[0, :D] = 1
+    return Hx_idx, Hz_idx, Hx_mask, Hz_mask, stab_indices_x, stab_indices_z, Kx, Kz, Lx, Lz
+
+
+def _model_forward_and_residual(
+    model,
+    trainX,
+    x_syn_diff,
+    z_syn_diff,
+    basis,
+    B,
+    D2,
+    T,
+    Hx_idx,
+    Hz_idx,
+    Hx_mask,
+    Hz_mask,
+    Kx,
+    Kz,
+    stab_indices_x,
+    stab_indices_z,
+    Lx,
+    Lz,
+    th_data,
+    th_syn,
+    sampling_mode,
+    temperature_data,
+    temperature_syn,
+    cfg,
+    device,
+    num_boundary_dets,
+    baseline_detectors_batch,
+    det_model,
+):
+    """
+    Run the pre-decoder model on one batch and build the residual syndrome.
+
+    Returns:
+        residual_np: (B, num_detectors) uint8 array - residual syndromes for global decoders.
+        pre_L_np:    (B,) int64 array - logical frame contribution from data corrections.
+    """
+    with torch.amp.autocast(
+        device_type=device.type if hasattr(device, "type") else "cuda",
+        enabled=getattr(cfg, "enable_fp16", False),
+    ):
+        logits = model(trainX)
+    z_data_corr = sample_predictions(logits[:, 0], th_data, sampling_mode, temperature_data)
+    x_data_corr = sample_predictions(logits[:, 1], th_data, sampling_mode, temperature_data)
+    syn_x_grid = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
+    syn_z_grid = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
+
+    z_flat = z_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T).to(torch.int32)
+    x_flat = x_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T).to(torch.int32)
+    z_exp = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
+    hx_idx_e = Hx_idx.clamp_min(0).view(1, -1, Kx, 1).expand(B, -1, -1, T)
+    g_x = z_exp.gather(1, hx_idx_e)
+    m_x = Hx_mask.view(1, -1, Kx, 1).expand_as(g_x)
+    S_X = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)
+    x_exp = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
+    hz_idx_e = Hz_idx.clamp_min(0).view(1, -1, Kz, 1).expand(B, -1, -1, T)
+    g_z = x_exp.gather(1, hz_idx_e)
+    m_z = Hz_mask.view(1, -1, Kz, 1).expand_as(g_z)
+    S_Z = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)
+
+    syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid, stab_indices_x).to(torch.int32)
+    syn_z_flat = map_grid_to_stabilizer_tensor(syn_z_grid, stab_indices_z).to(torch.int32)
+    R_X = torch.empty_like(x_syn_diff, dtype=torch.uint8)
+    R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
+    if T > 1:
+        R_X[:, :, 1:] = (
+            x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] + S_X[:, :, 1:]
+        ) & 1
+    R_Z = torch.empty_like(z_syn_diff, dtype=torch.uint8)
+    R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
+    if T > 1:
+        R_Z[:, :, 1:] = (
+            z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] + S_Z[:, :, 1:]
+        ) & 1
+
+    # Logical frame from data corrections
+    if basis == "X":
+        pre_L_t = torch.einsum("ld,bdt->blt", Lx.to(torch.float32),
+                               z_flat.to(torch.float32)).remainder_(2).to(torch.int32)
+    else:
+        pre_L_t = torch.einsum("ld,bdt->blt", Lz.to(torch.float32),
+                               x_flat.to(torch.float32)).remainder_(2).to(torch.int32)
+    pre_L = pre_L_t.sum(dim=2).remainder_(2).view(-1)
+
+    # Build residual detectors (matching logical_error_rate.py exactly)
+    if basis == "X":
+        initial_detectors = R_X[:, :, 0].view(B, -1)
+    else:
+        initial_detectors = R_Z[:, :, 0].view(B, -1)
+    R_X_rest = R_X[:, :, 1:]
+    R_Z_rest = R_Z[:, :, 1:]
+    R_cat_rest = torch.cat([R_X_rest, R_Z_rest], dim=1)
+    rest_flat = R_cat_rest.permute(0, 2, 1).contiguous().view(B, -1)
+    residual = torch.cat([initial_detectors, rest_flat], dim=1).to(torch.uint8)
+
+    # Append boundary detectors from Stim (unchanged by pre-decoder)
+    boundary_dets_batch = baseline_detectors_batch[:, -num_boundary_dets:]
+    residual = torch.cat(
+        [residual, torch.from_numpy(boundary_dets_batch).to(residual.device)], dim=1
+    )
+
+    if residual.shape[1] != det_model.num_detectors:
+        raise ValueError(
+            f"Residual shape {residual.shape} != DEM detectors {det_model.num_detectors}. "
+            f"Check interleave order for basis '{basis}' and time slicing."
+        )
+
+    return residual.cpu().numpy(), pre_L.cpu().numpy()
+
+
+def _run_decoders_on_batch(
+    residual_np,
+    pre_L_np,
+    weights,
+    ldpc_decoders,
+    cudaq_decoders,
+    matcher_uncorr,
+    matcher_corr,
+    cudaq_decoder_names,
+    decoder_names,
+    gt_obs_np,
+    _timing,
+    _cudaq_stats,
+    weight_bucket_stats,
+):
+    """
+    Run all configured decoders on one batch of residual syndromes.
+
+    Mutates _timing, _cudaq_stats, and weight_bucket_stats in-place.
+    Returns:
+        all_finals: dict mapping decoder name -> (B,) int array of final observable predictions.
+        n_agree:    number of samples where all decoders agreed.
+    """
+    import time as _t
+
+    B = residual_np.shape[0]
+
+    # 1. No-op: pred_obs = 0
+    noop_final = pre_L_np % 2
+
+    # 2. Union-Find (ldpc)
+    _uf, _bp, _bplsd = LDPC_DECODER_NAMES
+    _t0 = _t.perf_counter()
+    uf_dec, uf_L = ldpc_decoders[_uf]
+    uf_obs = _decode_ldpc_batch(uf_dec, uf_L, residual_np)
+    uf_final = (pre_L_np + uf_obs) % 2
+    _timing["uf_decode"] += _t.perf_counter() - _t0
+
+    # 3. BP-only (no LSD fallback)
+    _t0 = _t.perf_counter()
+    bp_dec, bp_L = ldpc_decoders[_bp]
+    bp_obs = _decode_ldpc_batch(bp_dec, bp_L, residual_np)
+    bp_final = (pre_L_np + bp_obs) % 2
+    _timing["bp_only_decode"] += _t.perf_counter() - _t0
+
+    # 4. BP+LSD-0 (ldpc)
+    _t0 = _t.perf_counter()
+    bplsd_dec, bplsd_L = ldpc_decoders[_bplsd]
+    bplsd_obs = _decode_ldpc_batch(bplsd_dec, bplsd_L, residual_np)
+    bplsd_final = (pre_L_np + bplsd_obs) % 2
+    _timing["bplsd_decode"] += _t.perf_counter() - _t0
+
+    # 5. Uncorrelated PyMatching
+    _t0 = _t.perf_counter()
+    uncorr_pred = _decode_batch(matcher_uncorr, residual_np, False)
+    uncorr_pred = np.asarray(uncorr_pred, dtype=np.int64).reshape(-1)
+    uncorr_final = (pre_L_np + uncorr_pred) % 2
+    _timing["uncorr_pm"] += _t.perf_counter() - _t0
+
+    # 6. Correlated PyMatching
+    _t0 = _t.perf_counter()
+    corr_pred = _decode_batch(matcher_corr, residual_np, True)
+    corr_pred = np.asarray(corr_pred, dtype=np.int64).reshape(-1)
+    corr_final = (pre_L_np + corr_pred) % 2
+    _timing["corr_pm"] += _t.perf_counter() - _t0
+
+    # 7. cudaq-qec GPU-accelerated decoders
+    cudaq_finals = {}
+    for cn in cudaq_decoder_names:
+        _t0 = _t.perf_counter()
+        cdec, cL = cudaq_decoders[cn]
+        c_obs, c_stats = _decode_cudaq_batch(cdec, cL, residual_np)
+        c_final = (pre_L_np + c_obs) % 2
+        cudaq_finals[cn] = c_final
+        _timing[f"{cn}_decode"] += _t.perf_counter() - _t0
+        # Accumulate per-sample convergence, iteration, and error stats
+        conv_flags = c_stats["converged_flags"]
+        iters = c_stats["iter_counts"]
+        fails = (c_final != gt_obs_np)
+        _cudaq_stats[cn]["converged_flags"].append(conv_flags)
+        _cudaq_stats[cn]["iter_counts"].append(iters)
+        _cudaq_stats[cn]["error_flags"].append(fails)
+
+    _t0 = _t.perf_counter()
+    all_finals = {
+        DECODER_NAMES[0]: noop_final,
+        _uf: uf_final,
+        _bp: bp_final,
+        _bplsd: bplsd_final,
+        DECODER_NAMES[4]: uncorr_final,
+        DECODER_NAMES[5]: corr_final,
+    }
+    all_finals.update(cudaq_finals)
+
+    stacked = np.stack([all_finals[n] for n in decoder_names], axis=0)  # (n_decoders, B)
+    agree = np.all(stacked == stacked[0:1], axis=0)  # (B,)
+
+    for i in range(B):
+        w = int(weights[i])
+        bucket = w if w <= 6 else 7  # 0-6, 7+
+        if bucket not in weight_bucket_stats:
+            weight_bucket_stats[bucket] = {n: [0, 0] for n in decoder_names}
+        weight_bucket_stats[bucket]["_total"] = weight_bucket_stats[bucket].get("_total", 0) + 1
+        for name in decoder_names:
+            if bucket not in weight_bucket_stats or name not in weight_bucket_stats[bucket]:
+                weight_bucket_stats[bucket][name] = [0, 0]
+            weight_bucket_stats[bucket][name][1] += 1
+            if all_finals[name][i] != gt_obs_np[i]:
+                weight_bucket_stats[bucket][name][0] += 1
+
+    _timing["bookkeeping"] += _t.perf_counter() - _t0
+
+    return all_finals, int(agree.sum())
+
+
+def _print_ablation_results(
+    basis,
+    D,
+    cfg,
+    total_scanned,
+    baseline_errors,
+    decoder_errors,
+    decoder_names,
+    cudaq_decoder_names,
+    _cudaq_stats,
+    n_all_agree,
+    all_residual_weights,
+    weight_bucket_stats,
+    _timing,
+):
+    """Print timing breakdown, LER summary, convergence stats, and generate plots."""
+    _total_time = sum(_timing.values())
+    print(f"\n{'='*60}")
+    print(f"TIMING BREAKDOWN  (total loop = {_total_time:.2f}s)")
+    print(f"{'='*60}")
+    for k, v in sorted(_timing.items(), key=lambda x: -x[1]):
+        pct = v / max(_total_time, 1e-9) * 100
+        print(f"  {k:<20s}  {v:8.2f}s  ({pct:5.1f}%)")
+    print(f"{'='*60}")
+
+    print(f"\n{'='*70}")
+    print(
+        f"DECODER ABLATION STUDY  |  basis={basis}  d={D}  r={cfg.n_rounds}"
+        f"  p={getattr(cfg.test, 'p_error', 0.003)}"
+    )
+    print(f"{'='*70}")
+    print(f"Total samples: {total_scanned}")
+
+    baseline_ler = baseline_errors / max(1, total_scanned)
+    print(f"\n--- Logical Error Rates ---")
+    print(
+        f"  {'Baseline (no pre-dec)':<25s}  LER = {baseline_ler:.6f}"
+        f"  ({baseline_errors} errors)"
+    )
+    for name in decoder_names:
+        ler = decoder_errors[name] / max(1, total_scanned)
+        print(f"  {name:<25s}  LER = {ler:.6f}  ({decoder_errors[name]} errors)")
+
+    # cudaq decoder convergence and iteration stats
+    if _cudaq_stats:
+        print(f"\n--- cudaq-qec BP Convergence & Iteration Breakdown ---")
+        print(
+            f"  {'Decoder':<20s} {'Conv%':>7s} {'AvgIt':>6s} "
+            f"{'Conv.It':>8s} {'Conv.LER':>9s} {'Conv.Err':>9s} "
+            f"{'!Conv.It':>8s} {'!Conv.LER':>10s} {'!Conv.Err':>10s}"
+        )
+        for cn in cudaq_decoder_names:
+            st = _cudaq_stats[cn]
+            conv_all = np.concatenate(st["converged_flags"])
+            iters_all = np.concatenate(st["iter_counts"])
+            errs_all = np.concatenate(st["error_flags"])
+            N = len(conv_all)
+            n_conv = int(conv_all.sum())
+            n_noconv = N - n_conv
+            conv_pct = n_conv / max(1, N) * 100
+            has_iters = iters_all.sum() > 0
+
+            # Converged subset
+            if n_conv > 0 and has_iters:
+                conv_avg_it = iters_all[conv_all].mean()
+                conv_ler = errs_all[conv_all].mean()
+                conv_errs = int(errs_all[conv_all].sum())
+            else:
+                conv_avg_it = conv_ler = 0.0
+                conv_errs = 0
+
+            # Non-converged subset
+            if n_noconv > 0 and has_iters:
+                noconv_avg_it = iters_all[~conv_all].mean()
+                noconv_ler = errs_all[~conv_all].mean()
+                noconv_errs = int(errs_all[~conv_all].sum())
+            else:
+                noconv_avg_it = noconv_ler = 0.0
+                noconv_errs = 0
+
+            if has_iters:
+                avg_it_str = f"{iters_all.mean():5.1f}"
+                conv_it_str = f"{conv_avg_it:7.1f}"
+                noconv_it_str = f"{noconv_avg_it:7.1f}" if n_noconv > 0 else "    N/A"
+            else:
+                avg_it_str = "  N/A"
+                conv_it_str = "    N/A"
+                noconv_it_str = "    N/A"
+
+            noconv_ler_str = f"{noconv_ler:9.6f}" if n_noconv > 0 else "      N/A"
+            noconv_err_str = f"{noconv_errs:>9d}" if n_noconv > 0 else "      N/A"
+
+            print(
+                f"  {cn:<20s} {conv_pct:>6.1f}% {avg_it_str} "
+                f"{conv_it_str} {conv_ler:>9.6f} {conv_errs:>9d} "
+                f"{noconv_it_str} {noconv_ler_str} {noconv_err_str}"
+            )
+
+    agreement_rate = n_all_agree / max(1, total_scanned)
+    print(f"\n--- Decoder Agreement ---")
+    print(
+        f"  All {len(decoder_names)} decoders agree:"
+        f" {agreement_rate*100:.2f}% ({n_all_agree}/{total_scanned})"
+    )
+
+    weights_arr = np.array(all_residual_weights)
+    print(f"\n--- Residual Weight Distribution ---")
+    for w in sorted(weight_bucket_stats.keys()):
+        label = f"{w}+" if w == 7 else str(w)
+        count = weight_bucket_stats[w].get("_total", 0)
+        pct = count / max(1, total_scanned) * 100
+        print(f"  Weight {label:>3s}: {count:>7d} samples ({pct:6.2f}%)")
+    print(f"  Mean weight: {weights_arr.mean():.3f},  Max: {int(weights_arr.max())}")
+
+    print(f"\n--- Conditional LER by Residual Weight ---")
+    header = f"  {'Weight':>7s}"
+    for name in decoder_names:
+        header += f"  {name:>12s}"
+    print(header)
+    for w in sorted(weight_bucket_stats.keys()):
+        label = f"{w}+" if w == 7 else str(w)
+        row = f"  {label:>7s}"
+        for name in decoder_names:
+            n_err, n_tot = weight_bucket_stats[w].get(name, [0, 0])
+            if n_tot > 0:
+                row += f"  {n_err/n_tot:>12.6f}"
+            else:
+                row += f"  {'N/A':>12s}"
+        print(row)
+    print(f"{'='*70}")
+
+    # --- Plots ---
+    _plot_residual_weight_histogram(all_residual_weights, basis, cfg)
+    _plot_conditional_ler(weight_bucket_stats, decoder_names, basis, cfg)
+
+
 @torch.inference_mode()
 def decoder_ablation_study(model, device, dist, cfg):
     """
@@ -263,10 +669,7 @@ def decoder_ablation_study(model, device, dist, cfg):
     import time as _time
     from copy import deepcopy
 
-    import pymatching
-
-    from data.factory import DatapipeFactory
-
+    # --- Config ---
     th_data = float(getattr(cfg.test, "th_data", 0.0))
     th_syn = float(getattr(cfg.test, "th_syn", 0.0))
     sampling_mode = str(getattr(cfg.test, "sampling_mode", "threshold")).lower()
@@ -277,14 +680,14 @@ def decoder_ablation_study(model, device, dist, cfg):
     temperature_syn = float(temperature_syn) if temperature_syn is not None else temperature
 
     model.eval()
-    enable_correlated = getattr(cfg.data, "enable_correlated_pymatching", False)
     basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
     if basis not in ("X", "Z"):
         basis = "X"
 
-    # --- Create Stim datapipe (with boundary detectors) ---
+    # --- Dataset ---
     total_samples = int(cfg.test.num_samples)
     samples_per_gpu = total_samples // max(1, dist.world_size)
+    from data.factory import DatapipeFactory
 
     torch_state = torch.get_rng_state()
     cuda_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
@@ -311,62 +714,32 @@ def decoder_ablation_study(model, device, dist, cfg):
     circuit = test_dataset.circ.stim_circuit
     num_obs = circuit.num_observables
     assert num_obs == 1
-
-    # DEM and matchers from Stim circuit (includes boundary detectors)
     det_model = circuit.detector_error_model(
         decompose_errors=True, approximate_disjoint_errors=True
     )
-    matcher_corr = pymatching.Matching.from_detector_error_model(
-        det_model, enable_correlations=True
+
+    # --- Decoders ---
+    matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders = _build_all_decoders(
+        det_model, dist
     )
-    matcher_uncorr = pymatching.Matching.from_detector_error_model(
-        det_model, enable_correlations=False
-    )
+    cudaq_decoder_names = sorted(cudaq_decoders.keys())
+    decoder_names = list(DECODER_NAMES) + cudaq_decoder_names
 
-    # Build ldpc decoders from the same DEM (with boundary detectors)
-    ldpc_decoders = _build_ldpc_decoders(det_model)
-
-    # Build cudaq-qec GPU-accelerated decoders
-    cudaq_decoders = {}
-    try:
-        cudaq_decoders = _build_cudaq_decoders(det_model)
-        if dist.rank == 0:
-            print(f"[Decoder Ablation] cudaq-qec decoders loaded: {list(cudaq_decoders.keys())}")
-    except Exception as e:
-        if dist.rank == 0:
-            print(f"[Decoder Ablation] cudaq-qec decoders unavailable: {e}")
-
-    # Stim baseline detectors and ground truth observables
+    # --- Baseline data ---
     stim_dets = np.asarray(test_dataset.dets_and_obs[:, :-num_obs], dtype=np.uint8)
     assert stim_dets.shape[1] == det_model.num_detectors, \
         f"Stim dets width {stim_dets.shape[1]} != DEM {det_model.num_detectors}"
     stim_obs = np.asarray(test_dataset.dets_and_obs[:, -num_obs:], dtype=np.uint8)
 
-    # Number of boundary detectors
     surface_code = test_dataset.circ.code
     num_boundary_dets = surface_code.hx.shape[0] if basis == 'X' else surface_code.hz.shape[0]
 
+    # --- Logical operators ---
     D = cfg.distance
     code_rotation = getattr(cfg.data, "code_rotation", "XV")
-    maps = _build_stab_maps(D, code_rotation)
-    Hx_idx = maps["Hx_idx"].to(device=device, dtype=torch.long)
-    Hz_idx = maps["Hz_idx"].to(device=device, dtype=torch.long)
-    Hx_mask = maps["Hx_mask"].to(device=device, dtype=torch.bool)
-    Hz_mask = maps["Hz_mask"].to(device=device, dtype=torch.bool)
-    stab_indices_x = maps["stab_x"].to(device=device, dtype=torch.long)
-    stab_indices_z = maps["stab_z"].to(device=device, dtype=torch.long)
-    Kx, Kz = maps["Kx"], maps["Kz"]
+    Hx_idx, Hz_idx, Hx_mask, Hz_mask, stab_indices_x, stab_indices_z, Kx, Kz, Lx, Lz = \
+        _build_logical_operators(D, code_rotation, device)
     D2 = D * D
-    if code_rotation.upper() in ("XV", "ZH"):
-        Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
-        Lx[0, :D] = 1
-        Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
-        Lz[0, ::D] = 1
-    else:
-        Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
-        Lx[0, ::D] = 1
-        Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
-        Lz[0, :D] = 1
 
     if dist.rank == 0:
         print(
@@ -383,17 +756,14 @@ def decoder_ablation_study(model, device, dist, cfg):
         )
         cudaq_names_str = ", ".join(cudaq_decoders.keys()) if cudaq_decoders else "(none)"
         print(
-            f"[Decoder Ablation] Decoders: No-op, Union-Find, BP+LSD-0, Uncorr PM, Corr PM, {cudaq_names_str}, + Baseline PM"
+            f"[Decoder Ablation] Decoders: No-op, Union-Find, BP+LSD-0,"
+            f" Uncorr PM, Corr PM, {cudaq_names_str}, + Baseline PM"
         )
 
+    # --- Batch loop ---
     batch_size = int(getattr(cfg.test.dataloader, "batch_size", 2048))
     N = len(test_dataset)
     num_batches = (N + batch_size - 1) // batch_size
-
-    decoder_names = list(DECODER_NAMES)
-    # Append cudaq decoder names dynamically
-    cudaq_decoder_names = sorted(cudaq_decoders.keys())
-    decoder_names.extend(cudaq_decoder_names)
 
     total_scanned = 0
     baseline_errors = 0
@@ -404,28 +774,34 @@ def decoder_ablation_study(model, device, dist, cfg):
     n_all_agree = 0
 
     _timing = {
-        "collate": 0.0,
-        "baseline_pm": 0.0,
-        "model_fwd": 0.0,
-        "residual_build": 0.0,
-        "uf_decode": 0.0,
-        "bp_only_decode": 0.0,
-        "bplsd_decode": 0.0,
-        "uncorr_pm": 0.0,
-        "corr_pm": 0.0,
-        "bookkeeping": 0.0,
+        k: 0.0 for k in (
+            "collate",
+            "baseline_pm",
+            "model_fwd",
+            "residual_build",
+            "uf_decode",
+            "bp_only_decode",
+            "bplsd_decode",
+            "uncorr_pm",
+            "corr_pm",
+            "bookkeeping",
+        )
     }
-    _cudaq_stats = {}
     for cn in cudaq_decoder_names:
         _timing[f"{cn}_decode"] = 0.0
-        _cudaq_stats[cn] = {"converged_flags": [], "iter_counts": [], "error_flags": []}
+    _cudaq_stats = {
+        cn: {
+            "converged_flags": [],
+            "iter_counts": [],
+            "error_flags": []
+        } for cn in cudaq_decoder_names
+    }
 
     for batch_idx in range(num_batches):
         start = batch_idx * batch_size
         end = min(start + batch_size, N)
         B = end - start
 
-        # Collate batch from dataset items
         _t0 = _time.perf_counter()
         items = [test_dataset[i] for i in range(start, end)]
         x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]
@@ -435,11 +811,11 @@ def decoder_ablation_study(model, device, dist, cfg):
         trainX = torch.stack([it["trainX"] for it in items]).to(device=device)
         _timing["collate"] += _time.perf_counter() - _t0
 
-        _, n_x, T = x_syn_diff.shape
+        _, _, T = x_syn_diff.shape
         if T < 2:
             continue
 
-        # --- Baseline: Stim detectors (with boundary dets), Stim ground truth ---
+        # Baseline: raw Stim syndromes + ground truth
         baseline_detectors_batch = stim_dets[start:end]
         gt_obs_batch = stim_obs[start:end]
         all_baseline_weights.extend(baseline_detectors_batch.sum(axis=1).tolist())
@@ -452,306 +828,85 @@ def decoder_ablation_study(model, device, dist, cfg):
 
         gt_obs_np = gt_obs_batch.reshape(-1).astype(np.int64)
 
-        # Model forward
+        # Pre-decoder forward pass + residual syndrome construction
         _t0 = _time.perf_counter()
-        with torch.amp.autocast(
-            device_type=device.type if hasattr(device, "type") else "cuda",
-            enabled=getattr(cfg, "enable_fp16", False),
-        ):
-            logits = model(trainX)
-        z_data_corr = sample_predictions(logits[:, 0], th_data, sampling_mode, temperature_data)
-        x_data_corr = sample_predictions(logits[:, 1], th_data, sampling_mode, temperature_data)
-        syn_x_grid = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
-        syn_z_grid = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
-
-        z_flat = z_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T).to(torch.int32)
-        x_flat = x_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T).to(torch.int32)
-        z_exp = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
-        hx_idx_e = Hx_idx.clamp_min(0).view(1, -1, Kx, 1).expand(B, -1, -1, T)
-        g_x = z_exp.gather(1, hx_idx_e)
-        m_x = Hx_mask.view(1, -1, Kx, 1).expand_as(g_x)
-        S_X = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)
-        x_exp = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
-        hz_idx_e = Hz_idx.clamp_min(0).view(1, -1, Kz, 1).expand(B, -1, -1, T)
-        g_z = x_exp.gather(1, hz_idx_e)
-        m_z = Hz_mask.view(1, -1, Kz, 1).expand_as(g_z)
-        S_Z = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)
-
-        syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid, stab_indices_x).to(torch.int32)
-        syn_z_flat = map_grid_to_stabilizer_tensor(syn_z_grid, stab_indices_z).to(torch.int32)
-        R_X = torch.empty_like(x_syn_diff, dtype=torch.uint8)
-        R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
-        if T > 1:
-            R_X[:, :, 1:] = (
-                x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] + S_X[:, :, 1:]
-            ) & 1
-        R_Z = torch.empty_like(z_syn_diff, dtype=torch.uint8)
-        R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
-        if T > 1:
-            R_Z[:, :, 1:] = (
-                z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] + S_Z[:, :, 1:]
-            ) & 1
-
-        # Logical frame from data corrections
-        if basis == "X":
-            pre_L_t = torch.einsum("ld,bdt->blt", Lx.to(torch.float32),
-                                   z_flat.to(torch.float32)).remainder_(2).to(torch.int32)
-        else:
-            pre_L_t = torch.einsum("ld,bdt->blt", Lz.to(torch.float32),
-                                   x_flat.to(torch.float32)).remainder_(2).to(torch.int32)
-        pre_L = pre_L_t.sum(dim=2).remainder_(2).view(-1)
-
-        # Build residual detectors (matching logical_error_rate.py exactly)
-        if basis == "X":
-            initial_detectors = R_X[:, :, 0].view(B, -1)
-        else:
-            initial_detectors = R_Z[:, :, 0].view(B, -1)
-        R_X_rest = R_X[:, :, 1:]
-        R_Z_rest = R_Z[:, :, 1:]
-        R_cat_rest = torch.cat([R_X_rest, R_Z_rest], dim=1)
-        rest_flat = R_cat_rest.permute(0, 2, 1).contiguous().view(B, -1)
-        residual = torch.cat([initial_detectors, rest_flat], dim=1).to(torch.uint8)
-
-        # Append boundary detectors from Stim (unchanged by pre-decoder)
-        boundary_dets_batch = baseline_detectors_batch[:, -num_boundary_dets:]
-        residual = torch.cat(
-            [residual, torch.from_numpy(boundary_dets_batch).to(residual.device)], dim=1
+        residual_np, pre_L_np = _model_forward_and_residual(
+            model,
+            trainX,
+            x_syn_diff,
+            z_syn_diff,
+            basis,
+            B,
+            D2,
+            T,
+            Hx_idx,
+            Hz_idx,
+            Hx_mask,
+            Hz_mask,
+            Kx,
+            Kz,
+            stab_indices_x,
+            stab_indices_z,
+            Lx,
+            Lz,
+            th_data,
+            th_syn,
+            sampling_mode,
+            temperature_data,
+            temperature_syn,
+            cfg,
+            device,
+            num_boundary_dets,
+            baseline_detectors_batch,
+            det_model,
         )
-
-        if residual.shape[1] != det_model.num_detectors:
-            raise ValueError(
-                f"Residual shape {residual.shape} != DEM detectors {det_model.num_detectors}. "
-                f"Check interleave order for basis '{basis}' and time slicing."
-            )
-
         if device.type == "cuda":
             torch.cuda.synchronize()
         _timing["residual_build"] += _time.perf_counter() - _t0
 
-        residual_np = residual.cpu().numpy()
-        pre_L_np = pre_L.cpu().numpy()
-
         weights = residual_np.sum(axis=1)
         all_residual_weights.extend(weights.tolist())
 
-        # --- Run all decoders ---
-        # 1. No-op: pred_obs = 0
-        noop_final = pre_L_np % 2
-
-        # 2. Union-Find (ldpc)
-        _uf, _bp, _bplsd = LDPC_DECODER_NAMES
-        _t0 = _time.perf_counter()
-        uf_dec, uf_L = ldpc_decoders[_uf]
-        uf_obs = _decode_ldpc_batch(uf_dec, uf_L, residual_np)
-        uf_final = (pre_L_np + uf_obs) % 2
-        _timing["uf_decode"] += _time.perf_counter() - _t0
-
-        # 3. BP-only (no LSD fallback)
-        _t0 = _time.perf_counter()
-        bp_dec, bp_L = ldpc_decoders[_bp]
-        bp_obs = _decode_ldpc_batch(bp_dec, bp_L, residual_np)
-        bp_final = (pre_L_np + bp_obs) % 2
-        _timing["bp_only_decode"] += _time.perf_counter() - _t0
-
-        # 4. BP+LSD-0 (ldpc)
-        _t0 = _time.perf_counter()
-        bplsd_dec, bplsd_L = ldpc_decoders[_bplsd]
-        bplsd_obs = _decode_ldpc_batch(bplsd_dec, bplsd_L, residual_np)
-        bplsd_final = (pre_L_np + bplsd_obs) % 2
-        _timing["bplsd_decode"] += _time.perf_counter() - _t0
-
-        # 5. Uncorrelated PyMatching
-        _t0 = _time.perf_counter()
-        uncorr_pred = _decode_batch(matcher_uncorr, residual_np, False)
-        uncorr_pred = np.asarray(uncorr_pred, dtype=np.int64).reshape(-1)
-        uncorr_final = (pre_L_np + uncorr_pred) % 2
-        _timing["uncorr_pm"] += _time.perf_counter() - _t0
-
-        # 6. Correlated PyMatching
-        _t0 = _time.perf_counter()
-        corr_pred = _decode_batch(matcher_corr, residual_np, True)
-        corr_pred = np.asarray(corr_pred, dtype=np.int64).reshape(-1)
-        corr_final = (pre_L_np + corr_pred) % 2
-        _timing["corr_pm"] += _time.perf_counter() - _t0
-
-        # 7. cudaq-qec GPU-accelerated decoders
-        cudaq_finals = {}
-        for cn in cudaq_decoder_names:
-            _t0 = _time.perf_counter()
-            cdec, cL = cudaq_decoders[cn]
-            c_obs, c_stats = _decode_cudaq_batch(cdec, cL, residual_np)
-            c_final = (pre_L_np + c_obs) % 2
-            cudaq_finals[cn] = c_final
-            _timing[f"{cn}_decode"] += _time.perf_counter() - _t0
-            # Accumulate per-sample convergence, iteration, and error stats
-            conv_flags = c_stats["converged_flags"]
-            iters = c_stats["iter_counts"]
-            fails = (c_final != gt_obs_np)
-            _cudaq_stats[cn]["converged_flags"].append(conv_flags)
-            _cudaq_stats[cn]["iter_counts"].append(iters)
-            _cudaq_stats[cn]["error_flags"].append(fails)
-
-        _t0 = _time.perf_counter()
-        all_finals = {
-            DECODER_NAMES[0]: noop_final,
-            _uf: uf_final,
-            _bp: bp_final,
-            _bplsd: bplsd_final,
-            DECODER_NAMES[4]: uncorr_final,
-            DECODER_NAMES[5]: corr_final,
-        }
-        all_finals.update(cudaq_finals)
-
+        # All decoder runs
+        all_finals, n_agree = _run_decoders_on_batch(
+            residual_np,
+            pre_L_np,
+            weights,
+            ldpc_decoders,
+            cudaq_decoders,
+            matcher_uncorr,
+            matcher_corr,
+            cudaq_decoder_names,
+            decoder_names,
+            gt_obs_np,
+            _timing,
+            _cudaq_stats,
+            weight_bucket_stats,
+        )
         for name in decoder_names:
-            fails = all_finals[name] != gt_obs_np
-            decoder_errors[name] += int(fails.sum())
-
-        stacked = np.stack([all_finals[n] for n in decoder_names], axis=0)  # (n_decoders, B)
-        agree = np.all(stacked == stacked[0:1], axis=0)  # (B,)
-        n_all_agree += int(agree.sum())
-
-        for i in range(B):
-            w = int(weights[i])
-            bucket = w if w <= 6 else 7  # 0-6, 7+
-            if bucket not in weight_bucket_stats:
-                weight_bucket_stats[bucket] = {n: [0, 0] for n in decoder_names}
-            weight_bucket_stats[bucket]["_total"] = weight_bucket_stats[bucket].get("_total", 0) + 1
-            for name in decoder_names:
-                if bucket not in weight_bucket_stats or name not in weight_bucket_stats[bucket]:
-                    weight_bucket_stats[bucket][name] = [0, 0]
-                weight_bucket_stats[bucket][name][1] += 1
-                if all_finals[name][i] != gt_obs_np[i]:
-                    weight_bucket_stats[bucket][name][0] += 1
-
-        _timing["bookkeeping"] += _time.perf_counter() - _t0
+            decoder_errors[name] += int((all_finals[name] != gt_obs_np).sum())
+        n_all_agree += n_agree
 
         total_scanned += B
         if dist.rank == 0 and (batch_idx + 1) % 5 == 0:
             print(f"  [Ablation] Processed {total_scanned} samples...")
 
-    # --- Print timing breakdown ---
     if dist.rank == 0:
-        _total_time = sum(_timing.values())
-        print(f"\n{'='*60}")
-        print(f"TIMING BREAKDOWN  (total loop = {_total_time:.2f}s)")
-        print(f"{'='*60}")
-        for k, v in sorted(_timing.items(), key=lambda x: -x[1]):
-            pct = v / max(_total_time, 1e-9) * 100
-            print(f"  {k:<20s}  {v:8.2f}s  ({pct:5.1f}%)")
-        print(f"{'='*60}")
-
-    # --- Print summary ---
-    if dist.rank == 0:
-        print(f"\n{'='*70}")
-        print(
-            f"DECODER ABLATION STUDY  |  basis={basis}  d={D}  r={cfg.n_rounds}"
-            f"  p={getattr(cfg.test, 'p_error', 0.003)}"
+        _print_ablation_results(
+            basis,
+            D,
+            cfg,
+            total_scanned,
+            baseline_errors,
+            decoder_errors,
+            decoder_names,
+            cudaq_decoder_names,
+            _cudaq_stats,
+            n_all_agree,
+            all_residual_weights,
+            weight_bucket_stats,
+            _timing,
         )
-        print(f"{'='*70}")
-        print(f"Total samples: {total_scanned}")
-
-        baseline_ler = baseline_errors / max(1, total_scanned)
-        print(f"\n--- Logical Error Rates ---")
-        print(
-            f"  {'Baseline (no pre-dec)':<25s}  LER = {baseline_ler:.6f}"
-            f"  ({baseline_errors} errors)"
-        )
-        for name in decoder_names:
-            ler = decoder_errors[name] / max(1, total_scanned)
-            print(f"  {name:<25s}  LER = {ler:.6f}  ({decoder_errors[name]} errors)")
-
-        # cudaq decoder convergence and iteration stats
-        if _cudaq_stats:
-            print(f"\n--- cudaq-qec BP Convergence & Iteration Breakdown ---")
-            print(
-                f"  {'Decoder':<20s} {'Conv%':>7s} {'AvgIt':>6s} "
-                f"{'Conv.It':>8s} {'Conv.LER':>9s} {'Conv.Err':>9s} "
-                f"{'!Conv.It':>8s} {'!Conv.LER':>10s} {'!Conv.Err':>10s}"
-            )
-            for cn in cudaq_decoder_names:
-                st = _cudaq_stats[cn]
-                conv_all = np.concatenate(st["converged_flags"])
-                iters_all = np.concatenate(st["iter_counts"])
-                errs_all = np.concatenate(st["error_flags"])
-                N = len(conv_all)
-                n_conv = int(conv_all.sum())
-                n_noconv = N - n_conv
-                conv_pct = n_conv / max(1, N) * 100
-                has_iters = iters_all.sum() > 0
-
-                # Converged subset
-                if n_conv > 0 and has_iters:
-                    conv_avg_it = iters_all[conv_all].mean()
-                    conv_ler = errs_all[conv_all].mean()
-                    conv_errs = int(errs_all[conv_all].sum())
-                else:
-                    conv_avg_it = conv_ler = 0.0
-                    conv_errs = 0
-
-                # Non-converged subset
-                if n_noconv > 0 and has_iters:
-                    noconv_avg_it = iters_all[~conv_all].mean()
-                    noconv_ler = errs_all[~conv_all].mean()
-                    noconv_errs = int(errs_all[~conv_all].sum())
-                else:
-                    noconv_avg_it = noconv_ler = 0.0
-                    noconv_errs = 0
-
-                if has_iters:
-                    avg_it_str = f"{iters_all.mean():5.1f}"
-                    conv_it_str = f"{conv_avg_it:7.1f}"
-                    noconv_it_str = f"{noconv_avg_it:7.1f}" if n_noconv > 0 else "    N/A"
-                else:
-                    avg_it_str = "  N/A"
-                    conv_it_str = "    N/A"
-                    noconv_it_str = "    N/A"
-
-                noconv_ler_str = f"{noconv_ler:9.6f}" if n_noconv > 0 else "      N/A"
-                noconv_err_str = f"{noconv_errs:>9d}" if n_noconv > 0 else "      N/A"
-
-                print(
-                    f"  {cn:<20s} {conv_pct:>6.1f}% {avg_it_str} "
-                    f"{conv_it_str} {conv_ler:>9.6f} {conv_errs:>9d} "
-                    f"{noconv_it_str} {noconv_ler_str} {noconv_err_str}"
-                )
-
-        agreement_rate = n_all_agree / max(1, total_scanned)
-        print(f"\n--- Decoder Agreement ---")
-        print(
-            f"  All {len(decoder_names)} decoders agree:"
-            f" {agreement_rate*100:.2f}% ({n_all_agree}/{total_scanned})"
-        )
-
-        weights_arr = np.array(all_residual_weights)
-        print(f"\n--- Residual Weight Distribution ---")
-        for w in sorted(weight_bucket_stats.keys()):
-            label = f"{w}+" if w == 7 else str(w)
-            count = weight_bucket_stats[w].get("_total", 0)
-            pct = count / max(1, total_scanned) * 100
-            print(f"  Weight {label:>3s}: {count:>7d} samples ({pct:6.2f}%)")
-        print(f"  Mean weight: {weights_arr.mean():.3f},  Max: {int(weights_arr.max())}")
-
-        print(f"\n--- Conditional LER by Residual Weight ---")
-        header = f"  {'Weight':>7s}"
-        for name in decoder_names:
-            header += f"  {name:>12s}"
-        print(header)
-        for w in sorted(weight_bucket_stats.keys()):
-            label = f"{w}+" if w == 7 else str(w)
-            row = f"  {label:>7s}"
-            for name in decoder_names:
-                n_err, n_tot = weight_bucket_stats[w].get(name, [0, 0])
-                if n_tot > 0:
-                    row += f"  {n_err/n_tot:>12.6f}"
-                else:
-                    row += f"  {'N/A':>12s}"
-            print(row)
-        print(f"{'='*70}")
-
-    # --- Plots ---
-    if dist.rank == 0:
-        _plot_residual_weight_histogram(all_residual_weights, basis, cfg)
-        _plot_conditional_ler(weight_bucket_stats, decoder_names, basis, cfg)
 
     return (
         {
