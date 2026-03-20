@@ -20,7 +20,7 @@
 #       3 = load pre-built TRT engine
 #
 # Performance features:
-#   torch.compile        Always applied (reduce-overhead mode), except when
+#   torch.compile        Always applied (default mode), except when
 #                        ONNX export is active (ONNX_WORKFLOW=1 or 2).
 #                        Disable with PREDECODER_TORCH_COMPILE=0.
 #   channels_last_3d     Always applied to model memory format.
@@ -912,7 +912,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     _compile_enabled = _get_env_bool("PREDECODER_TORCH_COMPILE", True)
     if not _will_export_onnx and _compile_enabled:
         try:
-            model = torch.compile(model, mode="reduce-overhead")
+            model = torch.compile(model, mode="default")
             _applied_compile = True
         except Exception as e:
             if dist.rank == 0:
@@ -1678,7 +1678,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
 
     model.eval()
     try:
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model, mode="default")
     except Exception:
         pass
     try:
