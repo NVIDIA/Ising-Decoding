@@ -131,6 +131,48 @@ WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
 `MODEL_ID` is the public model identifier (1–5); see `model/registry.py` for the mapping.
+The pre-trained public models use `--model-id 1` (R=9) and `--model-id 4` (R=13).
+
+### ONNX export and quantization (optional, post-training)
+
+After training (or starting from the shipped `.safetensors` files), you can export the model to
+ONNX and optionally apply INT8 or FP8 post-training quantization for deployment.
+
+Set the `ONNX_WORKFLOW` and (optionally) `QUANT_FORMAT` environment variables before running
+inference with `local_run.sh`:
+
+| `ONNX_WORKFLOW` | Behavior |
+|---|---|
+| `0` (default) | PyTorch inference only, no ONNX export |
+| `1` | Export ONNX model and run inference with PyTorch |
+| `2` | Export ONNX model and run inference via TensorRT |
+| `3` | Load a pre-existing TensorRT engine file and run inference |
+
+```bash
+# Export ONNX only (no TensorRT)
+ONNX_WORKFLOW=1 WORKFLOW=inference bash code/scripts/local_run.sh
+
+# Export ONNX + apply INT8 quantization + run TensorRT inference
+ONNX_WORKFLOW=2 QUANT_FORMAT=int8 WORKFLOW=inference bash code/scripts/local_run.sh
+
+# Export ONNX + apply FP8 quantization + run TensorRT inference
+ONNX_WORKFLOW=2 QUANT_FORMAT=fp8 WORKFLOW=inference bash code/scripts/local_run.sh
+
+# Use a pre-built TensorRT engine (skip export)
+ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+**Quantization variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `QUANT_FORMAT` | unset | `int8` or `fp8`. Unset means no quantization (FP32 ONNX). |
+| `QUANT_CALIB_SAMPLES` | `256` | Calibration samples for INT8/FP8 post-training quantization. |
+
+Notes:
+- TensorRT workflows (`ONNX_WORKFLOW=2` or `3`) require `tensorrt` and `modelopt`.
+- FP8 quantization failure is fatal. INT8 failure falls back to the FP32 ONNX model silently.
+- ONNX and engine files are written to the current working directory.
 
 ### GPU selection
 
