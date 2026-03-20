@@ -520,7 +520,7 @@ def _run_decoders_on_batch(
             weight_bucket_stats[bucket] = {n: [0, 0] for n in decoder_names}
         weight_bucket_stats[bucket]["_total"] = weight_bucket_stats[bucket].get("_total", 0) + 1
         for name in decoder_names:
-            if bucket not in weight_bucket_stats or name not in weight_bucket_stats[bucket]:
+            if name not in weight_bucket_stats[bucket]:
                 weight_bucket_stats[bucket][name] = [0, 0]
             weight_bucket_stats[bucket][name][1] += 1
             if all_finals[name][i] != gt_obs_np[i]:
