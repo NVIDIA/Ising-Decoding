@@ -967,9 +967,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
     trt_context = None
     onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.onnx")
-    engine_path = os.path.join(
-        os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.engine"
-    )
+    engine_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.engine")
     half = (D * D - 1) // 2
     example_shape = (batch_size_original, 2 * T_original * half)
 
@@ -1006,9 +1004,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
         if dist.rank == 0:
             try:
-                example_dets = torch.randint(
-                    0, 2, example_shape, dtype=torch.uint8, device=device
-                )
+                example_dets = torch.randint(0, 2, example_shape, dtype=torch.uint8, device=device)
                 torch.onnx.export(
                     pipeline_module,
                     example_dets,
