@@ -172,22 +172,26 @@ class TestBuildAllDecoders(unittest.TestCase):
         self.result = _build_all_decoders(self.det_model, _DummyDist())
         self.LDPC_DECODER_NAMES = LDPC_DECODER_NAMES
 
-    def test_returns_four_values(self):
-        self.assertEqual(len(self.result), 4)
+    def test_returns_five_values(self):
+        self.assertEqual(len(self.result), 5)
 
     def test_matchers_have_decode_method(self):
-        matcher_corr, matcher_uncorr, _, _ = self.result
+        matcher_corr, matcher_uncorr, _, _, _ = self.result
         self.assertTrue(hasattr(matcher_corr, "decode"))
         self.assertTrue(hasattr(matcher_uncorr, "decode"))
 
     def test_ldpc_decoders_contains_all_names(self):
-        _, _, ldpc_decoders, _ = self.result
+        _, _, ldpc_decoders, _, _ = self.result
         for name in self.LDPC_DECODER_NAMES:
             self.assertIn(name, ldpc_decoders)
 
     def test_cudaq_decoders_is_dict(self):
-        _, _, _, cudaq_decoders = self.result
+        _, _, _, cudaq_decoders, _ = self.result
         self.assertIsInstance(cudaq_decoders, dict)
+
+    def test_unavailable_decoders_is_list(self):
+        _, _, _, _, unavailable = self.result
+        self.assertIsInstance(unavailable, list)
 
 
 class TestBuildLogicalOperators(unittest.TestCase):
@@ -369,7 +373,7 @@ class TestRunDecodersOnBatch(unittest.TestCase):
         import types
 
         det_model = _make_tiny_dem()
-        matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders = _build_all_decoders(
+        matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders, _ = _build_all_decoders(
             det_model, _DummyDist()
         )
         self.decoder_names = list(DECODER_NAMES)
@@ -555,6 +559,7 @@ class TestDecoderAblationStudy(unittest.TestCase):
             "residual_weights",
             "weight_bucket_stats",
             "agreement_count",
+            "unavailable_decoders",
         ):
             self.assertIn(key, result, f"Missing key in result: {key}")
 
@@ -706,7 +711,7 @@ class TestBuildCudaqDecoders(unittest.TestCase):
         det_model = _make_tiny_dem()
         mock_cudaq = self._make_mock_cudaq_qec(n_bits=10)
         with patch.dict("sys.modules", {"cudaq_qec": mock_cudaq}):
-            decoders = _build_cudaq_decoders(det_model)
+            decoders, _ = _build_cudaq_decoders(det_model)
         for name in ("cudaq-BP", "cudaq-MinSum", "cudaq-BP+OSD-0", "cudaq-BP+OSD-7"):
             self.assertIn(name, decoders, f"Missing decoder key: {name}")
 
@@ -715,7 +720,7 @@ class TestBuildCudaqDecoders(unittest.TestCase):
         det_model = _make_tiny_dem()
         mock_cudaq = self._make_mock_cudaq_qec(n_bits=10)
         with patch.dict("sys.modules", {"cudaq_qec": mock_cudaq}):
-            decoders = _build_cudaq_decoders(det_model)
+            decoders, _ = _build_cudaq_decoders(det_model)
         for name, (dec, L_dense) in decoders.items():
             with self.subTest(decoder=name):
                 self.assertTrue(hasattr(dec, "decode"), f"{name} has no .decode()")
@@ -728,7 +733,7 @@ class TestBuildCudaqDecoders(unittest.TestCase):
         det_model = _make_tiny_dem()
         mock_cudaq = self._make_mock_cudaq_qec(n_bits=10)
         with patch.dict("sys.modules", {"cudaq_qec": mock_cudaq}):
-            decoders = _build_cudaq_decoders(det_model)
+            decoders, _ = _build_cudaq_decoders(det_model)
         widths = [v[1].shape[1] for v in decoders.values()]
         self.assertEqual(len(set(widths)), 1, "All L_dense must have the same column count")
 
@@ -751,7 +756,7 @@ class TestBuildCudaqDecoders(unittest.TestCase):
             import warnings
             with warnings.catch_warnings(record=True):
                 warnings.simplefilter("always")
-                decoders = _build_cudaq_decoders(det_model)
+                decoders, _ = _build_cudaq_decoders(det_model)
         # At minimum the 4 standard decoders should be present
         self.assertGreaterEqual(len(decoders), 4)
         for name in ("cudaq-BP", "cudaq-MinSum", "cudaq-BP+OSD-0", "cudaq-BP+OSD-7"):
@@ -802,7 +807,7 @@ class TestDecoderAblationStudyWithCudaq(unittest.TestCase):
             )
             with patch("data.factory.DatapipeFactory") as mock_factory, \
                  patch("evaluation.failure_analysis._build_cudaq_decoders",
-                       return_value=dummy_cudaq_decoders):
+                       return_value=(dummy_cudaq_decoders, [])):
                 mock_factory.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), _DummyDist.device, _DummyDist(), cfg)
 
@@ -830,7 +835,7 @@ class TestDecoderAblationStudyWithCudaq(unittest.TestCase):
             )
             with patch("data.factory.DatapipeFactory") as mock_factory, \
                  patch("evaluation.failure_analysis._build_cudaq_decoders",
-                       return_value=dummy_cudaq_decoders):
+                       return_value=(dummy_cudaq_decoders, [])):
                 mock_factory.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), _DummyDist.device, _DummyDist(), cfg)
 

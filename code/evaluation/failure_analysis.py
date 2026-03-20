@@ -70,6 +70,8 @@ def _build_cudaq_decoders(det_model):
     mem_kwargs = dict(max_iterations=100, error_rate_vec=priors_list, opt_results=opt_res)
 
     decoders = {}
+    # list of cudaq decoder names that failed to initialize
+    unavailable = []
 
     # --- Standard BP variants (max_iterations=10) ---
     # Sum-product BP (no OSD)
@@ -127,6 +129,7 @@ def _build_cudaq_decoders(det_model):
     except Exception as e:
         import warnings
         warnings.warn(f"cudaq-qec MemBP unavailable: {e}")
+        unavailable.extend(["cudaq-MemBP", "cudaq-MemBP+OSD"])
 
     # --- RelayBP (max_iterations=100) ---
     # composition=1 (sequential relay), bp_method=3 (min-sum+dmem)
@@ -156,8 +159,9 @@ def _build_cudaq_decoders(det_model):
     except Exception as e:
         import warnings
         warnings.warn(f"cudaq-qec RelayBP unavailable: {e}")
+        unavailable.append("cudaq-RelayBP")
 
-    return decoders
+    return decoders, unavailable
 
 
 def _decode_cudaq_batch(decoder, L_dense, syndromes_np):
@@ -260,14 +264,17 @@ def _build_all_decoders(det_model, dist):
     )
     ldpc_decoders = _build_ldpc_decoders(det_model)
     cudaq_decoders = {}
+    unavailable_decoders = []
     try:
-        cudaq_decoders = _build_cudaq_decoders(det_model)
+        cudaq_decoders, unavailable_decoders = _build_cudaq_decoders(det_model)
         if dist.rank == 0:
             print(f"[Decoder Ablation] cudaq-qec decoders loaded: {list(cudaq_decoders.keys())}")
+            if unavailable_decoders:
+                print(f"[Decoder Ablation] cudaq-qec decoders unavailable: {unavailable_decoders}")
     except Exception as e:
         if dist.rank == 0:
             print(f"[Decoder Ablation] cudaq-qec decoders unavailable: {e}")
-    return matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders
+    return matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders, unavailable_decoders
 
 
 def _build_logical_operators(D, code_rotation, device):
@@ -528,6 +535,7 @@ def _print_ablation_results(
     decoder_errors,
     decoder_names,
     cudaq_decoder_names,
+    unavailable_decoders,
     _cudaq_stats,
     n_all_agree,
     all_residual_weights,
@@ -561,6 +569,9 @@ def _print_ablation_results(
     for name in decoder_names:
         ler = decoder_errors[name] / max(1, total_scanned)
         print(f"  {name:<25s}  LER = {ler:.6f}  ({decoder_errors[name]} errors)")
+    if unavailable_decoders:
+        for name in unavailable_decoders:
+            print(f"  {name:<25s}  LER = {'N/A':>13s}  (unavailable)")
 
     # cudaq decoder convergence and iteration stats
     if _cudaq_stats:
@@ -719,9 +730,8 @@ def decoder_ablation_study(model, device, dist, cfg):
     )
 
     # --- Decoders ---
-    matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders = _build_all_decoders(
-        det_model, dist
-    )
+    matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders, unavailable_decoders = \
+        _build_all_decoders(det_model, dist)
     cudaq_decoder_names = sorted(cudaq_decoders.keys())
     decoder_names = list(DECODER_NAMES) + cudaq_decoder_names
 
@@ -901,6 +911,7 @@ def decoder_ablation_study(model, device, dist, cfg):
             decoder_errors,
             decoder_names,
             cudaq_decoder_names,
+            unavailable_decoders,
             _cudaq_stats,
             n_all_agree,
             all_residual_weights,
@@ -917,6 +928,7 @@ def decoder_ablation_study(model, device, dist, cfg):
             "baseline_weights": all_baseline_weights,
             "weight_bucket_stats": weight_bucket_stats,
             "agreement_count": n_all_agree,
+            "unavailable_decoders": unavailable_decoders,
         } if dist.rank == 0 else {}
     )
 
