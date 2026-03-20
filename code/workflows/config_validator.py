@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Public config normalization / validation for the early-access public release.
 
@@ -29,6 +35,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from model.registry import PublicModelSpec, get_model_spec
 
+
 _PUBLIC_ROTATION_TO_INTERNAL = {
     # Public user-facing aliases
     "O1": "XV",
@@ -45,7 +52,6 @@ _PUBLIC_MODEL_ID_TO_LR = {
     4: 2e-4,
     5: 1e-4,
 }
-
 
 def _default_precomputed_frames_dir() -> str:
     """
@@ -103,12 +109,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
     return {
         "exp_tag": "pre-decoder",
         "output": output_root,
-        "hydra": {
-            "run": {
-                "dir": "${output}"
-            },
-            "output_subdir": "hydra"
-        },
+        "hydra": {"run": {"dir": "${output}"}, "output_subdir": "hydra"},
         "resume_dir": f"{output_root}/models",
         "enable_fp16": False,
         "enable_bf16": False,
@@ -125,130 +126,96 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
         "multiple_rounds": [13, 13],
         "use_multiple_patches": False,
         "meas_basis": "both",
-        "workflow": {
-            "task": "train"
+        "workflow": {"task": "train"},
+        "data": {
+            "timelike_he": True,
+            "num_he_cycles": 1,
+            "use_weight2_timelike": False,
+            "max_passes_w1": 8,
+            "max_passes_w2": 4,
+            "decompose_y": True,
+            "p_error": None,
+            "p_min": 0.001,
+            "p_max": 0.006,
+            "error_mode": "circuit_level_surface_custom",
+            # Public config overrides this; keep the historical default for completeness.
+            "precomputed_frames_dir": _default_precomputed_frames_dir(),
+            "enable_correlated_pymatching": False,
+            "code_rotation": "XV",
+            "noise_model": None,
         },
-        "data":
-            {
-                "timelike_he": True,
-                "num_he_cycles": 1,
-                "use_weight2": False,
-                "max_passes_w1": 8,
-                "max_passes_w2": 4,
-                "use_compile": True,
-                "compile_chunk_size": 2,
-                "compute_dtype": None,
-                "use_coset_search": False,
-                "coset_max_generators": 20,
-                "use_dense_overlap": False,
-                "decompose_y": True,
-                "p_error": None,
-                "p_min": 0.001,
-                "p_max": 0.006,
-                "error_mode": "circuit_level_surface_custom",
-                # Public config overrides this; keep the historical default for completeness.
-                "precomputed_frames_dir": _default_precomputed_frames_dir(),
-                "enable_correlated_pymatching": False,
-                "code_rotation": "XV",
-                "noise_model": None,
-            },
-        "model":
-            {
-                "version": "predecoder_memory_v1",
-                "dropout_p": 0.05,
-                "activation": "gelu",
-                "num_filters": [128, 128, 128, 4],
-                "kernel_size": [3, 3, 3, 3],
-                "input_channels": 4,
-                "out_channels": 4,
-            },
+        "model": {
+            "version": "predecoder_memory_v1",
+            "dropout_p": 0.05,
+            "activation": "gelu",
+            "num_filters": [128, 128, 128, 4],
+            "kernel_size": [3, 3, 3, 3],
+            "input_channels": 4,
+            "out_channels": 4,
+        },
         "datapipe": "memory",
         "data_method": "train",
-        "train":
-            {
-                "num_samples": int(os.environ.get("PREDECODER_NUM_SAMPLES", 67108864)),
-                "accumulate_steps": 2,
-                "checkpoint_interval": 1,
-                "save_every_datasets": 5,
-                "epochs": 100,
-            },
+        "train": {
+            # Production baseline: 2^26 shots / epoch when training with 8 GPUs.
+            # The training script will auto-scale this based on detected world size / GPU count.
+            "num_samples": 67108864,
+            "accumulate_steps": 2,
+            "checkpoint_interval": 1,
+            "save_every_datasets": 5,
+            "epochs": 100,
+        },
         # NOTE: temporarily reduced for faster iteration during refactor/testing.
-        "val": {
-            "num_samples": 65536,
-            "threshold": 0.5,
-            "trials": 1
-        },
+        "val": {"num_samples": 65536, "threshold": 0.5, "trials": 1},
         "optimizer_type": "Lion",
-        "optimizer": {
-            "lr": 1e-4,
-            "weight_decay": 1e-7,
-            "beta2": 0.95
+        "optimizer": {"lr": 1e-4, "weight_decay": 1e-7, "beta2": 0.95},
+        "lr_scheduler": {
+            "type": "warmup_then_decay",
+            "warmup_steps": 100,
+            "milestones": [0.25, 0.5, 1.0],
+            "gamma": 0.7,
+            "min_lr": 1e-6,
         },
-        "lr_scheduler":
-            {
-                "type": "warmup_then_decay",
-                "warmup_steps": 100,
-                "milestones": [0.25, 0.5, 1.0],
-                "gamma": 0.7,
-                "min_lr": 1e-6,
-            },
-        "batch_schedule":
-            {
-                "enabled": True,
-                "initial": 256,
-                "final": 1024,
-                "start_epoch": 1,
-                "end_epoch": 3,
-            },
-        "validation_ler": True,
-        "early_stopping": {
+        "batch_schedule": {
             "enabled": True,
-            "patience": 100
+            "initial": 256,
+            "final": 1024,
+            "start_epoch": 1,
+            "end_epoch": 3,
         },
-        "time_based_early_stopping": {
-            "enabled": False,
-            "safety_margin_minutes": 5
-        },
-        "ema": {
-            "use_ema": True,
-            "decay": 0.0001
-        },
-        "test":
-            {
-                "num_samples": 262144,
-                "trials": 1,
-                "distance": 9,
-                "n_rounds": 9,
-                "noise_model": "train",
-                "p_error": 0.006,
-                "dataloader":
-                    {
-                        "batch_size": 2048,
-                        "num_workers": 4,
-                        "persistent_workers": True,
-                        "prefetch_factor": 2,
-                    },
-                "sampler": {
-                    "shuffle": False,
-                    "drop_last": False
-                },
-                "syn_red": "full",
-                "th_data": 0.0,
-                "th_syn": 0.0,
-                "sampling_mode": "threshold",
-                "temperature": 0.0,
-                "temperature_data": None,
-                "temperature_syn": None,
-                "per_round": False,
-                "meas_basis_test": "both",
-                "use_model_checkpoint": -1,
+        "validation_ler": True,
+        "early_stopping": {"enabled": True, "patience": 100},
+        "time_based_early_stopping": {"enabled": False, "safety_margin_minutes": 5},
+        "ema": {"use_ema": True, "decay": 0.0001},
+        "test": {
+            "num_samples": 262144,
+            "trials": 1,
+            "distance": 9,
+            "n_rounds": 9,
+            "noise_model": "train",
+            "p_error": 0.006,
+            "dataloader": {
+                "batch_size": 2048,
+                "num_workers": 4,
+                "persistent_workers": True,
+                "prefetch_factor": 2,
             },
-        "threshold":
-            {
-                "p_values": [0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008],
-                "distances": [5, 7, 9, 11, 13],
-                "n_rounds": None,
-            },
+            "sampler": {"shuffle": False, "drop_last": False},
+            "syn_red": "full",
+            "th_data": 0.0,
+            "th_syn": 0.0,
+            "sampling_mode": "threshold",
+            "temperature": 0.0,
+            "temperature_data": None,
+            "temperature_syn": None,
+            "per_round": False,
+            "meas_basis_test": "both",
+            "use_model_checkpoint": -1,
+        },
+        "threshold": {
+            "p_values": [0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008],
+            "distances": [5, 7, 9, 11, 13],
+            "n_rounds": None,
+        },
     }
 
 
@@ -298,13 +265,9 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
         d = int(cfg.distance)
         r = int(cfg.n_rounds)
     except Exception as e:
-        raise ValueError(
-            f"Invalid distance/n_rounds: distance={cfg.distance!r}, n_rounds={cfg.n_rounds!r}"
-        ) from e
+        raise ValueError(f"Invalid distance/n_rounds: distance={cfg.distance!r}, n_rounds={cfg.n_rounds!r}") from e
     if d <= 0 or r <= 0:
-        raise ValueError(
-            f"Invalid distance/n_rounds: distance={d}, n_rounds={r} (must be positive integers)"
-        )
+        raise ValueError(f"Invalid distance/n_rounds: distance={d}, n_rounds={r} (must be positive integers)")
 
     if "train" in cfg:
         raise ValueError("Config field 'train' is not supported in the public release.")
@@ -500,3 +463,4 @@ def apply_public_defaults_and_model(cfg: DictConfig, model_spec: PublicModelSpec
     merged.test.n_rounds = int(requested_n_rounds)
     merged.test.noise_model = "train"
     return merged
+

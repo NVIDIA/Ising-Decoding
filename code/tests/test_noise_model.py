@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Statistical tests for the 25-parameter NoiseModel (Stim-based).
 
@@ -16,8 +22,8 @@ Key conventions enforced by this test module:
 - Apply inference-style masking for comparisons:
   - Mask the non-basis syndrome type at round 0 and also at the last round.
 - Provide two tiers:
-  - Fast tier (~10k shots)
-  - Slow tier (>=100k shots) gated by RUN_SLOW=1
+  - Fast smoke tests (~10k shots)
+  - Slow statistically-significant tests (>=100k shots) gated by RUN_SLOW=1
 """
 
 import os
@@ -30,16 +36,7 @@ import stim
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from qec.noise_model import (
-    NoiseModel,
-    CNOT_ERROR_TYPES,
-    CNOT_ERROR_INDEX,
-    _single_p_mapping,
-    get_grouped_totals,
-    get_training_upscaled_noise_model,
-    SURFACE_CODE_TRAINING_UPSCALE_TARGET,
-    SURFACE_CODE_THRESHOLD_APPROX,
-)
+from qec.noise_model import NoiseModel, CNOT_ERROR_TYPES, CNOT_ERROR_INDEX, _single_p_mapping
 from qec.surface_code.memory_circuit import MemoryCircuit
 from qec.surface_code.data_mapping import (
     normalized_weight_mapping_Xstab_memory,
@@ -47,7 +44,6 @@ from qec.surface_code.data_mapping import (
     reshape_Xstabilizers_to_grid_vectorized,
     reshape_Zstabilizers_to_grid_vectorized,
 )
-
 
 def _shots_fast() -> int:
     return int(os.environ.get("NOISEMODEL_FAST_SHOTS", "10000"))
@@ -77,10 +73,8 @@ def _compute_density_from_trainX_np(trainX_np: np.ndarray) -> dict:
     x_den_t = x_pres.sum(axis=(0, 2, 3)).astype(np.float64)
     z_den_t = z_pres.sum(axis=(0, 2, 3)).astype(np.float64)
 
-    x_num_t = (x_syn.astype(np.int32) * x_pres.astype(np.int32)).sum(axis=(0, 2, 3)
-                                                                    ).astype(np.float64)
-    z_num_t = (z_syn.astype(np.int32) * z_pres.astype(np.int32)).sum(axis=(0, 2, 3)
-                                                                    ).astype(np.float64)
+    x_num_t = (x_syn.astype(np.int32) * x_pres.astype(np.int32)).sum(axis=(0, 2, 3)).astype(np.float64)
+    z_num_t = (z_syn.astype(np.int32) * z_pres.astype(np.int32)).sum(axis=(0, 2, 3)).astype(np.float64)
 
     # Avoid divide-by-zero (shouldn't happen, but keep robust)
     x_den_t = np.maximum(x_den_t, 1.0)
@@ -105,9 +99,7 @@ def _noise_model_from_p(p: float) -> NoiseModel:
     return NoiseModel.from_config_dict(_single_p_mapping(p))
 
 
-def _stim_trainX_np(
-    distance: int, n_rounds: int, basis: str, noise_model: NoiseModel | None
-) -> np.ndarray:
+def _stim_trainX_np(distance: int, n_rounds: int, basis: str, noise_model: NoiseModel | None) -> np.ndarray:
     """Build Stim circuit -> sample measurements -> compute syndrome diffs -> map to trainX grid (inference masking)."""
     basis = basis.upper()
     code_rotation = "XV"
@@ -117,30 +109,13 @@ def _stim_trainX_np(
     if noise_model is None:
         p = 0.01
         spam_error = 2.0 * p / 3.0
-        circ = MemoryCircuit(
-            distance=distance,
-            idle_error=p,
-            sqgate_error=p,
-            tqgate_error=p,
-            spam_error=spam_error,
-            n_rounds=n_rounds,
-            basis=basis,
-            code_rotation=code_rotation
-        )
+        circ = MemoryCircuit(distance=distance, idle_error=p, sqgate_error=p, tqgate_error=p, spam_error=spam_error,
+                             n_rounds=n_rounds, basis=basis, code_rotation=code_rotation)
     else:
         # Use max-prob as a safe placeholder for scalar slots.
         p = float(noise_model.get_max_probability())
-        circ = MemoryCircuit(
-            distance=distance,
-            idle_error=p,
-            sqgate_error=p,
-            tqgate_error=p,
-            spam_error=p,
-            n_rounds=n_rounds,
-            basis=basis,
-            code_rotation=code_rotation,
-            noise_model=noise_model
-        )
+        circ = MemoryCircuit(distance=distance, idle_error=p, sqgate_error=p, tqgate_error=p, spam_error=p,
+                             n_rounds=n_rounds, basis=basis, code_rotation=code_rotation, noise_model=noise_model)
     circ.set_error_rates()
 
     meas = stim.Circuit(circ.circuit).compile_sampler().sample(shots=_shots_fast())
@@ -180,28 +155,12 @@ def _stim_trainX_np(
     z_syn_mapped = reshape_Zstabilizers_to_grid_vectorized(z_syn_t, D, rotation=code_rotation)
 
     # (B, D*D, T) -> (B, T, D, D)
-    x_syn_grid = x_syn_mapped.reshape(B, D, D,
-                                      n_rounds).permute(0, 3, 1,
-                                                        2).contiguous().cpu().numpy().astype(
-                                                            np.float32
-                                                        )
-    z_syn_grid = z_syn_mapped.reshape(B, D, D,
-                                      n_rounds).permute(0, 3, 1,
-                                                        2).contiguous().cpu().numpy().astype(
-                                                            np.float32
-                                                        )
+    x_syn_grid = x_syn_mapped.reshape(B, D, D, n_rounds).permute(0, 3, 1, 2).contiguous().cpu().numpy().astype(np.float32)
+    z_syn_grid = z_syn_mapped.reshape(B, D, D, n_rounds).permute(0, 3, 1, 2).contiguous().cpu().numpy().astype(np.float32)
 
     # Presence maps (weights) + masking consistent with datapipe_stim
-    w_mapX = normalized_weight_mapping_Xstab_memory(D,
-                                                    code_rotation).reshape(D,
-                                                                           D).cpu().numpy().astype(
-                                                                               np.float32
-                                                                           )
-    w_mapZ = normalized_weight_mapping_Zstab_memory(D,
-                                                    code_rotation).reshape(D,
-                                                                           D).cpu().numpy().astype(
-                                                                               np.float32
-                                                                           )
+    w_mapX = normalized_weight_mapping_Xstab_memory(D, code_rotation).reshape(D, D).cpu().numpy().astype(np.float32)
+    w_mapZ = normalized_weight_mapping_Zstab_memory(D, code_rotation).reshape(D, D).cpu().numpy().astype(np.float32)
     x_present = np.broadcast_to(w_mapX[None, None, :, :], (B, n_rounds, D, D)).copy()
     z_present = np.broadcast_to(w_mapZ[None, None, :, :], (B, n_rounds, D, D)).copy()
 
@@ -240,9 +199,7 @@ def _random_noise_model(seed: int, scale: float = 0.01) -> NoiseModel:
     p_idle_spam_Z = float(scale * rng.uniform(0.1, 1.0))
 
     # CNOT components around scale (each ~ scale/15 * [0.2, 3.0])
-    cnot_probs = {
-        f"p_cnot_{k}": float((scale / 15.0) * rng.uniform(0.2, 3.0)) for k in CNOT_ERROR_TYPES
-    }
+    cnot_probs = {f"p_cnot_{k}": float((scale / 15.0) * rng.uniform(0.2, 3.0)) for k in CNOT_ERROR_TYPES}
 
     return NoiseModel(
         p_prep_X=p_prep_X,
@@ -260,7 +217,6 @@ def _random_noise_model(seed: int, scale: float = 0.01) -> NoiseModel:
 
 
 class TestNoiseModel(unittest.TestCase):
-
     def test_noise_model_roundtrip_and_invariants(self):
         p = 0.01
         nm = _noise_model_from_p(p)
@@ -280,29 +236,15 @@ class TestNoiseModel(unittest.TestCase):
         D = 5
         T = 5
         nm = NoiseModel(
-            p_prep_X=0.01,
-            p_prep_Z=0.02,
-            p_meas_X=0.01,
-            p_meas_Z=0.02,
-            p_idle_cnot_X=0.003,
-            p_idle_cnot_Y=0.002,
-            p_idle_cnot_Z=0.004,
-            p_idle_spam_X=0.003,
-            p_idle_spam_Y=0.002,
-            p_idle_spam_Z=0.004,
+            p_prep_X=0.01, p_prep_Z=0.02,
+            p_meas_X=0.01, p_meas_Z=0.02,
+            p_idle_cnot_X=0.003, p_idle_cnot_Y=0.002, p_idle_cnot_Z=0.004,
+            p_idle_spam_X=0.003, p_idle_spam_Y=0.002, p_idle_spam_Z=0.004,
             **{f"p_cnot_{k}": (0.0005 if k != "ZZ" else 0.001) for k in CNOT_ERROR_TYPES}
         )
-        circ = MemoryCircuit(
-            distance=D,
-            idle_error=nm.get_max_probability(),
-            sqgate_error=nm.get_max_probability(),
-            tqgate_error=nm.get_max_probability(),
-            spam_error=nm.get_max_probability(),
-            n_rounds=T,
-            basis="X",
-            noise_model=nm,
-            code_rotation="XV"
-        )
+        circ = MemoryCircuit(distance=D, idle_error=nm.get_max_probability(), sqgate_error=nm.get_max_probability(),
+                             tqgate_error=nm.get_max_probability(), spam_error=nm.get_max_probability(),
+                             n_rounds=T, basis="X", noise_model=nm, code_rotation="XV")
         circ.set_error_rates()
 
         lines = circ.circuit.split("\n")
@@ -325,141 +267,8 @@ class TestNoiseModel(unittest.TestCase):
                     pauli2_after_repeat += 1
 
         self.assertGreater(pauli2_in_repeat, 0, "Expected PAULI_CHANNEL_2 inside stabilizer rounds")
-        self.assertEqual(
-            pauli2_after_repeat, 0,
-            "Expected NO CNOT noise instructions in logical-measurement section"
-        )
-
-
-class TestNoiseModelUpscaling(unittest.TestCase):
-    """Tests for surface-code training noise model upscaling (get_training_upscaled_noise_model)."""
-
-    def test_get_grouped_totals(self):
-        """get_grouped_totals returns correct P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot and max_group."""
-        nm = _noise_model_from_p(0.01)
-        tot = get_grouped_totals(nm)
-        self.assertAlmostEqual(
-            tot["p_prep"], 2.0 * 0.01 / 3.0 * 2, places=12
-        )  # p_prep_X + p_prep_Z
-        self.assertAlmostEqual(tot["p_meas"], 2.0 * 0.01 / 3.0 * 2, places=12)
-        self.assertAlmostEqual(tot["p_idle_cnot"], 0.01, places=12)
-        self.assertAlmostEqual(tot["p_idle_spam"], nm.get_total_idle_spam_probability(), places=12)
-        self.assertAlmostEqual(tot["p_cnot"], 0.01, places=12)
-        self.assertGreater(tot["max_group"], 0)
-        self.assertEqual(
-            tot["max_group"],
-            max(
-                tot["p_prep"], tot["p_meas"], tot["p_idle_cnot"], tot["p_idle_spam"], tot["p_cnot"]
-            )
-        )
-
-    def test_upscale_small_noise(self):
-        """When max_group < target, all 25 p's are scaled so that new max_group = target."""
-        # Single-p 1e-4 -> max_group is around 1e-4 (order of magnitude)
-        nm = _noise_model_from_p(1e-4)
-        tot = get_grouped_totals(nm)
-        self.assertLess(tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertTrue(info["applied_upscale"])
-        self.assertFalse(info["downscale_skipped"])
-        scale = info["scale_factor"]
-        self.assertGreaterEqual(scale, 1.0)
-        self.assertAlmostEqual(
-            scale, SURFACE_CODE_TRAINING_UPSCALE_TARGET / tot["max_group"], places=10
-        )
-        new_tot = get_grouped_totals(training_nm)
-        self.assertAlmostEqual(
-            new_tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET, places=10
-        )
-        # All params scaled by the same factor
-        for k, v in nm.to_config_dict().items():
-            self.assertAlmostEqual(training_nm.to_config_dict()[k], v * scale, places=12, msg=k)
-
-    def test_upscale_exact_target_scale_one(self):
-        """When max_group equals target, scale_factor is 1.0 and model is unchanged."""
-        # Build a model with max_group = target by scaling a small model up
-        nm_small = _noise_model_from_p(1e-4)
-        tot_small = get_grouped_totals(nm_small)
-        scale_to_target = SURFACE_CODE_TRAINING_UPSCALE_TARGET / tot_small["max_group"]
-        params = {k: v * scale_to_target for k, v in nm_small.to_config_dict().items()}
-        nm = NoiseModel.from_config_dict(params)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertTrue(info["applied_upscale"])
-        self.assertAlmostEqual(info["scale_factor"], 1.0, places=10)
-        self.assertAlmostEqual(
-            training_nm.get_total_cnot_probability(), nm.get_total_cnot_probability(), places=12
-        )
-
-    def test_downscale_not_applied(self):
-        """When max_group > target, parameters are NOT modified; downscale_skipped is True."""
-        nm = _noise_model_from_p(1e-2)  # max_group well above 6e-3
-        tot = get_grouped_totals(nm)
-        self.assertGreater(tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertFalse(info["applied_upscale"])
-        self.assertTrue(info["downscale_skipped"])
-        self.assertTrue(info["above_target_warning"])
-        # Same object parameters (identity)
-        self.assertEqual(nm.to_config_dict(), training_nm.to_config_dict())
-        self.assertIs(training_nm, nm)
-
-    def test_above_target_warning(self):
-        """When max_group > target, above_target_warning is True."""
-        nm = _noise_model_from_p(0.01)
-        _, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertTrue(info["above_target_warning"])
-        nm_low = _noise_model_from_p(1e-4)
-        _, info_low = get_training_upscaled_noise_model(nm_low, code_type="surface_code")
-        self.assertFalse(info_low["above_target_warning"])
-
-    def test_non_surface_code_no_upscaling(self):
-        """For code_type != 'surface_code', no scaling is applied; original model returned."""
-        nm = _noise_model_from_p(1e-4)
-        training_nm, info = get_training_upscaled_noise_model(nm, code_type="color_code")
-        self.assertFalse(info.get("applied_upscale", False))
-        self.assertEqual(nm.to_config_dict(), training_nm.to_config_dict())
-        self.assertIn("message", info)
-        self.assertIn("surface_code", info["message"])
-
-    def test_invalid_zero_totals_raises(self):
-        """When all grouped totals are zero, get_training_upscaled_noise_model raises ValueError."""
-        nm = NoiseModel()  # all zeros
-        with self.assertRaises(ValueError) as ctx:
-            get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertIn("all grouped totals are <= 0", str(ctx.exception))
-
-    def test_upscale_preserves_reference(self):
-        """Upscaled training model preserves _reference from the original."""
-        nm = _noise_model_from_p(1e-4)
-        ref = dict(nm._reference)
-        training_nm, _ = get_training_upscaled_noise_model(nm, code_type="surface_code")
-        self.assertEqual(training_nm._reference, ref)
-
-    def test_skip_upscale_returns_original(self):
-        """When skip_upscale=True, the original model is returned unchanged regardless of max_group."""
-        nm = _noise_model_from_p(1e-4)
-        tot = get_grouped_totals(nm)
-        self.assertLess(tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET)
-        training_nm, info = get_training_upscaled_noise_model(
-            nm, code_type="surface_code", skip_upscale=True
-        )
-        self.assertIs(training_nm, nm)
-        self.assertFalse(info["applied_upscale"])
-        self.assertFalse(info["downscale_skipped"])
-        self.assertTrue(info["skipped_by_user"])
-        self.assertIn("SKIPPED", info["message"])
-
-    def test_skip_upscale_above_target(self):
-        """skip_upscale=True also works when max_group > target (no warning about downscale)."""
-        nm = _noise_model_from_p(1e-2)
-        training_nm, info = get_training_upscaled_noise_model(
-            nm, code_type="surface_code", skip_upscale=True
-        )
-        self.assertIs(training_nm, nm)
-        self.assertTrue(info["skipped_by_user"])
-        self.assertFalse(info["applied_upscale"])
-        self.assertFalse(info["downscale_skipped"])
-
+        self.assertEqual(pauli2_after_repeat, 0, "Expected NO CNOT noise instructions in logical-measurement section")
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Precompute DEM bundles (H, p, A) for MemoryCircuitTorch.
 
@@ -133,15 +139,14 @@ def main() -> None:
     if len(args.n_rounds) == 1 and len(args.distance) > 1:
         args.n_rounds = args.n_rounds * len(args.distance)
     if len(args.n_rounds) != len(args.distance):
-        print(
-            "Error: Number of --n_rounds values must match --distance values (or be a single value)"
-        )
+        print("Error: Number of --n_rounds values must match --distance values (or be a single value)")
         sys.exit(1)
 
     verbose = not args.quiet
     device = (
-        torch.device(args.device) if args.device is not None else
-        torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        torch.device(args.device)
+        if args.device is not None
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
     internal_rot = _normalize_rotation(args.rotation)
 
@@ -173,9 +178,7 @@ def main() -> None:
                 )
                 output_dirs.add(str(dem_dir))
             except Exception as e:
-                print(
-                    f"\n✗ Error precomputing d={d}, r={r}, basis={basis}, rotation={args.rotation}: {e}"
-                )
+                print(f"\n✗ Error precomputing d={d}, r={r}, basis={basis}, rotation={args.rotation}: {e}")
                 import traceback
                 traceback.print_exc()
 

@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Optimizer and learning rate scheduler implementations.
 """
@@ -187,8 +193,7 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
         def cosine_with_warmup(current_step):
             if current_step < warmup_steps:
                 return float(current_step) / float(max(1, warmup_steps))
-            progress = float(current_step -
-                             warmup_steps) / float(max(1, total_steps - warmup_steps))
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
             cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
             return cosine_decay * (1.0 - min_lr_ratio) + min_lr_ratio
 
@@ -196,3 +201,5 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
 
     else:
         raise ValueError(f"Unknown lr_scheduler.type: {cfg.lr_scheduler.type}")
+
+
