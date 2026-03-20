@@ -238,7 +238,10 @@ def _decode_ldpc_batch(decoder, L_dense, syndromes_np):
     B = syndromes_np.shape[0]
     obs = np.zeros(B, dtype=np.uint8)
     for i in range(B):
+        # Get the most-likely error configuration from the decoder for this syndrome.
         correction = decoder.decode(syndromes_np[i])
+        # Project the correction onto the logical observable via L_dense (mod 2).
+        # L_dense has shape (num_obs, num_errors); the first observable row is used.
         obs[i] = (
             int((L_dense @ correction).item() %
                 2) if L_dense.shape[0] == 1 else int((L_dense @ correction)[0] % 2)
