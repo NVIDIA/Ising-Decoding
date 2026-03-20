@@ -817,7 +817,9 @@ def run_inference_and_decode_pre_decoder_memory(
 
     _applied_compile = False
     if not _will_export_onnx:
-        try:
+    _applied_compile = False
+    _compile_enabled = _get_env_bool("PREDECODER_TORCH_COMPILE", True)
+    if not _will_export_onnx and _compile_enabled:
             model = torch.compile(model, mode="reduce-overhead")
             _applied_compile = True
         except Exception as e:
