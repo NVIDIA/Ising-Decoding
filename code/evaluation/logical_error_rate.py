@@ -12,18 +12,17 @@
 # V3 Evaluation Configuration Reference
 # ============================================================================
 #
-# Inference path (controls how model output becomes residual syndromes):
-#   PREDECODER_INLINE_INFERENCE   (bool, default: 1)
-#       1 = inline tensor ops for residual construction (new, faster)
-#       0 = legacy PreDecoderMemoryEvalModule + optional ONNX/TRT pipeline
+# Inference path:
+#   Uses PreDecoderMemoryEvalModule + optional ONNX/TRT pipeline.
 #
-#   ONNX_WORKFLOW                 (int, default: 0, legacy path only)
+#   ONNX_WORKFLOW                 (int, default: 0)
 #       0 = PyTorch only   1 = export ONNX   2 = export ONNX + build TRT
 #       3 = load pre-built TRT engine
 #
-# Performance features (composable -- each works with both inference paths):
+# Performance features:
 #   torch.compile        Always applied (reduce-overhead mode), except when
 #                        ONNX export is active (ONNX_WORKFLOW=1 or 2).
+#                        Disable with PREDECODER_TORCH_COMPILE=0.
 #   channels_last_3d     Always applied to model memory format.
 #   CUDAPrefetcher       Async data prefetch on any CUDA device.
 #   Non-blocking xfer    GPU->CPU via non_blocking=True + stream sync.
@@ -40,9 +39,8 @@
 #
 # At startup, a single [LER Config] line is printed showing all active
 # settings. Example:
-#   [LER Config] inference=inline | ONNX_WORKFLOW=torch-only |
-#       torch.compile=on | channels_last_3d=on | prefetcher=on |
-#       timing=off | compute_sdr=False
+#   [LER Config] ONNX_WORKFLOW=torch-only | torch.compile=on |
+#       channels_last_3d=on | prefetcher=on | timing=off
 # ============================================================================
 import pymatching
 import numpy as np
@@ -745,20 +743,13 @@ def count_logical_errors_with_errorbar(model, device, dist, cfg):
 
 
 @torch.inference_mode()
-def run_inference_and_decode_pre_decoder_memory(
-    model, device, dist, cfg, compute_sdr: bool = False
-) -> dict:
+def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dict:
     """
     Runs inference with the trained model, forms residual syndromes consistent with the DEM,
     and computes the final logical error rate with PyMatching.
 
-    Args:
-        compute_sdr: If True, also accumulate syndrome density reduction (SDR) stats
-            alongside LER. The SDR result is appended to the return tuple.
-
     Returns:
-        Without compute_sdr: (num_logic_errors, num_samples, num_pymatch_errors, baseline_us, predecoder_us)
-        With compute_sdr:    (num_logic_errors, num_samples, num_pymatch_errors, baseline_us, predecoder_us, sdr_result_dict)
+        (num_logic_errors, num_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round)
     """
 
     th_data = float(getattr(cfg.test, "th_data", 0.0))
@@ -798,14 +789,11 @@ def run_inference_and_decode_pre_decoder_memory(
     )
     timing_rank0 = bool(enable_timing_instrumentation and dist.rank == 0)
 
-    # Read inference path flag early -- needed for compile guard and banner.
-    use_inline_inference = _get_env_bool("PREDECODER_INLINE_INFERENCE", True)
-
     model.eval()
 
     # Determine if ONNX export will happen -- torch.compile is incompatible with ONNX export.
     _onnx_workflow_raw = int(os.environ.get("ONNX_WORKFLOW", "0").strip() or "0")
-    _will_export_onnx = (not use_inline_inference and _onnx_workflow_raw in (1, 2))
+    _will_export_onnx = (_onnx_workflow_raw in (1, 2))
 
     _applied_channels_last = False
     try:
@@ -829,13 +817,11 @@ def run_inference_and_decode_pre_decoder_memory(
         _onnx_names = {0: "torch-only", 1: "export-ONNX", 2: "export+TRT", 3: "load-engine"}
         _onnx_label = _onnx_names.get(_onnx_workflow_raw, str(_onnx_workflow_raw))
         print(
-            f"[LER Config] inference={'inline' if use_inline_inference else 'legacy'}"
-            f" | ONNX_WORKFLOW={_onnx_label}"
+            f"[LER Config] ONNX_WORKFLOW={_onnx_label}"
             f" | torch.compile={'on' if _applied_compile else ('skipped(ONNX)' if _will_export_onnx else ('off(env)' if not _compile_enabled else 'off'))}"
             f" | channels_last_3d={'on' if _applied_channels_last else 'off'}"
             f" | prefetcher={'on' if device.type == 'cuda' else 'off(cpu)'}"
             f" | timing={'on' if enable_timing_instrumentation else 'off'}"
-            f" | compute_sdr={compute_sdr}"
         )
 
     # Latency measurement: sample a small subset and time decode at batch_size=1.
@@ -968,184 +954,145 @@ def run_inference_and_decode_pre_decoder_memory(
     batch_size_original = test_loader_kwargs.get("batch_size", 1)
     T_original = cfg.test.n_rounds
 
-    if use_inline_inference:
-        # Parity check matrices on device
-        Hx_idx = maps["Hx_idx"].to(device=device, dtype=torch.long)
-        Hz_idx = maps["Hz_idx"].to(device=device, dtype=torch.long)
-        Hx_mask = maps["Hx_mask"].to(device=device, dtype=torch.bool)
-        Hz_mask = maps["Hz_mask"].to(device=device, dtype=torch.bool)
-        stab_indices_x = maps["stab_x"].to(device=device, dtype=torch.long)
-        stab_indices_z = maps["stab_z"].to(device=device, dtype=torch.long)
-        Kx = maps["Kx"]
-        Kz = maps["Kz"]
+    pipeline_module = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
+    pipeline_module.eval()
 
-        D2 = D * D
-        if code_rotation.upper() in ('XV', 'ZH'):
-            Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
-            Lx[0, :D] = 1
-            Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
-            Lz[0, ::D] = 1
-        else:
-            Lx = torch.zeros((1, D2), dtype=torch.int32, device=device)
-            Lx[0, ::D] = 1
-            Lz = torch.zeros((1, D2), dtype=torch.int32, device=device)
-            Lz[0, :D] = 1
-
-        hx_idx_base = Hx_idx.clamp_min(0).view(1, -1, Kx, 1)
-        hz_idx_base = Hz_idx.clamp_min(0).view(1, -1, Kz, 1)
-        hx_mask_base = Hx_mask.view(1, -1, Kx, 1)
-        hz_mask_base = Hz_mask.view(1, -1, Kz, 1)
-
-    else:
-        pipeline_module = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
-        pipeline_module.eval()
-
-    # --- ONNX_WORKFLOW (legacy path only) ---
+    # --- ONNX_WORKFLOW ---
+    _workflow_raw = os.environ.get("ONNX_WORKFLOW", "0").strip()
+    try:
+        onnx_workflow = OnnxWorkflow(int(_workflow_raw))
+    except ValueError:
+        onnx_workflow = OnnxWorkflow.TORCH_ONLY
+        if dist.rank == 0:
+            print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
     trt_context = None
-    if not use_inline_inference:
-        _workflow_raw = os.environ.get("ONNX_WORKFLOW", "0").strip()
-        try:
-            onnx_workflow = OnnxWorkflow(int(_workflow_raw))
-        except ValueError:
-            onnx_workflow = OnnxWorkflow.TORCH_ONLY
-            if dist.rank == 0:
-                print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
-        onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.onnx")
-        engine_path = os.path.join(
-            os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.engine"
-        )
-        half = (D * D - 1) // 2
-        example_shape = (batch_size_original, 2 * T_original * half)
+    onnx_path = os.path.join(os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.onnx")
+    engine_path = os.path.join(
+        os.getcwd(), f"predecoder_memory_d{D}_T{T_original}_{basis}.engine"
+    )
+    half = (D * D - 1) // 2
+    example_shape = (batch_size_original, 2 * T_original * half)
 
-        if onnx_workflow == OnnxWorkflow.USE_ENGINE_ONLY and device.type == "cuda":
-            if os.path.isfile(engine_path):
-                try:
-                    import tensorrt as trt
-                    logger = trt.Logger(trt.Logger.WARNING)
-                    runtime = trt.Runtime(logger)
-                    t_load_start = time.perf_counter()
-                    with open(engine_path, "rb") as f:
-                        serialized = f.read()
-                    engine = runtime.deserialize_cuda_engine(serialized)
-                    t_load_end = time.perf_counter()
-                    if engine is None:
-                        raise RuntimeError("TensorRT engine deserialize from file failed")
-                    trt_context = (engine.create_execution_context(), engine)
-                    if dist.rank == 0:
-                        print(
-                            f"[LER] TensorRT engine loaded from {engine_path} "
-                            f"in {t_load_end - t_load_start:.3f}s"
-                        )
-                except Exception as e:
-                    if dist.rank == 0:
-                        print(f"[LER] TensorRT engine load failed: {e}; falling back to PyTorch.")
-                    trt_context = None
-            else:
+    if onnx_workflow == OnnxWorkflow.USE_ENGINE_ONLY and device.type == "cuda":
+        if os.path.isfile(engine_path):
+            try:
+                import tensorrt as trt
+                logger = trt.Logger(trt.Logger.WARNING)
+                runtime = trt.Runtime(logger)
+                t_load_start = time.perf_counter()
+                with open(engine_path, "rb") as f:
+                    serialized = f.read()
+                engine = runtime.deserialize_cuda_engine(serialized)
+                t_load_end = time.perf_counter()
+                if engine is None:
+                    raise RuntimeError("TensorRT engine deserialize from file failed")
+                trt_context = (engine.create_execution_context(), engine)
                 if dist.rank == 0:
                     print(
-                        f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; "
-                        "falling back to PyTorch."
+                        f"[LER] TensorRT engine loaded from {engine_path} "
+                        f"in {t_load_end - t_load_start:.3f}s"
                     )
-
-        elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
+            except Exception as e:
+                if dist.rank == 0:
+                    print(f"[LER] TensorRT engine load failed: {e}; falling back to PyTorch.")
+                trt_context = None
+        else:
             if dist.rank == 0:
-                try:
-                    example_dets = torch.randint(
-                        0, 2, example_shape, dtype=torch.uint8, device=device
-                    )
-                    torch.onnx.export(
-                        pipeline_module,
-                        example_dets,
-                        onnx_path,
-                        opset_version=18,
-                        external_data=False,
-                        input_names=["dets"],
-                        output_names=["L_and_residual_dets"],
-                        dynamic_axes={
-                            "dets": {
-                                0: "batch"
-                            },
-                            "L_and_residual_dets": {
-                                0: "batch"
-                            },
+                print(
+                    f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; "
+                    "falling back to PyTorch."
+                )
+
+    elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
+        if dist.rank == 0:
+            try:
+                example_dets = torch.randint(
+                    0, 2, example_shape, dtype=torch.uint8, device=device
+                )
+                torch.onnx.export(
+                    pipeline_module,
+                    example_dets,
+                    onnx_path,
+                    opset_version=18,
+                    external_data=False,
+                    input_names=["dets"],
+                    output_names=["L_and_residual_dets"],
+                    dynamic_axes={
+                        "dets": {
+                            0: "batch"
                         },
-                        do_constant_folding=True,
-                        dynamo=False,
-                    )
-                    print(f"[LER] Exported ONNX: {onnx_path}")
-                except Exception as e:
-                    if dist.rank == 0:
-                        print(f"[LER] ONNX export failed: {e}; falling back to PyTorch.")
-                    onnx_workflow = OnnxWorkflow.TORCH_ONLY
-            if dist.world_size > 1:
-                torch.distributed.barrier()
-            if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
-                try:
-                    import tensorrt as trt
-                    logger = trt.Logger(trt.Logger.WARNING)
-                    runtime = trt.Runtime(logger)
-                    builder = trt.Builder(logger)
-                    network = builder.create_network(
-                        1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-                    )
-                    parser = trt.OnnxParser(network, logger)
-                    with open(onnx_path, "rb") as f:
-                        if not parser.parse(f.read()):
-                            raise RuntimeError("TensorRT ONNX parse failed")
-                    config = builder.create_builder_config()
-                    # Uncomment to speedup engine build time:
-                    # config.builder_optimization_level = 0
-                    in_name = "dets"
-                    in_cols_trt = 2 * T_original * half
-                    profile = builder.create_optimization_profile()
-                    profile.set_shape(
-                        in_name,
-                        (1, in_cols_trt),
-                        (batch_size_original, in_cols_trt),
-                        (batch_size_original, in_cols_trt),
-                    )
-                    config.add_optimization_profile(profile)
-                    t_build_start = time.perf_counter()
-                    serialized = builder.build_serialized_network(network, config)
-                    t_build_end = time.perf_counter()
-                    if serialized is None:
-                        raise RuntimeError("TensorRT build failed")
-                    print(f"[LER] TensorRT engine built in {t_build_end - t_build_start:.3f}s")
-                    engine = runtime.deserialize_cuda_engine(serialized)
-                    if engine is None:
-                        raise RuntimeError("TensorRT deserialize failed")
-                    if dist.rank == 0:
-                        with open(engine_path, "wb") as f:
-                            f.write(engine.serialize())
-                        print(f"[LER] TensorRT engine saved to {engine_path}")
-                    t_create_context_start = time.perf_counter()
-                    trt_context = (engine.create_execution_context(), engine)
-                    t_create_context_end = time.perf_counter()
-                    print(
-                        f"[LER] TensorRT execution context created in "
-                        f"{t_create_context_end - t_create_context_start:.3f}s"
-                    )
-                    if dist.rank == 0:
-                        print(f"[LER] TensorRT engine built from {onnx_path}")
-                except Exception as e:
-                    if dist.rank == 0:
-                        print(f"[LER] TensorRT build/load failed: {e}; falling back to PyTorch.")
-                    trt_context = None
+                        "L_and_residual_dets": {
+                            0: "batch"
+                        },
+                    },
+                    do_constant_folding=True,
+                    dynamo=False,
+                )
+                print(f"[LER] Exported ONNX: {onnx_path}")
+            except Exception as e:
+                if dist.rank == 0:
+                    print(f"[LER] ONNX export failed: {e}; falling back to PyTorch.")
+                onnx_workflow = OnnxWorkflow.TORCH_ONLY
+        if dist.world_size > 1:
+            torch.distributed.barrier()
+        if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
+            try:
+                import tensorrt as trt
+                logger = trt.Logger(trt.Logger.WARNING)
+                runtime = trt.Runtime(logger)
+                builder = trt.Builder(logger)
+                network = builder.create_network(
+                    1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+                )
+                parser = trt.OnnxParser(network, logger)
+                with open(onnx_path, "rb") as f:
+                    if not parser.parse(f.read()):
+                        raise RuntimeError("TensorRT ONNX parse failed")
+                config = builder.create_builder_config()
+                # Uncomment to speedup engine build time:
+                # config.builder_optimization_level = 0
+                in_name = "dets"
+                in_cols_trt = 2 * T_original * half
+                profile = builder.create_optimization_profile()
+                profile.set_shape(
+                    in_name,
+                    (1, in_cols_trt),
+                    (batch_size_original, in_cols_trt),
+                    (batch_size_original, in_cols_trt),
+                )
+                config.add_optimization_profile(profile)
+                t_build_start = time.perf_counter()
+                serialized = builder.build_serialized_network(network, config)
+                t_build_end = time.perf_counter()
+                if serialized is None:
+                    raise RuntimeError("TensorRT build failed")
+                print(f"[LER] TensorRT engine built in {t_build_end - t_build_start:.3f}s")
+                engine = runtime.deserialize_cuda_engine(serialized)
+                if engine is None:
+                    raise RuntimeError("TensorRT deserialize failed")
+                if dist.rank == 0:
+                    with open(engine_path, "wb") as f:
+                        f.write(engine.serialize())
+                    print(f"[LER] TensorRT engine saved to {engine_path}")
+                t_create_context_start = time.perf_counter()
+                trt_context = (engine.create_execution_context(), engine)
+                t_create_context_end = time.perf_counter()
+                print(
+                    f"[LER] TensorRT execution context created in "
+                    f"{t_create_context_end - t_create_context_start:.3f}s"
+                )
+                if dist.rank == 0:
+                    print(f"[LER] TensorRT engine built from {onnx_path}")
+            except Exception as e:
+                if dist.rank == 0:
+                    print(f"[LER] TensorRT build/load failed: {e}; falling back to PyTorch.")
+                trt_context = None
 
     num_obs = circuit.num_observables
     assert num_obs == 1, f"Expected 1 observable, got {num_obs}"
 
     logical_errors = 0
     total_samples = 0
-
-    # SDR accumulators (only used when compute_sdr=True)
-    if compute_sdr:
-        sdr_in_ones_X = torch.tensor(0, dtype=torch.int64, device=device)
-        sdr_in_elems_X = torch.tensor(0, dtype=torch.int64, device=device)
-        sdr_res_ones_X = torch.tensor(0, dtype=torch.int64, device=device)
-        sdr_in_ones_Z = torch.tensor(0, dtype=torch.int64, device=device)
-        sdr_in_elems_Z = torch.tensor(0, dtype=torch.int64, device=device)
-        sdr_res_ones_Z = torch.tensor(0, dtype=torch.int64, device=device)
 
     use_prefetcher = device.type == "cuda"
     if use_prefetcher:
@@ -1182,136 +1129,34 @@ def run_inference_and_decode_pre_decoder_memory(
         if detector_shape is None:
             detector_shape = (B, det_model.num_detectors)
 
-        if use_inline_inference:
-            # --- Inline inference path: direct tensor operations ---
-            x_syn_diff = batch["x_syn_diff"]
-            z_syn_diff = batch["z_syn_diff"]
-            trainX = batch["trainX"]
-
-            B_i, n_x, T = x_syn_diff.shape
-            if T < 2:
-                raise ValueError(
-                    f"T={T} is too small for DEM with time-difference detectors (need T>=2)."
+        dets_only = dets_and_obs[:, :-num_obs].contiguous()
+        t_model_start = time.perf_counter()
+        if trt_context is not None:
+            context, engine = trt_context
+            dets = dets_only.to(torch.uint8).contiguous()
+            B, in_cols = dets.shape
+            context.set_input_shape("dets", (B, in_cols))
+            out_shape = tuple(context.get_tensor_shape("L_and_residual_dets"))
+            L_and_residual_dets = torch.empty(out_shape, device=device, dtype=torch.uint8)
+            bindings = [
+                int(dets.data_ptr()),
+                int(L_and_residual_dets.data_ptr()),
+            ]
+            if dist.rank == 0:
+                print(f"[LER] Executing TensorRT context with bindings...")
+            t_execute_start = time.perf_counter()
+            context.execute_v2(bindings=bindings)
+            t_execute_end = time.perf_counter()
+            if dist.rank == 0:
+                print(
+                    f"[LER] TensorRT execution completed in "
+                    f"{t_execute_end - t_execute_start:.3f}s"
                 )
-            n_z = z_syn_diff.shape[1]
-            num_boundary_dets = n_x if basis == "X" else n_z
-            baseline_detectors_batch = dets_and_obs[:, :-num_obs]
-
-            device_type = device.type if hasattr(device, 'type') else 'cuda'
-            with torch.amp.autocast(device_type=device_type, enabled=cfg.enable_fp16):
-                t_model_start = time.perf_counter()
-                logits = model(trainX)
-                t_model_end = time.perf_counter()
-                t_model_time += t_model_end - t_model_start
-
-            z_data_corr = sample_predictions(logits[:, 0], th_data, sampling_mode, temperature_data)
-            x_data_corr = sample_predictions(logits[:, 1], th_data, sampling_mode, temperature_data)
-            syn_x_grid = sample_predictions(logits[:, 2], th_syn, sampling_mode, temperature_syn)
-            syn_z_grid = sample_predictions(logits[:, 3], th_syn, sampling_mode, temperature_syn)
-
-            _t_postmodel = time.perf_counter()
-            z_flat = z_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
-            z_exp = z_flat.unsqueeze(2).expand(B, D2, Kx, T)
-            hx_idx_e = hx_idx_base.expand(B, -1, -1, T)
-            g_x = z_exp.gather(1, hx_idx_e)
-            m_x = hx_mask_base.expand_as(g_x)
-            S_X = (g_x.masked_fill(~m_x, 0).sum(dim=2) & 1)
-
-            x_flat = x_data_corr.permute(0, 2, 3, 1).contiguous().view(B, D2, T)
-            x_exp = x_flat.unsqueeze(2).expand(B, D2, Kz, T)
-            hz_idx_e = hz_idx_base.expand(B, -1, -1, T)
-            g_z = x_exp.gather(1, hz_idx_e)
-            m_z = hz_mask_base.expand_as(g_z)
-            S_Z = (g_z.masked_fill(~m_z, 0).sum(dim=2) & 1)
-
-            syn_x_flat = map_grid_to_stabilizer_tensor(syn_x_grid, stab_indices_x)
-            syn_z_flat = map_grid_to_stabilizer_tensor(syn_z_grid, stab_indices_z)
-
-            R_X = torch.empty_like(x_syn_diff, dtype=torch.uint8)
-            R_X[:, :, 0] = (x_syn_diff[:, :, 0] + syn_x_flat[:, :, 0] + S_X[:, :, 0]) & 1
-            if T > 1:
-                R_X[:, :, 1:] = (
-                    x_syn_diff[:, :, 1:] + syn_x_flat[:, :, 1:] + syn_x_flat[:, :, :-1] +
-                    S_X[:, :, 1:]
-                ) & 1
-
-            R_Z = torch.empty_like(z_syn_diff, dtype=torch.uint8)
-            R_Z[:, :, 0] = (z_syn_diff[:, :, 0] + syn_z_flat[:, :, 0] + S_Z[:, :, 0]) & 1
-            if T > 1:
-                R_Z[:, :, 1:] = (
-                    z_syn_diff[:, :, 1:] + syn_z_flat[:, :, 1:] + syn_z_flat[:, :, :-1] +
-                    S_Z[:, :, 1:]
-                ) & 1
-
-            if compute_sdr:
-                if basis == "X":
-                    sdr_in_ones_X += x_syn_diff.sum(dtype=torch.int64)
-                    sdr_in_elems_X += torch.tensor(
-                        x_syn_diff.numel(), device=device, dtype=torch.int64
-                    )
-                    sdr_res_ones_X += R_X.sum(dtype=torch.int64)
-                elif basis == "Z":
-                    sdr_in_ones_Z += z_syn_diff.sum(dtype=torch.int64)
-                    sdr_in_elems_Z += torch.tensor(
-                        z_syn_diff.numel(), device=device, dtype=torch.int64
-                    )
-                    sdr_res_ones_Z += R_Z.sum(dtype=torch.int64)
-
-            if basis == "X":
-                pre_L_t = torch.einsum(
-                    "ld,bdt->blt", Lx.to(torch.float32), z_flat.to(torch.float32)
-                ).remainder_(2).to(torch.int32)
-            else:
-                pre_L_t = torch.einsum(
-                    "ld,bdt->blt", Lz.to(torch.float32), x_flat.to(torch.float32)
-                ).remainder_(2).to(torch.int32)
-            pre_L = pre_L_t.sum(dim=2).remainder_(2).view(-1)
-
-            if basis == "X":
-                initial_detectors = R_X[:, :, 0].view(B, -1)
-            else:
-                initial_detectors = R_Z[:, :, 0].view(B, -1)
-            R_X_rest = R_X[:, :, 1:]
-            R_Z_rest = R_Z[:, :, 1:]
-            R_cat_rest = torch.cat([R_X_rest, R_Z_rest], dim=1)
-            rest_flat = R_cat_rest.permute(0, 2, 1).contiguous().view(B, -1)
-            residual = torch.cat([initial_detectors, rest_flat], dim=1).to(torch.uint8)
-
-            boundary_dets_batch = baseline_detectors_batch[:, -num_boundary_dets:]
-            residual = torch.cat([residual, boundary_dets_batch.to(residual.device)], dim=1)
-
-            t_postmodel_s += time.perf_counter() - _t_postmodel
-
         else:
-            # --- Legacy pipeline_module + ONNX/TRT path ---
-            dets_only = dets_and_obs[:, :-num_obs].contiguous()
-            t_model_start = time.perf_counter()
-            if trt_context is not None:
-                context, engine = trt_context
-                dets = dets_only.to(torch.uint8).contiguous()
-                B, in_cols = dets.shape
-                context.set_input_shape("dets", (B, in_cols))
-                out_shape = tuple(context.get_tensor_shape("L_and_residual_dets"))
-                L_and_residual_dets = torch.empty(out_shape, device=device, dtype=torch.uint8)
-                bindings = [
-                    int(dets.data_ptr()),
-                    int(L_and_residual_dets.data_ptr()),
-                ]
-                if dist.rank == 0:
-                    print(f"[LER] Executing TensorRT context with bindings...")
-                t_execute_start = time.perf_counter()
-                context.execute_v2(bindings=bindings)
-                t_execute_end = time.perf_counter()
-                if dist.rank == 0:
-                    print(
-                        f"[LER] TensorRT execution completed in "
-                        f"{t_execute_end - t_execute_start:.3f}s"
-                    )
-            else:
-                L_and_residual_dets = pipeline_module(dets_only)
-            pre_L = L_and_residual_dets[:, 0].to(torch.int32)
-            residual = L_and_residual_dets[:, 1:].to(torch.int32)
-            t_model_time += time.perf_counter() - t_model_start
+            L_and_residual_dets = pipeline_module(dets_only)
+        pre_L = L_and_residual_dets[:, 0].to(torch.int32)
+        residual = L_and_residual_dets[:, 1:].to(torch.int32)
+        t_model_time += time.perf_counter() - t_model_start
 
         if residual.shape[1] != det_model.num_detectors:
             raise ValueError(
@@ -1495,58 +1340,7 @@ def run_inference_and_decode_pre_decoder_memory(
             f"(basis={basis}, batches={num_batches})"
         )
 
-    if not compute_sdr:
-        return logical_errors, total_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round
-
-    # Finalize SDR: all-reduce across ranks and compute reduction factor
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        for t in (
-            sdr_in_ones_X, sdr_in_elems_X, sdr_res_ones_X, sdr_in_ones_Z, sdr_in_elems_Z,
-            sdr_res_ones_Z
-        ):
-            torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.SUM)
-
-    def _safe_sdr_ratio(num, den):
-        return (num.float() /
-                den.float()) if den.item() > 0 else torch.tensor(float('nan'), device=device)
-
-    def _finite_pos(x):
-        return torch.isfinite(x).item() and (x > 0).item()
-
-    input_density_X = _safe_sdr_ratio(sdr_in_ones_X, sdr_in_elems_X)
-    residual_density_X = _safe_sdr_ratio(sdr_res_ones_X, sdr_in_elems_X)
-    input_density_Z = _safe_sdr_ratio(sdr_in_ones_Z, sdr_in_elems_Z)
-    residual_density_Z = _safe_sdr_ratio(sdr_res_ones_Z, sdr_in_elems_Z)
-
-    sdr_result = {}
-    if basis == "X":
-        reduction_x = float('nan')
-        if _finite_pos(input_density_X) and _finite_pos(residual_density_X):
-            reduction_x = float((input_density_X / residual_density_X).item())
-        elif _finite_pos(input_density_X) and residual_density_X.item() == 0:
-            reduction_x = float('inf')
-        sdr_result = {
-            "input syndrome density (X)": float(input_density_X.item()),
-            "residual syndrome density (X)": float(residual_density_X.item()),
-            "reduction factor (X)": reduction_x,
-        }
-    elif basis == "Z":
-        reduction_z = float('nan')
-        if _finite_pos(input_density_Z) and _finite_pos(residual_density_Z):
-            reduction_z = float((input_density_Z / residual_density_Z).item())
-        elif _finite_pos(input_density_Z) and residual_density_Z.item() == 0:
-            reduction_z = float('inf')
-        sdr_result = {
-            "input syndrome density (Z)": float(input_density_Z.item()),
-            "residual syndrome density (Z)": float(residual_density_Z.item()),
-            "reduction factor (Z)": reduction_z,
-        }
-
-    if dist.rank == 0:
-        for k, v in sdr_result.items():
-            print(f"[LER+SDR] {k}: {v}")
-
-    return logical_errors, total_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round, sdr_result
+    return logical_errors, total_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round
 
 
 @torch.inference_mode()

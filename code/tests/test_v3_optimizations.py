@@ -206,53 +206,5 @@ class TestSDRThresholdGate(unittest.TestCase):
         )
 
 
-# ---------------------------------------------------------------------------
-# PREDECODER_INLINE_INFERENCE env var toggle
-# ---------------------------------------------------------------------------
-class TestInlineInferenceFlag(unittest.TestCase):
-
-    def test_default_is_true(self):
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertTrue(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
-
-    def test_disable_with_zero(self):
-        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "0"}):
-            self.assertFalse(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
-
-    def test_disable_with_false(self):
-        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "false"}):
-            self.assertFalse(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
-
-    def test_enable_explicitly(self):
-        with patch.dict(os.environ, {"PREDECODER_INLINE_INFERENCE": "1"}):
-            self.assertTrue(_get_env_bool("PREDECODER_INLINE_INFERENCE", True))
-
-
-# ---------------------------------------------------------------------------
-# ONNX_WORKFLOW + compile interaction
-# ---------------------------------------------------------------------------
-class TestOnnxCompileInteraction(unittest.TestCase):
-
-    def _will_export(self, inline, workflow):
-        """Replicate the logic from logical_error_rate.py."""
-        return not inline and workflow in (1, 2)
-
-    def test_inline_never_exports(self):
-        for wf in (0, 1, 2, 3):
-            self.assertFalse(self._will_export(True, wf))
-
-    def test_legacy_torch_only_no_export(self):
-        self.assertFalse(self._will_export(False, 0))
-
-    def test_legacy_load_engine_no_export(self):
-        self.assertFalse(self._will_export(False, 3))
-
-    def test_legacy_export_onnx(self):
-        self.assertTrue(self._will_export(False, 1))
-
-    def test_legacy_export_and_trt(self):
-        self.assertTrue(self._will_export(False, 2))
-
-
 if __name__ == "__main__":
     unittest.main()
