@@ -74,30 +74,35 @@ def _build_cudaq_decoders(det_model):
     unavailable = []
 
     # --- Standard BP variants (max_iterations=10) ---
-    # Sum-product BP (no OSD)
-    decoders["cudaq-BP"] = (
-        cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=0, use_osd=0, **bp_kwargs),
-        L_dense,
-    )
-    # Min-sum BP (no OSD)
-    decoders["cudaq-MinSum"] = (
-        cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=1, use_osd=0, **bp_kwargs),
-        L_dense,
-    )
-    # Sum-product BP + OSD-0
-    decoders["cudaq-BP+OSD-0"] = (
-        cudaq_qec.get_decoder(
-            "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=0, **bp_kwargs
-        ),
-        L_dense,
-    )
-    # Sum-product BP + OSD-7
-    decoders["cudaq-BP+OSD-7"] = (
-        cudaq_qec.get_decoder(
-            "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=7, **bp_kwargs
-        ),
-        L_dense,
-    )
+    try:
+        # Sum-product BP (no OSD)
+        decoders["cudaq-BP"] = (
+            cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=0, use_osd=0, **bp_kwargs),
+            L_dense,
+        )
+        # Min-sum BP (no OSD)
+        decoders["cudaq-MinSum"] = (
+            cudaq_qec.get_decoder("nv-qldpc-decoder", H_dense, bp_method=1, use_osd=0, **bp_kwargs),
+            L_dense,
+        )
+        # Sum-product BP + OSD-0
+        decoders["cudaq-BP+OSD-0"] = (
+            cudaq_qec.get_decoder(
+                "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=0, **bp_kwargs
+            ),
+            L_dense,
+        )
+        # Sum-product BP + OSD-7
+        decoders["cudaq-BP+OSD-7"] = (
+            cudaq_qec.get_decoder(
+                "nv-qldpc-decoder", H_dense, bp_method=0, use_osd=1, osd_order=7, **bp_kwargs
+            ),
+            L_dense,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"cudaq-qec BP unavailable: {e}")
+        unavailable.extend(["cudaq-BP", "cudaq-MinSum", "cudaq-BP+OSD-0", "cudaq-BP+OSD-7"])
 
     # --- Memory BP variants (max_iterations=100) ---
     try:
