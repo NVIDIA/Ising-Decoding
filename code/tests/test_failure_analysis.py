@@ -163,6 +163,355 @@ class TestDecodeLdpcBatch(unittest.TestCase):
                 )
 
 
+class TestBuildAllDecoders(unittest.TestCase):
+    """_build_all_decoders must return correctly typed decoder objects."""
+
+    def setUp(self):
+        from evaluation.failure_analysis import _build_all_decoders, LDPC_DECODER_NAMES
+        self.det_model = _make_tiny_dem()
+        self.result = _build_all_decoders(self.det_model, _DummyDist())
+        self.LDPC_DECODER_NAMES = LDPC_DECODER_NAMES
+
+    def test_returns_four_values(self):
+        self.assertEqual(len(self.result), 4)
+
+    def test_matchers_have_decode_method(self):
+        matcher_corr, matcher_uncorr, _, _ = self.result
+        self.assertTrue(hasattr(matcher_corr, "decode"))
+        self.assertTrue(hasattr(matcher_uncorr, "decode"))
+
+    def test_ldpc_decoders_contains_all_names(self):
+        _, _, ldpc_decoders, _ = self.result
+        for name in self.LDPC_DECODER_NAMES:
+            self.assertIn(name, ldpc_decoders)
+
+    def test_cudaq_decoders_is_dict(self):
+        _, _, _, cudaq_decoders = self.result
+        self.assertIsInstance(cudaq_decoders, dict)
+
+
+class TestBuildLogicalOperators(unittest.TestCase):
+    """_build_logical_operators must return tensors of the correct shape and values."""
+
+    _D = 3
+
+    def setUp(self):
+        from evaluation.failure_analysis import _build_logical_operators
+        self.ops = _build_logical_operators(self._D, "XV", torch.device("cpu"))
+        self.Hx_idx, self.Hz_idx, self.Hx_mask, self.Hz_mask, \
+            self.stab_x, self.stab_z, self.Kx, self.Kz, self.Lx, self.Lz = self.ops
+
+    def test_returns_ten_values(self):
+        self.assertEqual(len(self.ops), 10)
+
+    def test_logical_operator_shapes(self):
+        D2 = self._D * self._D
+        self.assertEqual(self.Lx.shape, (1, D2))
+        self.assertEqual(self.Lz.shape, (1, D2))
+
+    def test_logical_operators_are_binary(self):
+        for L in (self.Lx, self.Lz):
+            vals = L.unique().tolist()
+            self.assertTrue(all(v in (0, 1) for v in vals))
+
+    def test_xv_rotation_lx_row_pattern(self):
+        # XV rotation: Lx[0, :D] = 1, rest 0
+        self.assertEqual(int(self.Lx[0, :self._D].sum()), self._D)
+        self.assertEqual(int(self.Lx[0, self._D:].sum()), 0)
+
+    def test_xv_rotation_lz_column_pattern(self):
+        # XV rotation: Lz[0, ::D] = 1 (first column of D×D grid)
+        self.assertEqual(int(self.Lz[0, ::self._D].sum()), self._D)
+
+    def test_kx_kz_are_positive_ints(self):
+        self.assertIsInstance(self.Kx, int)
+        self.assertIsInstance(self.Kz, int)
+        self.assertGreater(self.Kx, 0)
+        self.assertGreater(self.Kz, 0)
+
+    def test_index_tensors_are_long(self):
+        self.assertEqual(self.Hx_idx.dtype, torch.long)
+        self.assertEqual(self.Hz_idx.dtype, torch.long)
+
+    def test_mask_tensors_are_bool(self):
+        self.assertEqual(self.Hx_mask.dtype, torch.bool)
+        self.assertEqual(self.Hz_mask.dtype, torch.bool)
+
+
+class TestModelForwardAndResidual(unittest.TestCase):
+    """_model_forward_and_residual must return binary arrays of the expected shape."""
+
+    _D = 3
+    _T = 3
+    _B = 4
+
+    def _build_inputs(self, basis="X"):
+        from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
+        from evaluation.failure_analysis import _build_logical_operators
+        ds = QCDataPipePreDecoder_Memory_inference(
+            distance=self._D,
+            n_rounds=self._T,
+            num_samples=self._B,
+            error_mode="circuit_level_surface_custom",
+            p_error=0.01,
+            measure_basis=basis,
+            code_rotation="XV",
+        )
+        items = [ds[i] for i in range(self._B)]
+        x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]).to(torch.int32)
+        z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]).to(torch.int32)
+        trainX = torch.stack([it["trainX"] for it in items])
+
+        det_model = ds.circ.stim_circuit.detector_error_model(
+            decompose_errors=True, approximate_disjoint_errors=True
+        )
+        surface_code = ds.circ.code
+        num_boundary_dets = surface_code.hx.shape[0] if basis == "X" else surface_code.hz.shape[0]
+        stim_dets = np.asarray(ds.dets_and_obs[:, :-1], dtype=np.uint8)
+        baseline_detectors_batch = stim_dets[:self._B]
+
+        ops = _build_logical_operators(self._D, "XV", torch.device("cpu"))
+        Hx_idx, Hz_idx, Hx_mask, Hz_mask, stab_x, stab_z, Kx, Kz, Lx, Lz = ops
+        return dict(
+            x_syn_diff=x_syn_diff,
+            z_syn_diff=z_syn_diff,
+            trainX=trainX,
+            det_model=det_model,
+            num_boundary_dets=num_boundary_dets,
+            baseline_detectors_batch=baseline_detectors_batch,
+            Hx_idx=Hx_idx,
+            Hz_idx=Hz_idx,
+            Hx_mask=Hx_mask,
+            Hz_mask=Hz_mask,
+            stab_x=stab_x,
+            stab_z=stab_z,
+            Kx=Kx,
+            Kz=Kz,
+            Lx=Lx,
+            Lz=Lz,
+        )
+
+    def _call(self, basis="X"):
+        import types
+        from evaluation.failure_analysis import _model_forward_and_residual
+        inp = self._build_inputs(basis)
+        _, _, T = inp["x_syn_diff"].shape
+        cfg = types.SimpleNamespace(enable_fp16=False)
+        device = torch.device("cpu")
+        return _model_forward_and_residual(
+            _ZeroModel(),
+            inp["trainX"],
+            inp["x_syn_diff"],
+            inp["z_syn_diff"],
+            basis,
+            self._B,
+            self._D * self._D,
+            T,
+            inp["Hx_idx"],
+            inp["Hz_idx"],
+            inp["Hx_mask"],
+            inp["Hz_mask"],
+            inp["Kx"],
+            inp["Kz"],
+            inp["stab_x"],
+            inp["stab_z"],
+            inp["Lx"],
+            inp["Lz"],
+            0.0,
+            0.0,
+            "threshold",
+            1.0,
+            1.0,
+            cfg,
+            device,
+            inp["num_boundary_dets"],
+            inp["baseline_detectors_batch"],
+            inp["det_model"],
+        )
+
+    def test_output_shapes(self):
+        inp = self._build_inputs()
+        residual_np, pre_L_np = self._call()
+        self.assertEqual(residual_np.shape, (self._B, inp["det_model"].num_detectors))
+        self.assertEqual(pre_L_np.shape, (self._B,))
+
+    def test_residual_is_binary_uint8(self):
+        residual_np, _ = self._call()
+        self.assertEqual(residual_np.dtype, np.uint8)
+        self.assertTrue(np.all((residual_np == 0) | (residual_np == 1)))
+
+    def test_pre_l_is_binary(self):
+        _, pre_L_np = self._call()
+        self.assertTrue(np.all((pre_L_np == 0) | (pre_L_np == 1)))
+
+    def test_z_basis_output_shapes(self):
+        inp = self._build_inputs("Z")
+        residual_np, pre_L_np = self._call("Z")
+        self.assertEqual(residual_np.shape, (self._B, inp["det_model"].num_detectors))
+        self.assertEqual(pre_L_np.shape, (self._B,))
+
+
+class TestRunDecodersOnBatch(unittest.TestCase):
+    """_run_decoders_on_batch must return binary finals for every decoder and a valid agreement count."""
+
+    _D = 3
+    _T = 3
+    _B = 4
+
+    def setUp(self):
+        from evaluation.failure_analysis import (
+            _build_all_decoders,
+            _build_logical_operators,
+            _model_forward_and_residual,
+            _run_decoders_on_batch,
+            DECODER_NAMES,
+        )
+        import types
+
+        det_model = _make_tiny_dem()
+        matcher_corr, matcher_uncorr, ldpc_decoders, cudaq_decoders = _build_all_decoders(
+            det_model, _DummyDist()
+        )
+        self.decoder_names = list(DECODER_NAMES)
+        self.cudaq_decoder_names = sorted(cudaq_decoders.keys())
+        self.decoder_names += self.cudaq_decoder_names
+
+        from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
+        ds = QCDataPipePreDecoder_Memory_inference(
+            distance=self._D,
+            n_rounds=self._T,
+            num_samples=self._B,
+            error_mode="circuit_level_surface_custom",
+            p_error=0.01,
+            measure_basis="X",
+            code_rotation="XV",
+        )
+        items = [ds[i] for i in range(self._B)]
+        x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]).to(torch.int32)
+        z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]).to(torch.int32)
+        trainX = torch.stack([it["trainX"] for it in items])
+        stim_dets = np.asarray(ds.dets_and_obs[:, :-1], dtype=np.uint8)
+        stim_obs = np.asarray(ds.dets_and_obs[:, -1:], dtype=np.uint8)
+        baseline_detectors_batch = stim_dets[:self._B]
+        num_boundary_dets = ds.circ.code.hx.shape[0]
+        _, _, T = x_syn_diff.shape
+        ops = _build_logical_operators(self._D, "XV", torch.device("cpu"))
+        Hx_idx, Hz_idx, Hx_mask, Hz_mask, stab_x, stab_z, Kx, Kz, Lx, Lz = ops
+        cfg = types.SimpleNamespace(enable_fp16=False)
+        device = torch.device("cpu")
+        residual_np, pre_L_np = _model_forward_and_residual(
+            _ZeroModel(),
+            trainX,
+            x_syn_diff,
+            z_syn_diff,
+            "X",
+            self._B,
+            self._D * self._D,
+            T,
+            Hx_idx,
+            Hz_idx,
+            Hx_mask,
+            Hz_mask,
+            Kx,
+            Kz,
+            stab_x,
+            stab_z,
+            Lx,
+            Lz,
+            0.0,
+            0.0,
+            "threshold",
+            1.0,
+            1.0,
+            cfg,
+            device,
+            num_boundary_dets,
+            baseline_detectors_batch,
+            det_model,
+        )
+        self.residual_np = residual_np
+        self.pre_L_np = pre_L_np
+        self.weights = residual_np.sum(axis=1)
+        self.gt_obs_np = stim_obs[:self._B].reshape(-1).astype(np.int64)
+        self.ldpc_decoders = ldpc_decoders
+        self.cudaq_decoders = cudaq_decoders
+        self.matcher_uncorr = matcher_uncorr
+        self.matcher_corr = matcher_corr
+        self._fn = _run_decoders_on_batch
+
+    def _run(self):
+        _timing = {
+            k: 0.0 for k in (
+                "uf_decode",
+                "bp_only_decode",
+                "bplsd_decode",
+                "uncorr_pm",
+                "corr_pm",
+                "bookkeeping",
+            )
+        }
+        for cn in self.cudaq_decoder_names:
+            _timing[f"{cn}_decode"] = 0.0
+        _cudaq_stats = {
+            cn: {
+                "converged_flags": [],
+                "iter_counts": [],
+                "error_flags": []
+            } for cn in self.cudaq_decoder_names
+        }
+        weight_bucket_stats = {}
+        all_finals, n_agree = self._fn(
+            self.residual_np,
+            self.pre_L_np,
+            self.weights,
+            self.ldpc_decoders,
+            self.cudaq_decoders,
+            self.matcher_uncorr,
+            self.matcher_corr,
+            self.cudaq_decoder_names,
+            self.decoder_names,
+            self.gt_obs_np,
+            _timing,
+            _cudaq_stats,
+            weight_bucket_stats,
+        )
+        return all_finals, n_agree, _timing, weight_bucket_stats
+
+    def test_all_decoder_keys_present(self):
+        all_finals, _, _, _ = self._run()
+        for name in self.decoder_names:
+            self.assertIn(name, all_finals)
+
+    def test_finals_are_binary(self):
+        all_finals, _, _, _ = self._run()
+        for name, arr in all_finals.items():
+            with self.subTest(decoder=name):
+                self.assertTrue(np.all((arr == 0) | (arr == 1)))
+
+    def test_finals_have_correct_shape(self):
+        all_finals, _, _, _ = self._run()
+        for name, arr in all_finals.items():
+            with self.subTest(decoder=name):
+                self.assertEqual(arr.shape, (self._B,))
+
+    def test_n_agree_within_bounds(self):
+        _, n_agree, _, _ = self._run()
+        self.assertGreaterEqual(n_agree, 0)
+        self.assertLessEqual(n_agree, self._B)
+
+    def test_timing_keys_populated(self):
+        _, _, _timing, _ = self._run()
+        for key in ("uf_decode", "bp_only_decode", "bplsd_decode", "uncorr_pm", "corr_pm"):
+            self.assertGreaterEqual(_timing[key], 0.0)
+
+    def test_weight_bucket_stats_populated(self):
+        _, _, _, weight_bucket_stats = self._run()
+        self.assertGreater(len(weight_bucket_stats), 0)
+        for bucket, stats in weight_bucket_stats.items():
+            self.assertIn("_total", stats)
+            self.assertGreater(stats["_total"], 0)
+
+
 class TestDecoderAblationStudy(unittest.TestCase):
     """
     Smoke test: decoder_ablation_study must complete, return expected keys,
