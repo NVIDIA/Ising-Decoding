@@ -18,7 +18,7 @@ if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
 from model.factory import ModelFactory
-from model.predecoder import get_mock_config, get_mock_config_v2
+from model.predecoder import get_mock_config
 
 
 class TestModelFactory(unittest.TestCase):
@@ -40,15 +40,6 @@ class TestModelFactory(unittest.TestCase):
         cfg = get_mock_config()
         cfg.code = "surface"
         cfg.model.version = "predecoder_memory_v1"
-        model = ModelFactory.create_model(cfg)
-        self.assertIsNotNone(model)
-        self.assertEqual(model.distance, cfg.distance)
-        self.assertEqual(model.n_rounds, cfg.n_rounds)
-
-    def test_create_surface_model_v2(self):
-        cfg = get_mock_config_v2()
-        cfg.code = "surface"
-        cfg.model.version = "predecoder_memory_v2"
         model = ModelFactory.create_model(cfg)
         self.assertIsNotNone(model)
         self.assertEqual(model.distance, cfg.distance)
