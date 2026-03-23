@@ -29,9 +29,5 @@ class ModelFactory:
             from model.predecoder import PreDecoderModelMemory_v1
             model = PreDecoderModelMemory_v1(cfg)
             return model
-        elif cfg.model.version == "predecoder_memory_v2":
-            from model.predecoder import PreDecoderModelMemory_v2
-            model = PreDecoderModelMemory_v2(cfg)
-            return model
         else:
             raise ValueError(f"Invalid model version: {cfg.model.version}")

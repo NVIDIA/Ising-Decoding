@@ -48,7 +48,7 @@ data:
   code_rotation: XV # Surface code orientation: XV, XH, ZV, ZH (default: XV)
 
 model:
-  version: predecoder_memory_v1 # predecoder_memory_v1 (no skip conections and batch norm), predecoder_memory_v2 (includes skip connections and batch norm)
+  version: predecoder_memory_v1
   dropout_p: 0.05
   activation: gelu
   num_filters: [128, 128, 128, 4]

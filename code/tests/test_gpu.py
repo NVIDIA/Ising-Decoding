@@ -236,7 +236,7 @@ class TestQCDataGeneratorTorchGPU(unittest.TestCase):
 # ---------------------------------------------------------------------------
 @_require_cuda
 class TestPreDecoderModelGPU(unittest.TestCase):
-    """PreDecoderModelMemory v1 and v2 forward pass on CUDA."""
+    """PreDecoderModelMemory v1 forward pass on CUDA."""
 
     def setUp(self):
         self.device = torch.device("cuda")
@@ -246,17 +246,6 @@ class TestPreDecoderModelGPU(unittest.TestCase):
 
         cfg = get_mock_config()
         model = PreDecoderModelMemory_v1(cfg).to(self.device)
-        B, C, T, D = 4, cfg.model.input_channels, cfg.n_rounds, cfg.distance
-        x = torch.randn(B, C, T, D, D, device=self.device)
-        out = model(x)
-        self.assertEqual(out.device.type, "cuda")
-        self.assertEqual(out.shape, (B, cfg.model.out_channels, T, D, D))
-
-    def test_v2_forward_on_cuda(self):
-        from model.predecoder import PreDecoderModelMemory_v2, get_mock_config_v2
-
-        cfg = get_mock_config_v2()
-        model = PreDecoderModelMemory_v2(cfg).to(self.device)
         B, C, T, D = 4, cfg.model.input_channels, cfg.n_rounds, cfg.distance
         x = torch.randn(B, C, T, D, D, device=self.device)
         out = model(x)
