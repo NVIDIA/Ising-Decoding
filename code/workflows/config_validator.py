@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Public config normalization / validation for the early-access public release.
 
@@ -132,15 +137,9 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
             {
                 "timelike_he": True,
                 "num_he_cycles": 1,
-                "use_weight2": False,
+                "use_weight2_timelike": False,
                 "max_passes_w1": 8,
                 "max_passes_w2": 4,
-                "use_compile": True,
-                "compile_chunk_size": 2,
-                "compute_dtype": None,
-                "use_coset_search": False,
-                "coset_max_generators": 20,
-                "use_dense_overlap": False,
                 "decompose_y": True,
                 "p_error": None,
                 "p_min": 0.001,
@@ -166,7 +165,9 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
         "data_method": "train",
         "train":
             {
-                "num_samples": int(os.environ.get("PREDECODER_NUM_SAMPLES", 67108864)),
+                # Production baseline: 2^26 shots / epoch when training with 8 GPUs.
+                # The training script will auto-scale this based on detected world size / GPU count.
+                "num_samples": 67108864,
                 "accumulate_steps": 2,
                 "checkpoint_interval": 1,
                 "save_every_datasets": 5,

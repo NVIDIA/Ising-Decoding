@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Unit tests for training.distributed, training.logging, training.capture (no physicsnemo).
 # Some tests are GPU-only (DistributedManager when CUDA required); CI runs CPU and GPU separately.

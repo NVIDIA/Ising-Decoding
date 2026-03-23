@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Homological Equivalence Functions for Surface Code Pre-decoder
 
@@ -1016,12 +1021,13 @@ def simplifytimeX_weight2(
 
         # CLEANUP: If this stabilizer had acceptances, apply full spacelike HE to clean up
         # This handles cross-stabilizer effects (weight-3/4 in neighbors) and re-canonicalizes
-        if had_acceptance:
-            for t in range(2):  # Both times k and k+1
-                for b in range(B):
-                    x_error_diff[b, :, t] = simplify_X(
-                        x_error_diff[b, :, t].to(torch.long), distance, parity_matrix_X
-                    ).float()
+        # if had_acceptance:
+        #     for t in range(2):  # Both times k and k+1
+        #         for b in range(B):
+        #             # Apply simplify_X (weight reduction + fixEquivalence until convergence)
+        #             x_error_diff[b, :, t] = simplify_X(
+        #                 x_error_diff[b, :, t].to(torch.long), distance, parity_matrix_X
+        #             ).float()
 
     return x_error_diff, s1s2z, num_accepted
 

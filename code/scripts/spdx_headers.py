@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from __future__ import annotations
 
@@ -60,19 +65,48 @@ EXCLUDE_FILES = {
     Path("code/tests/orientations_outputs.txt"),
 }
 
+# Old proprietary license bodies (year-agnostic, used for replacement)
+_OLD_HASH_BODY = (
+    "# SPDX-License-Identifier: Apache-2.0\n"
+    "#\n"
+    "# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual\n"
+    "# property and proprietary rights in and to this material, related\n"
+    "# documentation and any modifications thereto. Any use, reproduction,\n"
+    "# disclosure or distribution of this material and related documentation\n"
+    "# without an express license agreement from NVIDIA CORPORATION or\n"
+    "# its affiliates is strictly prohibited."
+)
+
+_OLD_C_STYLE_BODY = (
+    " * SPDX-License-Identifier: LicenseRef-NvidiaProprietary\n"
+    " *\n"
+    " * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual\n"
+    " * property and proprietary rights in and to this material, related\n"
+    " * documentation and any modifications thereto. Any use, reproduction,\n"
+    " * disclosure or distribution of this material and related documentation\n"
+    " * without an express license agreement from NVIDIA CORPORATION or\n"
+    " * its affiliates is strictly prohibited.\n"
+    " */"
+)
+
 
 def _hash_header(year: int) -> str:
     return "\n".join(
         [
             f"# SPDX-FileCopyrightText: Copyright (c) {year} NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
-            "# SPDX-License-Identifier: LicenseRef-NvidiaProprietary",
+            "# SPDX-License-Identifier: Apache-2.0",
             "#",
-            "# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual",
-            "# property and proprietary rights in and to this material, related",
-            "# documentation and any modifications thereto. Any use, reproduction,",
-            "# disclosure or distribution of this material and related documentation",
-            "# without an express license agreement from NVIDIA CORPORATION or",
-            "# its affiliates is strictly prohibited.",
+            "# Licensed under the Apache License, Version 2.0 (the \"License\");",
+            "# you may not use this file except in compliance with the License.",
+            "# You may obtain a copy of the License at",
+            "#",
+            "# http://www.apache.org/licenses/LICENSE-2.0",
+            "#",
+            "# Unless required by applicable law or agreed to in writing, software",
+            "# distributed under the License is distributed on an \"AS IS\" BASIS,",
+            "# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.",
+            "# See the License for the specific language governing permissions and",
+            "# limitations under the License.",
         ]
     )
 
@@ -82,16 +116,58 @@ def _c_style_header(year: int) -> str:
         [
             "/*",
             f" * SPDX-FileCopyrightText: Copyright (c) {year} NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
-            " * SPDX-License-Identifier: LicenseRef-NvidiaProprietary",
+            " * SPDX-License-Identifier: Apache-2.0",
             " *",
-            " * NVIDIA CORPORATION, its affiliates and licensors retain all intellectual",
-            " * property and proprietary rights in and to this material, related",
-            " * documentation and any modifications thereto. Any use, reproduction,",
-            " * disclosure or distribution of this material and related documentation",
-            " * without an express license agreement from NVIDIA CORPORATION or",
-            " * its affiliates is strictly prohibited.",
+            " * Licensed under the Apache License, Version 2.0 (the \"License\");",
+            " * you may not use this file except in compliance with the License.",
+            " * You may obtain a copy of the License at",
+            " *",
+            " * http://www.apache.org/licenses/LICENSE-2.0",
+            " *",
+            " * Unless required by applicable law or agreed to in writing, software",
+            " * distributed under the License is distributed on an \"AS IS\" BASIS,",
+            " * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.",
+            " * See the License for the specific language governing permissions and",
+            " * limitations under the License.",
             " */",
         ]
+    )
+
+
+def _new_hash_body() -> str:
+    return (
+        "# SPDX-License-Identifier: Apache-2.0\n"
+        "#\n"
+        "# Licensed under the Apache License, Version 2.0 (the \"License\");\n"
+        "# you may not use this file except in compliance with the License.\n"
+        "# You may obtain a copy of the License at\n"
+        "#\n"
+        "# http://www.apache.org/licenses/LICENSE-2.0\n"
+        "#\n"
+        "# Unless required by applicable law or agreed to in writing, software\n"
+        "# distributed under the License is distributed on an \"AS IS\" BASIS,\n"
+        "# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n"
+        "# See the License for the specific language governing permissions and\n"
+        "# limitations under the License."
+    )
+
+
+def _new_c_style_body() -> str:
+    return (
+        " * SPDX-License-Identifier: Apache-2.0\n"
+        " *\n"
+        " * Licensed under the Apache License, Version 2.0 (the \"License\");\n"
+        " * you may not use this file except in compliance with the License.\n"
+        " * You may obtain a copy of the License at\n"
+        " *\n"
+        " * http://www.apache.org/licenses/LICENSE-2.0\n"
+        " *\n"
+        " * Unless required by applicable law or agreed to in writing, software\n"
+        " * distributed under the License is distributed on an \"AS IS\" BASIS,\n"
+        " * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n"
+        " * See the License for the specific language governing permissions and\n"
+        " * limitations under the License.\n"
+        " */"
     )
 
 
@@ -150,8 +226,17 @@ def _has_header(content: str) -> bool:
     return "SPDX-FileCopyrightText" in prefix
 
 
-def _apply_header(path: Path, header: str) -> bool:
+def _apply_header(path: Path, header: str, style: str) -> bool:
     raw = path.read_text(encoding="utf-8")
+
+    # Replace old proprietary license body with new Apache body (preserves copyright year)
+    old_body = _OLD_HASH_BODY if style == "hash" else _OLD_C_STYLE_BODY
+    new_body = _new_hash_body() if style == "hash" else _new_c_style_body()
+    if old_body in raw:
+        new_content = raw.replace(old_body, new_body, 1)
+        path.write_text(new_content, encoding="utf-8")
+        return True
+
     if _has_header(raw):
         return False
 
@@ -198,7 +283,7 @@ def main() -> int:
             if not _has_header(raw):
                 missing.append(path.relative_to(args.root))
         else:
-            if _apply_header(path, header):
+            if _apply_header(path, header, style):
                 updated.append(path.relative_to(args.root))
 
     if args.check:

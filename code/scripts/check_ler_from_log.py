@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Parse training log for "[LER Validation] Logical error rate: X.XXXXX" and exit 1 if above threshold.
 # Used by CI to turn "run and hope it completes" into a real correctness check.
