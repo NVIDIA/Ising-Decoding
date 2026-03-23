@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Run 1-epoch d9 training with live logs and GPU. Logs go to terminal and to a file.
 # Usage: ./code/scripts/run_1epoch_with_logs.sh [log_file]

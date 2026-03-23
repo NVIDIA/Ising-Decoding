@@ -67,7 +67,7 @@ EXCLUDE_FILES = {
 
 # Old proprietary license bodies (year-agnostic, used for replacement)
 _OLD_HASH_BODY = (
-    "# SPDX-License-Identifier: LicenseRef-NvidiaProprietary\n"
+    "# SPDX-License-Identifier: Apache-2.0\n"
     "#\n"
     "# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual\n"
     "# property and proprietary rights in and to this material, related\n"
