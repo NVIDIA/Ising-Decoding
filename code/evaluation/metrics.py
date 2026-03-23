@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Evaluation Metrics Module
 
@@ -105,42 +110,8 @@ def _extract_reduction_factor(result, rank=0):
     return reduction_factor
 
 
-def _factor_to_percent(factor):
-    """Convert an SDR reduction factor (X times) to a percentage reduction.
-
-    factor = input_density / residual_density, so the fraction of syndromes
-    removed is  1 - 1/factor  and the percentage is  (1 - 1/factor) * 100.
-
-    Examples:
-        2.0x  -> 50.0%   (half the syndromes remain)
-        3.7x  -> 73.0%   (~27% remain)
-        10.0x -> 90.0%   (10% remain)
-        inf   -> 100.0%  (perfect correction)
-        1.0x  -> 0.0%    (no improvement)
-        nan   -> nan
-    """
-    import math
-    if factor is None:
-        return None
-    if math.isnan(factor):
-        return float('nan')
-    if math.isinf(factor):
-        return 100.0
-    if factor <= 0:
-        return float('nan')
-    return (1.0 - 1.0 / factor) * 100.0
-
-
-def compute_syndrome_density(
-    model, device, dist, cfg, generator=None, rank=0, sdr_as_percent=False
-):
-    """Compute syndrome density reduction factor for validation.
-
-    Args:
-        sdr_as_percent: If True, return SDR as a percentage reduction (0-100)
-            instead of the default X-times multiplier.  A 3.7x factor becomes
-            ~73%.  Controlled by cfg.sdr_as_percent when called from training.
-    """
+def compute_syndrome_density(model, device, dist, cfg, generator=None, rank=0):
+    """Compute syndrome density reduction factor for validation."""
     if not HAS_LER_MODULE or compute_syndrome_density_reduction is None:
         if rank == 0:
             print(
@@ -172,13 +143,9 @@ def compute_syndrome_density(
                 reduction_factor = _extract_reduction_factor(result, rank)
 
                 if reduction_factor is not None:
-                    value = _factor_to_percent(
-                        reduction_factor
-                    ) if sdr_as_percent else reduction_factor
-                    results[(d, r)] = value
+                    results[(d, r)] = reduction_factor
                     if rank == 0:
-                        unit = "%" if sdr_as_percent else "x"
-                        print(f"[Syndrome Density] (d={d}, r={r}): {value:.4f}{unit}")
+                        print(f"[Syndrome Density] (d={d}, r={r}): {reduction_factor:.4f}x")
 
                 cfg.distance, cfg.n_rounds = orig_d, orig_r
 
@@ -200,11 +167,9 @@ def compute_syndrome_density(
             reduction_factor = _extract_reduction_factor(result, rank)
 
             if reduction_factor is not None:
-                value = _factor_to_percent(reduction_factor) if sdr_as_percent else reduction_factor
                 if rank == 0:
-                    unit = "%" if sdr_as_percent else "x"
-                    print(f"[Syndrome Density] Reduction: {value:.4f}{unit}")
-                return float(value)
+                    print(f"[Syndrome Density] Reduction factor: {reduction_factor:.4f}x")
+                return float(reduction_factor)
             else:
                 if rank == 0:
                     print(

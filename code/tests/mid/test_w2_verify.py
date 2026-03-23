@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Verify weight-2 step-level density guarantee and full pipeline trainY weight.
 # Runs in CI (CPU); uses test_homological_equivalence._make_dem_artifacts.

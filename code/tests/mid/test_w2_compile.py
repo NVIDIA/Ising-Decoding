@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Quick test: exercise the compiled weight-2 path on CUDA at multiple sizes.
 # Skipped in CI when no CUDA (unit-tests job is CPU-only).

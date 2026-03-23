@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Torch-only DEM sampling utilities for training data generation.
 
@@ -34,13 +39,7 @@ def dem_sampling(H: torch.Tensor, p: torch.Tensor, batch_size: int) -> torch.Ten
     """
     p = torch.as_tensor(p, device=H.device)
     errors = (torch.rand(batch_size, p.numel(), device=H.device) < p).to(torch.uint8)
-    # int8 GEMM is ~2x faster on Ampere+ GPUs (compute capability >= 8.0);
-    # fall back to float32 on older hardware or CPU.
-    try:
-        result = errors.to(torch.int8) @ H.t().to(torch.int8)
-    except RuntimeError:
-        result = (errors.float() @ H.t().float()).to(torch.int32)
-    return torch.remainder(result, 2).to(torch.uint8)
+    return torch.remainder(errors.float() @ H.t().float(), 2).to(torch.uint8)
 
 
 def measure_from_stacked_frames(
@@ -93,10 +92,5 @@ def timelike_syndromes(
     Returns:
         meas_new: (batch_size, n_rounds, num_meas) uint8
     """
-    # int8 GEMM: same rationale as dem_sampling() above.
-    try:
-        raw = frames_xz.to(torch.int8) @ A.t().to(torch.int8)
-    except RuntimeError:
-        raw = (frames_xz.float() @ A.t().float()).to(torch.int32)
-    s2 = torch.remainder(raw, 2).to(torch.uint8)
+    s2 = torch.remainder(frames_xz.float() @ A.t().float(), 2).to(torch.uint8)
     return (s2 ^ meas_old.reshape(meas_old.shape[0], -1)).reshape_as(meas_old)

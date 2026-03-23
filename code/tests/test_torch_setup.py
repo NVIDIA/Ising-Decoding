@@ -1,5 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Quick test to verify the Torch setup: imports, DEM sampling, generator init, batch generation.
 # Runs in CI with code/tests (PYTHONPATH=code).
