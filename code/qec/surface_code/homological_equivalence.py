@@ -1016,13 +1016,12 @@ def simplifytimeX_weight2(
 
         # CLEANUP: If this stabilizer had acceptances, apply full spacelike HE to clean up
         # This handles cross-stabilizer effects (weight-3/4 in neighbors) and re-canonicalizes
-        # if had_acceptance:
-        #     for t in range(2):  # Both times k and k+1
-        #         for b in range(B):
-        #             # Apply simplify_X (weight reduction + fixEquivalence until convergence)
-        #             x_error_diff[b, :, t] = simplify_X(
-        #                 x_error_diff[b, :, t].to(torch.long), distance, parity_matrix_X
-        #             ).float()
+        if had_acceptance:
+            for t in range(2):  # Both times k and k+1
+                for b in range(B):
+                    x_error_diff[b, :, t] = simplify_X(
+                        x_error_diff[b, :, t].to(torch.long), distance, parity_matrix_X
+                    ).float()
 
     return x_error_diff, s1s2z, num_accepted
 

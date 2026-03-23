@@ -12,6 +12,40 @@ Training module for quantum error correction pre-decoder.
 
 This module provides training functionality with on-the-fly data generation.
 All file-based dataset and epoch-config paths have been removed.
+
+V3 Training Configuration Reference
+====================================
+
+Noise model scaling:
+  Surface-code training noise upscaling via get_training_upscaled_noise_model.
+  cfg.data.skip_noise_upscaling  (bool, default: false)
+  PREDECODER_SKIP_NOISE_UPSCALING  (0/1, default: 0)
+      Skips upscaling entirely; training uses exact user-specified parameters.
+  Evaluation/inference always uses the user-specified noise model as-is.
+
+Performance:
+  cfg.torch_compile          (bool, default: true)  -- torch.compile on model
+  PREDECODER_TORCH_COMPILE   (0/1/auto)             -- env override
+  PREDECODER_TORCH_COMPILE_MODE                     -- compile mode override
+  Faster EMA via torch._foreach_mul_/_foreach_add_ (auto-fallback on old PyTorch).
+  gc.collect()/empty_cache() removed (100-400ms stall per epoch).
+
+SDR threshold gate (early stopping requires minimum SDR):
+  cfg.syndrome_density_threshold  (float, default: 1.5x or 33.3%)
+  cfg.sdr_as_percent              (bool, default: false)
+      false = threshold is a factor (e.g. 1.5 means 1.5x reduction)
+      true  = threshold is a percentage (e.g. 33.3 means 33.3% reduction)
+  When SDR is not computed, the gate is bypassed (original behavior).
+
+HE acceleration (forwarded to QCDataGeneratorTorch):
+  cfg.data.use_compile, cfg.data.compile_chunk_size, cfg.data.compute_dtype,
+  cfg.data.use_weight2, cfg.data.max_passes_w2, cfg.data.use_coset_search,
+  cfg.data.coset_max_generators, cfg.data.use_dense_overlap
+
+Logging:
+  Compact epoch summary: loss | LER | SDR | wall time | throughput
+  TensorBoard scalars: Speed/throughput_samp_per_s, Speed/ms_per_batch,
+  Speed/epoch_wall_s
 """
 import time
 import sys
@@ -413,12 +447,6 @@ def train_epoch(
                 f"[Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
             )
 
-        if enable_fp16:
-            trainX = trainX.half()
-            trainY = trainY.half()
-        elif enable_bf16:
-            trainX = trainX.to(torch.bfloat16)
-            trainY = trainY.to(torch.bfloat16)
         trainX = trainX.to(device, non_blocking=True)
         trainY = trainY.to(device, non_blocking=True)
 
@@ -464,11 +492,23 @@ def train_epoch(
 
             if use_ema and ema_model is not None:
                 with torch.no_grad():
-                    for ema_param, param in zip(ema_model.parameters(), model.parameters()):
-                        if ema_param.dtype.is_floating_point:
-                            ema_param.data.mul_(ema_decay).add_(
-                                param.data.to(ema_param.dtype), alpha=1.0 - ema_decay
-                            )
+                    try:
+                        ema_params = [
+                            p.data for p in ema_model.parameters() if p.dtype.is_floating_point
+                        ]
+                        model_params = [
+                            p.data.to(ep.dtype)
+                            for p, ep in zip(model.parameters(), ema_model.parameters())
+                            if ep.dtype.is_floating_point
+                        ]
+                        torch._foreach_mul_(ema_params, ema_decay)
+                        torch._foreach_add_(ema_params, model_params, alpha=1.0 - ema_decay)
+                    except AttributeError:
+                        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+                            if ema_param.dtype.is_floating_point:
+                                ema_param.data.mul_(ema_decay).add_(
+                                    param.data.to(ema_param.dtype), alpha=1.0 - ema_decay
+                                )
 
             global_step += 1
             accumulated_samples = 0
@@ -735,9 +775,21 @@ def main(cfg: DictConfig) -> None:
         if nm_dict is not None:
             noise_model_user_obj = NoiseModel.from_config_dict(dict(nm_dict))
 
-            # Surface-code training upscaling: bring max(P's) to 6e-3 for training data only.
-            # Evaluation uses the user-specified noise model as-is.
-            # For other code types (e.g. color codes) upscaling is not applied by default.
+            # Compute grouped noise totals for logging and scaling decisions.
+            p_prep = float(noise_model_user_obj.p_prep_X + noise_model_user_obj.p_prep_Z)
+            p_meas = float(noise_model_user_obj.p_meas_X + noise_model_user_obj.p_meas_Z)
+            p_idle_cnot = float(noise_model_user_obj.get_total_idle_cnot_probability())
+            p_idle_spam = float(noise_model_user_obj.get_total_idle_spam_probability())
+            p_cnot = float(noise_model_user_obj.get_total_cnot_probability())
+            max_group = max(p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot)
+            if max_group <= 0.0:
+                raise ValueError(
+                    "Invalid noise_model: all grouped totals are <= 0 "
+                    f"(prep={p_prep}, meas={p_meas}, idle_cnot={p_idle_cnot}, idle_spam={p_idle_spam}, cnot={p_cnot})."
+                )
+
+            # Surface-code training upscaling: bring max(P's) to target for training
+            # data only. Evaluation uses the user-specified noise model as-is.
             from qec.noise_model import (
                 get_training_upscaled_noise_model,
                 SURFACE_CODE_TRAINING_UPSCALE_TARGET,
@@ -760,12 +812,11 @@ def main(cfg: DictConfig) -> None:
             p_min_value = p_error_value
             p_max_value = p_error_value
             if dist.rank == 0:
-                tot = upscale_info["group_totals"]
-                max_group = upscale_info["max_group"]
+                # Always print the grouped totals + decision to make verification easy from logs.
                 print(
                     "[Train] noise_model grouped totals: "
-                    f"prep={tot['p_prep']:.6g}, meas={tot['p_meas']:.6g}, "
-                    f"idle_cnot={tot['p_idle_cnot']:.6g}, idle_spam={tot['p_idle_spam']:.6g}, cnot={tot['p_cnot']:.6g}; "
+                    f"prep={p_prep:.6g}, meas={p_meas:.6g}, "
+                    f"idle_cnot={p_idle_cnot:.6g}, idle_spam={p_idle_spam:.6g}, cnot={p_cnot:.6g}; "
                     f"max_group={max_group:.6g}"
                 )
                 print(f"[Train] {upscale_info['message']}")
@@ -807,6 +858,10 @@ def main(cfg: DictConfig) -> None:
                     f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"
                 )
                 print(f"[Train] noise_model (user) summary: {noise_model_user_obj!r}")
+                if upscale_info.get("applied_upscale"):
+                    print(
+                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
+                    )
                 print(
                     "[Train] noise_model idle semantics: "
                     "bulk/CNOT-layer idles use p_idle_cnot_*, "
@@ -815,7 +870,7 @@ def main(cfg: DictConfig) -> None:
                 )
                 print(
                     "[Train] noise_model totals: "
-                    f"prep_total={tot['p_prep']:.6g}, meas_total={tot['p_meas']:.6g}, "
+                    f"prep_total={p_prep:.6g}, meas_total={p_meas:.6g}, "
                     f"idle_cnot_total={noise_model_user_obj.get_total_idle_cnot_probability():.6g}, "
                     f"idle_spam_total={noise_model_user_obj.get_total_idle_spam_probability():.6g}, "
                     f"cnot_total={noise_model_user_obj.get_total_cnot_probability():.6g}"
@@ -849,6 +904,27 @@ def main(cfg: DictConfig) -> None:
         precomputed_frames_dir, cfg.distance, cfg.n_rounds, cfg.meas_basis, dist.rank
     )
 
+    _compute_dtype_raw = getattr(cfg.data, 'compute_dtype', None)
+    _compute_dtype = None
+    if _compute_dtype_raw is not None:
+        _dtype_map = {
+            "float16": torch.float16,
+            "float32": torch.float32,
+            "bfloat16": torch.bfloat16
+        }
+        _compute_dtype = _dtype_map.get(str(_compute_dtype_raw), None)
+
+    _he_accel_kwargs = dict(
+        use_compile=bool(getattr(cfg.data, 'use_compile', False)),
+        compile_chunk_size=int(getattr(cfg.data, 'compile_chunk_size', 2)),
+        compute_dtype=_compute_dtype,
+        use_weight2=bool(getattr(cfg.data, 'use_weight2', False)),
+        max_passes_w2=int(getattr(cfg.data, 'max_passes_w2', 4)),
+        use_coset_search=bool(getattr(cfg.data, 'use_coset_search', False)),
+        coset_max_generators=int(getattr(cfg.data, 'coset_max_generators', 20)),
+        use_dense_overlap=bool(getattr(cfg.data, 'use_dense_overlap', False)),
+    )
+
     if use_multi_pairs:
         # Torch-only: no multi-pair support yet; fall back to single pair
         if dist.rank == 0:
@@ -876,6 +952,7 @@ def main(cfg: DictConfig) -> None:
             decompose_y=False,
             precomputed_frames_dir=precomputed_frames_dir,
             code_rotation=code_rotation,
+            **_he_accel_kwargs,
         )
         val_generator = QCDataGeneratorTorch(
             distance=cfg.distance,
@@ -895,6 +972,7 @@ def main(cfg: DictConfig) -> None:
             decompose_y=False,
             precomputed_frames_dir=precomputed_frames_dir,
             code_rotation=code_rotation,
+            **_he_accel_kwargs,
         )
 
     # Create test generator
@@ -990,7 +1068,7 @@ def main(cfg: DictConfig) -> None:
     env_compile = os.environ.get("PREDECODER_TORCH_COMPILE")
     env_compile_mode = os.environ.get("PREDECODER_TORCH_COMPILE_MODE")
     compile_mode = str(env_compile_mode or getattr(cfg, "torch_compile_mode", "max-autotune"))
-    should_compile = bool(getattr(cfg, "torch_compile", False))
+    should_compile = bool(getattr(cfg, "torch_compile", True))
     if env_compile is not None:
         env_val = str(env_compile).strip().lower()
         if env_val == "auto":
@@ -1302,11 +1380,12 @@ def main(cfg: DictConfig) -> None:
             avg_vloss = float(v.item())
             loss_sync_s = time.perf_counter() - t_sync_start
 
-        t_gc_start = time.perf_counter()
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc_s = time.perf_counter() - t_gc_start
+        # Removed: gc.collect() + empty_cache() cause 100-400ms stall per epoch
+        # and empty_cache() causes memory fragmentation on next allocation.
+        # gc.collect()
+        # if torch.cuda.is_available():
+        #     torch.cuda.empty_cache()
+        gc_s = 0.0
 
         # Compute LER (+ PyMatching speedup) and SDR (syndrome density reduction) if enabled
         use_ler_for_early_stopping = getattr(cfg, 'validation_ler', False)
@@ -1333,13 +1412,15 @@ def main(cfg: DictConfig) -> None:
                         print("[Syndrome Density] Skipped (PREDECODER_DISABLE_SDR=1)")
                 else:
                     t_sdr_start = time.perf_counter()
+                    sdr_as_percent = bool(getattr(cfg, 'sdr_as_percent', False))
                     syndrome_density_reduction = compute_syndrome_density(
                         model=model_to_eval,
                         device=dist.device,
                         dist=dist,
                         cfg=cfg,
-                        generator=None,
+                        generator=val_generator,
                         rank=dist.rank,
+                        sdr_as_percent=sdr_as_percent,
                     )
                     sdr_s = time.perf_counter() - t_sdr_start
                 # If multi-pair dict, reduce to a single scalar for logging (average over pairs).
@@ -1407,13 +1488,40 @@ def main(cfg: DictConfig) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         t_log_start = time.perf_counter()
         if dist.rank == 0:
+            # --- Compute speed/throughput metrics ---
+            _epoch_wall = time.perf_counter() - epoch_wall_start
+            _samples_this_epoch = steps_per_epoch * per_device_batch_size * dist.world_size
+            _throughput = _samples_this_epoch / _epoch_wall if _epoch_wall > 0 else 0.0
+            _train_steps = train_timing.get(
+                "steps", steps_per_epoch
+            ) if train_timing else steps_per_epoch
+            _ms_per_batch = (train_total_s / _train_steps * 1000) if _train_steps > 0 else 0.0
+            _data_pct = (
+                train_timing.get("data_gen_s", 0) / train_total_s * 100
+            ) if train_total_s > 0 and train_timing else 0.0
+
+            # --- Main summary line ---
+            parts = [f"[{timestamp}] Epoch {epoch_number}"]
+            parts.append(f"loss={avg_loss:.5f}/{avg_vloss:.5f}")
             if use_ler_for_early_stopping and validation_ler is not None:
-                _sdr_str = f" SDR {syndrome_density_reduction:.4f}" if syndrome_density_reduction is not None else ""
-                print(
-                    f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f} LER {validation_ler:.6f}{_sdr_str}"
-                )
-            else:
-                print(f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f}")
+                parts.append(f"LER={validation_ler:.6f}")
+            if syndrome_density_reduction is not None:
+                _sdr_unit = "%" if bool(getattr(cfg, 'sdr_as_percent', False)) else "x"
+                parts.append(f"SDR={syndrome_density_reduction:.2f}{_sdr_unit}")
+            parts.append(
+                f"{_epoch_wall:.0f}s ({_throughput:.0f} samp/s, {_ms_per_batch:.1f}ms/batch)"
+            )
+            print(" | ".join(parts))
+
+            # --- Speed breakdown line ---
+            _speed_parts = [f"[Speed] train={train_total_s:.1f}s val={val_total_s:.1f}s"]
+            if sdr_s > 0:
+                _speed_parts.append(f"sdr={sdr_s:.1f}s")
+            if ler_s > 0:
+                _speed_parts.append(f"ler={ler_s:.1f}s")
+            if _data_pct > 1.0:
+                _speed_parts.append(f"data_gen={_data_pct:.0f}% of train")
+            print(" ".join(_speed_parts))
             dem_timing = None
             try:
                 from evaluation import logical_error_rate as ler_stim
@@ -1486,6 +1594,11 @@ def main(cfg: DictConfig) -> None:
                         "Metrics/SDR", float(syndrome_density_reduction), epoch_number
                     )
 
+                # Log speed metrics for tracking training efficiency over epochs.
+                writer.add_scalar("Speed/throughput_samp_per_s", _throughput, epoch_number)
+                writer.add_scalar("Speed/ms_per_batch", _ms_per_batch, epoch_number)
+                writer.add_scalar("Speed/epoch_wall_s", _epoch_wall, epoch_number)
+
                 writer.flush()
         log_s = time.perf_counter() - t_log_start
 
@@ -1500,7 +1613,19 @@ def main(cfg: DictConfig) -> None:
         else:
             current_metric = avg_vloss
 
-        if current_metric < best_vloss:
+        # SDR threshold gate: only count an epoch as an improvement if SDR qualifies.
+        # If SDR was not computed (None), fall back to always qualifying.
+        # Default thresholds: 1.5x in factor mode, 33.3% in percent mode (equivalent).
+        _sdr_pct = bool(getattr(cfg, 'sdr_as_percent', False))
+        _default_threshold = 33.3 if _sdr_pct else 1.5
+        syndrome_density_threshold = cfg.get('syndrome_density_threshold', _default_threshold)
+        syndrome_qualifies = (
+            syndrome_density_reduction is not None and
+            syndrome_density_reduction >= syndrome_density_threshold
+        )
+        sdr_not_computed = syndrome_density_reduction is None
+
+        if current_metric < best_vloss and (syndrome_qualifies or sdr_not_computed):
             best_vloss = current_metric
             epochs_since_best = 0
 
@@ -1521,7 +1646,16 @@ def main(cfg: DictConfig) -> None:
                     global_step=global_step,
                 )
                 ckpt_best_s = time.perf_counter() - t_ckpt_best
-        elif current_metric >= best_vloss:
+        else:
+            if not (
+                syndrome_qualifies or sdr_not_computed
+            ) and current_metric < best_vloss and dist.rank == 0:
+                _es_unit = "%" if _sdr_pct else "x"
+                print(
+                    f"[Early Stopping] Metric improved ({current_metric:.6f} < {best_vloss:.6f}) "
+                    f"but SDR {syndrome_density_reduction:.2f}{_es_unit} < threshold {syndrome_density_threshold}{_es_unit}; "
+                    f"not counting as improvement."
+                )
             epochs_since_best += 1
 
             if cfg.early_stopping.enabled and epochs_since_best >= cfg.early_stopping.patience:
@@ -1545,13 +1679,18 @@ def main(cfg: DictConfig) -> None:
         epoch_times.append(epoch_duration)
 
         if dist.rank == 0:
+            _avg_epoch_s = sum(epoch_times) / len(epoch_times) if epoch_times else epoch_duration
+            _eta_epochs = cfg.early_stopping.patience - epochs_since_best if cfg.early_stopping.enabled else 0
+            _eta_str = f" ETA-stop={_eta_epochs * _avg_epoch_s / 60:.0f}m" if _eta_epochs > 0 else ""
             print(
-                f"[{timestamp}] Best metric {best_vloss:.6f}, Epochs since best: {epochs_since_best}, Epoch time {epoch_duration/60:.1f}m"
+                f"[{timestamp}] Best={best_vloss:.6f} wait={epochs_since_best}/{cfg.early_stopping.patience}{_eta_str}"
             )
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        # Removed: gc.collect() + empty_cache() cause 100-400ms stall per epoch
+        # and empty_cache() causes memory fragmentation on next allocation.
+        # gc.collect()
+        # if torch.cuda.is_available():
+        #     torch.cuda.empty_cache()
 
         # Save periodic checkpoint
         if dist.rank == 0 and (epoch + 1) % cfg.train.checkpoint_interval == 0:

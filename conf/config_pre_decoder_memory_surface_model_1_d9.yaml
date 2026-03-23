@@ -36,7 +36,7 @@ data:
   generator: torch # Training data generator (Torch-only)
   timelike_he: True # Enable timelike homological equivalence
   num_he_cycles: 1 # Number of (spacelike+timelike) HE cycles to apply (default: 1)
-  use_weight2_timelike: False # Enable weight-2 timelike HE (in addition to weight-1)
+  use_weight2: False # Enable weight-2 timelike HE (in addition to weight-1)
   max_passes_w1: 8 # Maximum passes for weight-1 timelike HE convergence (default: 32)
   max_passes_w2: 4 # Maximum passes for weight-2 timelike HE convergence (default: 32)
   p_error: null # Physical error rate (fixed) - set to null to use p_min/p_max range instead
@@ -66,7 +66,7 @@ train: # Training configurable parameters
   save_every_datasets: 5  # Save checkpoint every N datasets within an epoch (0 = disabled, only save at epoch end)
   epochs: 100
 val: # Validation configurable parameters
-  num_samples: 65536 # Total validation samples (distributed across all GPUs when using JAX or multi-GPU)
+  num_samples: 65536 # Total validation samples (distributed across all GPUs when using multi-GPU)
   threshold: 0.5
   trials: 1
 optimizer_type: Lion  # Lion or AdamW

@@ -29,7 +29,7 @@ class QCDataGeneratorTorch:
         verbose=False,
         timelike_he=True,
         num_he_cycles=1,
-        use_weight2_timelike=False,
+        use_weight2=False,
         max_passes_w1=32,
         max_passes_w2=32,
         decompose_y=False,
@@ -41,6 +41,12 @@ class QCDataGeneratorTorch:
         base_seed=42,
         seed_offset=0,
         device=None,
+        use_compile=False,
+        compile_chunk_size=2,
+        compute_dtype=None,
+        use_coset_search=False,
+        coset_max_generators=20,
+        use_dense_overlap=False,
         **_ignored,
     ):
         if global_rank is None:
@@ -77,8 +83,27 @@ class QCDataGeneratorTorch:
         from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
         from qec.precompute_dem import precompute_dem_bundle_surface_code
 
-        # If no DEM dir is provided, precompute DEM artifacts in-memory once.
-        # This is slower at startup, but avoids any file I/O and supports "train without loading DEMs".
+        import threading
+        self._early_compile_threads: list[threading.Thread] = []
+        if bool(use_compile) and bool(timelike_he) and self.device.type == "cuda":
+            from qec.surface_code.homological_equivalence_torch import warmup_he_compile
+            bases_to_warm = ["X", "Z"] if self._mixed else [self._single_basis]
+            for b in bases_to_warm:
+                t = threading.Thread(
+                    target=warmup_he_compile,
+                    kwargs=dict(
+                        distance=self.distance,
+                        n_rounds=self.n_rounds,
+                        basis=b,
+                        max_passes_w1=max_passes_w1,
+                        use_weight2=use_weight2,
+                        max_passes_w2=max_passes_w2,
+                    ),
+                    daemon=True,
+                )
+                t.start()
+                self._early_compile_threads.append(t)
+
         dem_cache = {}
         if precomputed_frames_dir is None:
             # Pick a nominal p for building the single-p marginal vector.
@@ -102,8 +127,22 @@ class QCDataGeneratorTorch:
                     device=self.device,
                     export=False,
                     return_artifacts=True,
-                    # TODO: pass noise_model=noise_model here once the guard above is removed
+                    # TODO: pass noise_model=noise_model here for circuit-level noise support
                 )
+
+        _he_kwargs = dict(
+            timelike_he=timelike_he,
+            num_he_cycles=num_he_cycles,
+            max_passes_w1=max_passes_w1,
+            use_compile=use_compile,
+            compile_chunk_size=compile_chunk_size,
+            compute_dtype=compute_dtype,
+            use_weight2=use_weight2,
+            max_passes_w2=max_passes_w2,
+            use_coset_search=use_coset_search,
+            coset_max_generators=coset_max_generators,
+            use_dense_overlap=use_dense_overlap,
+        )
 
         if self._mixed:
             self.sim_X = MemoryCircuitTorch(
@@ -112,13 +151,11 @@ class QCDataGeneratorTorch:
                 basis="X",
                 precomputed_frames_dir=precomputed_frames_dir,
                 code_rotation=self.code_rotation,
-                timelike_he=timelike_he,
-                num_he_cycles=num_he_cycles,
-                max_passes_w1=max_passes_w1,
                 device=self.device,
                 H=(dem_cache.get("X", {}).get("H") if dem_cache else None),
                 p=(dem_cache.get("X", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("X", {}).get("A") if dem_cache else None),
+                **_he_kwargs,
             )
             self.sim_Z = MemoryCircuitTorch(
                 distance=self.distance,
@@ -126,13 +163,11 @@ class QCDataGeneratorTorch:
                 basis="Z",
                 precomputed_frames_dir=precomputed_frames_dir,
                 code_rotation=self.code_rotation,
-                timelike_he=timelike_he,
-                num_he_cycles=num_he_cycles,
-                max_passes_w1=max_passes_w1,
                 device=self.device,
                 H=(dem_cache.get("Z", {}).get("H") if dem_cache else None),
                 p=(dem_cache.get("Z", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("Z", {}).get("A") if dem_cache else None),
+                **_he_kwargs,
             )
         else:
             self.sim = MemoryCircuitTorch(
@@ -141,13 +176,11 @@ class QCDataGeneratorTorch:
                 basis=self._single_basis,
                 precomputed_frames_dir=precomputed_frames_dir,
                 code_rotation=self.code_rotation,
-                timelike_he=timelike_he,
-                num_he_cycles=num_he_cycles,
-                max_passes_w1=max_passes_w1,
                 device=self.device,
                 H=(dem_cache.get(self._single_basis, {}).get("H") if dem_cache else None),
                 p=(dem_cache.get(self._single_basis, {}).get("p") if dem_cache else None),
                 A=(dem_cache.get(self._single_basis, {}).get("A") if dem_cache else None),
+                **_he_kwargs,
             )
 
         seed = int(base_seed) + int(self.global_rank) * 1_000_000 + int(seed_offset)
@@ -162,7 +195,14 @@ class QCDataGeneratorTorch:
             )
 
     def generate_batch(self, step, batch_size):
-        # Basis alternation: even=X, odd=Z.
+        if self._early_compile_threads:
+            for t in self._early_compile_threads:
+                # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
+                t.join(timeout=1200)
+                if t.is_alive():
+                    raise RuntimeError("warmup_he_compile thread did not finish within 20 min")
+            self._early_compile_threads.clear()
+
         if self._mixed:
             sim = self.sim_X if (int(step) % 2 == 0) else self.sim_Z
         else:

@@ -110,7 +110,7 @@ jobs:
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     steps:
       - name: Setup proxy cache
         uses: nv-gha-runners/setup-proxy-cache@main
@@ -155,6 +155,11 @@ jobs:
           PREDECODER_VAL_SAMPLES: "4096"
           PREDECODER_TEST_SAMPLES: "4096"
           PREDECODER_TRAIN_EPOCHS: "2"
+
+      - name: HE compile tests (torch.compile + autotune on GPU)
+        run: |
+          . .venv_mid/bin/activate
+          PYTHONPATH=code python -m unittest discover -s code/tests/mid -p "test_*.py" -v
 
   # ---------------------------------------------------------------------------
   # GPU coverage: captures GPU-specific code paths missed by the CPU coverage job

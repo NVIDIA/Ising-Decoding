@@ -334,7 +334,7 @@ class TestLERComparison(unittest.TestCase):
     def test_ler_improves_with_bd_all_orientations(self):
         """Test LER improves with boundary detectors for all four orientations (short run)."""
         noise_model = NoiseModel.from_single_p(0.005)
-        num_samples = _ler_test_samples(5000, 2000)
+        num_samples = _ler_test_samples(10000, 10000)
         d = 5
         for rotation in TestCodeRotations.ROTATIONS:
             with self.subTest(rotation=rotation):

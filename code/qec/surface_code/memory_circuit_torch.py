@@ -13,6 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Union
 
+import time
+
 import numpy as np
 import torch
 
@@ -27,6 +29,8 @@ from qec.surface_code.homological_equivalence_torch import (
     apply_weight1_timelike_homological_equivalence_torch,
     build_spacelike_he_cache,
     build_timelike_he_cache,
+    build_weight2_timelike_cache,
+    warmup_he_compile,
 )
 from qec.surface_code.memory_circuit import SurfaceCode
 
@@ -67,6 +71,14 @@ class MemoryCircuitTorch:
         num_he_cycles: int = 1,
         max_passes_w1: int = 32,
         device: Optional[torch.device] = None,
+        use_compile: bool = False,
+        compile_chunk_size: int = 2,
+        compute_dtype: Optional[torch.dtype] = None,
+        use_weight2: bool = False,
+        max_passes_w2: int = 4,
+        use_coset_search: bool = False,
+        coset_max_generators: int = 20,
+        use_dense_overlap: bool = False,
         # Optional in-memory DEM artifacts (to avoid writing/loading files).
         H: torch.Tensor | None = None,  # (2*num_detectors, num_errors) uint8
         p: torch.Tensor | None = None,  # (num_errors,) float32
@@ -79,9 +91,34 @@ class MemoryCircuitTorch:
         self.timelike_he = bool(timelike_he)
         self.num_he_cycles = int(num_he_cycles)
         self.max_passes_w1 = int(max_passes_w1)
+        self.use_compile = bool(use_compile)
+        self.compile_chunk_size = int(compile_chunk_size)
+        self.compute_dtype = compute_dtype
+        self.use_weight2 = bool(use_weight2)
+        self.max_passes_w2 = int(max_passes_w2)
+        self.use_coset_search = bool(use_coset_search)
+        self.coset_max_generators = int(coset_max_generators)
+        self.use_dense_overlap = bool(use_dense_overlap)
         self.device = device if device is not None else torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
+
+        import threading
+        self._compile_thread: threading.Thread | None = None
+        if self.timelike_he and self.device.type == "cuda" and self.use_compile:
+            self._compile_thread = threading.Thread(
+                target=warmup_he_compile,
+                kwargs=dict(
+                    distance=self.distance,
+                    n_rounds=self.n_rounds,
+                    basis=self.basis,
+                    max_passes_w1=self.max_passes_w1,
+                    use_weight2=self.use_weight2,
+                    max_passes_w2=self.max_passes_w2,
+                ),
+                daemon=True,
+            )
+            self._compile_thread.start()
 
         # Circuit metadata.
         first_bulk, rot = self.code_rotation[0], self.code_rotation[1]
@@ -156,13 +193,23 @@ class MemoryCircuitTorch:
         self.parity_X = torch.tensor(self.code.hx, dtype=torch.uint8, device=self.device)
         self.parity_Z = torch.tensor(self.code.hz, dtype=torch.uint8, device=self.device)
         self.cache_X_sp = build_spacelike_he_cache(
-            self.parity_X, distance=self.distance, device=self.device
+            self.parity_X, distance=self.distance, basis="X", device=self.device
         )
         self.cache_Z_sp = build_spacelike_he_cache(
-            self.parity_Z, distance=self.distance, device=self.device
+            self.parity_Z, distance=self.distance, basis="Z", device=self.device
         )
         self.cache_X_tl = build_timelike_he_cache(self.parity_X)
         self.cache_Z_tl = build_timelike_he_cache(self.parity_Z)
+
+        self.cache_X_w2 = None
+        self.cache_Z_w2 = None
+        if self.use_weight2:
+            self.cache_X_w2 = build_weight2_timelike_cache(
+                self.parity_Z, self.parity_Z, self.distance, "X", self.device
+            )
+            self.cache_Z_w2 = build_weight2_timelike_cache(
+                self.parity_X, self.parity_X, self.distance, "Z", self.device
+            )
 
         # Weight maps for trainX presence channels.
         self.w_mapXgrid = (
@@ -180,15 +227,34 @@ class MemoryCircuitTorch:
         self,
         *,
         batch_size: int,
-        return_aux: bool = False
+        return_aux: bool = False,
+        collect_timing: bool = False,
     ) -> Union[
         tuple[torch.Tensor, torch.Tensor],
         tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+        tuple[torch.Tensor, torch.Tensor, dict[str, float]],
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str,
+                                                                                         float]],
     ]:
         """
-        Generate a batch of (trainX, trainY). If return_aux=True, also return
-        (meas_old, x_cum, z_cum) for building Stim dets_and_obs (e.g. oracle + PyMatching test).
+        Generate a batch of (trainX, trainY).
+
+        - If return_aux=True, also return (meas_old, x_cum, z_cum) for tests that
+          build Stim dets_and_obs from circuit-order measurements.
+        - If collect_timing=True, also return timing breakdown in milliseconds:
+          data generation, HE, format, and total.
         """
+        if self._compile_thread is not None:
+            # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
+            self._compile_thread.join(timeout=1200)
+            if self._compile_thread.is_alive():
+                raise RuntimeError("warmup_he_compile thread did not finish within 20 min")
+            self._compile_thread = None
+
+        if collect_timing:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            t0 = time.perf_counter()
         frames_xz = dem_sampling(self.H, self.p, int(batch_size))  # (B, 2*num_detectors)
         meas_old = measure_from_stacked_frames(
             frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq
@@ -204,6 +270,11 @@ class MemoryCircuitTorch:
         ).reshape(-1)
         x_cum = frames_xz[:, :D].index_select(1, idx_data).reshape(batch_size, self.n_rounds, -1)
         z_cum = frames_xz[:, D:].index_select(1, idx_data).reshape(batch_size, self.n_rounds, -1)
+
+        if collect_timing:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            t1 = time.perf_counter()
 
         if self.timelike_he:
             num_x = int(self.xcheck_qubits.numel())
@@ -228,6 +299,16 @@ class MemoryCircuitTorch:
                 trainX_z=trainX_z,
                 cache_Z_spacelike=self.cache_Z_sp,
                 cache_X_spacelike=self.cache_X_sp,
+                use_compile=self.use_compile,
+                compile_chunk_size=self.compile_chunk_size,
+                compute_dtype=self.compute_dtype,
+                use_weight2=self.use_weight2,
+                max_passes_w2=self.max_passes_w2,
+                cache_Z_w2=self.cache_Z_w2,
+                cache_X_w2=self.cache_X_w2,
+                use_coset_search=self.use_coset_search,
+                coset_max_generators=self.coset_max_generators,
+                use_dense_overlap=self.use_dense_overlap,
             )
             meas_new = torch.cat([s1s2x, s1s2z], dim=2)
         else:
@@ -236,9 +317,28 @@ class MemoryCircuitTorch:
             zpad = torch.cat([torch.zeros_like(z_cum[:, :1, :]), z_cum], dim=1)
             x_diff, z_diff = xpad[:, :-1, :] ^ xpad[:, 1:, :], zpad[:, :-1, :] ^ zpad[:, 1:, :]
 
+        if collect_timing:
+            if self.device.type == "cuda":
+                torch.cuda.synchronize(self.device)
+            t2 = time.perf_counter()
+
         trainX, trainY = self._format_for_model(x_diff, z_diff, meas_old, meas_new)
+        timing_dict = None
+        if collect_timing:
+            t3 = time.perf_counter()
+            timing_dict = {
+                "data_gen_ms": (t1 - t0) * 1000,
+                "he_ms": (t2 - t1) * 1000,
+                "format_ms": (t3 - t2) * 1000,
+                "total_ms": (t3 - t0) * 1000,
+            }
+
         if return_aux:
+            if timing_dict is not None:
+                return (trainX, trainY, meas_old, x_cum, z_cum, timing_dict)
             return (trainX, trainY, meas_old, x_cum, z_cum)
+        if timing_dict is not None:
+            return (trainX, trainY, timing_dict)
         return (trainX, trainY)
 
     def _format_for_model(self, x_diff, z_diff, meas_old,

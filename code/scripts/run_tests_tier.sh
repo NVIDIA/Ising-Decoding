@@ -35,6 +35,10 @@ case "${TIER}" in
       export EXPERIMENT_NAME="${EXPERIMENT_NAME:-tier_mid}"
       bash "${REPO_ROOT}/code/scripts/smoke_run.sh"
     fi
+    echo "------------------------------------------"
+    echo "Mid-tier HE compile tests"
+    echo "------------------------------------------"
+    python3 -m unittest discover -s "${REPO_ROOT}/code/tests/mid" -p "test_*.py" -v
     ;;
   long)
     echo "=========================================="
