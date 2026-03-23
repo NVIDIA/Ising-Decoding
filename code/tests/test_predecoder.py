@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Tests for model/predecoder: forward pass shape (v1 and v2). Catches breakage from architecture/config changes."""
+"""Tests for model/predecoder: forward pass shape (v1). Catches breakage from architecture/config changes."""
 
 import unittest
 from pathlib import Path
@@ -23,9 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from model.predecoder import (
     PreDecoderModelMemory_v1,
-    PreDecoderModelMemory_v2,
     get_mock_config,
-    get_mock_config_v2,
 )
 
 
@@ -34,17 +32,6 @@ class TestPreDecoderModelMemoryV1(unittest.TestCase):
     def test_forward_shape(self):
         cfg = get_mock_config()
         model = PreDecoderModelMemory_v1(cfg)
-        B, C, T, D = 2, cfg.model.input_channels, cfg.n_rounds, cfg.distance
-        x = torch.randn(B, C, T, D, D)
-        out = model(x)
-        self.assertEqual(out.shape, (B, cfg.model.out_channels, T, D, D))
-
-
-class TestPreDecoderModelMemoryV2(unittest.TestCase):
-
-    def test_forward_shape(self):
-        cfg = get_mock_config_v2()
-        model = PreDecoderModelMemory_v2(cfg)
         B, C, T, D = 2, cfg.model.input_channels, cfg.n_rounds, cfg.distance
         x = torch.randn(B, C, T, D, D)
         out = model(x)
