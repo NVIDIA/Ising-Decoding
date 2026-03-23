@@ -132,9 +132,15 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
             {
                 "timelike_he": True,
                 "num_he_cycles": 1,
-                "use_weight2_timelike": False,
+                "use_weight2": False,
                 "max_passes_w1": 8,
                 "max_passes_w2": 4,
+                "use_compile": True,
+                "compile_chunk_size": 2,
+                "compute_dtype": None,
+                "use_coset_search": False,
+                "coset_max_generators": 20,
+                "use_dense_overlap": False,
                 "decompose_y": True,
                 "p_error": None,
                 "p_min": 0.001,
@@ -160,9 +166,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
         "data_method": "train",
         "train":
             {
-                # Production baseline: 2^26 shots / epoch when training with 8 GPUs.
-                # The training script will auto-scale this based on detected world size / GPU count.
-                "num_samples": 67108864,
+                "num_samples": int(os.environ.get("PREDECODER_NUM_SAMPLES", 67108864)),
                 "accumulate_steps": 2,
                 "checkpoint_interval": 1,
                 "save_every_datasets": 5,

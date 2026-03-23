@@ -416,7 +416,7 @@ Key scalars (as shown in TensorBoard):
 - **`BatchSize`**: The **effective** batch size per epoch: `per_device_batch_size * accumulate_steps * world_size`. We accumulate 2 steps: one for X basis circuit, and another one for Z basis.
 - **`Metrics/LER`**: Logical Error Rate on the evaluation target (computed during training-time evaluation). Lower is better.
   - Averaging: computed over `cfg.test.num_samples` Monte Carlo shots **per basis** (X and Z).
-  - Default: `cfg.test.num_samples = 262144` (hardcoded for the current public release). If the training noise “floor” rescaling triggers, we increase this to at least `1048576` for a cleaner evaluation signal.
+  - Default: `cfg.test.num_samples = 262144` (hardcoded for the current public release).
   - Distributed: each rank uses `cfg.test.num_samples // world_size` shots per basis (any remainder is dropped).
 - **`Metrics/LER_Reduction_Factor`**: Ratio of post-predecoder LER to baseline LER (a “relative improvement” factor). `>1` means improvement. If both are 0, we log `1.0`.
   - Averaging: derived from the same LER evaluation run (same shot count as `Metrics/LER`).

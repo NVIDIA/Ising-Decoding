@@ -8,7 +8,7 @@ import sys
 import unittest
 from pathlib import Path
 
-_repo_code = Path(__file__).resolve().parent.parent
+_repo_code = Path(__file__).resolve().parent.parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
@@ -44,7 +44,7 @@ class TestW2Verify(unittest.TestCase):
             timelike_he=True,
             num_he_cycles=1,
             max_passes_w1=8,
-            use_weight2_timelike=False,
+            use_weight2=False,
             device=torch.device("cpu"),
             H=H,
             p=p,
@@ -80,7 +80,7 @@ class TestW2Verify(unittest.TestCase):
             timelike_he=True,
             num_he_cycles=1,
             max_passes_w1=8,
-            use_weight2_timelike=True,
+            use_weight2=True,
             max_passes_w2=4,
             device=torch.device("cpu"),
             H=H,

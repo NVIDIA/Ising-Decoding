@@ -8,6 +8,40 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 
+# ============================================================================
+# V3 Evaluation Configuration Reference
+# ============================================================================
+#
+# Inference path:
+#   Uses PreDecoderMemoryEvalModule + optional ONNX/TRT pipeline.
+#
+#   ONNX_WORKFLOW                 (int, default: 0)
+#       0 = PyTorch only   1 = export ONNX   2 = export ONNX + build TRT
+#       3 = load pre-built TRT engine
+#
+# Performance features:
+#   torch.compile        Always applied (default mode), except when
+#                        ONNX export is active (ONNX_WORKFLOW=1 or 2).
+#                        Disable with PREDECODER_TORCH_COMPILE=0.
+#   channels_last_3d     Always applied to model memory format.
+#   CUDAPrefetcher       Async data prefetch on any CUDA device.
+#   Non-blocking xfer    GPU->CPU via non_blocking=True + stream sync.
+#
+# Timing instrumentation:
+#   PREDECODER_ENABLE_TIMING_INSTRUMENTATION  (bool, default: 0)
+#   cfg.test.enable_timing_instrumentation    (bool, default: false)
+#       Enables per-phase timing, PyMatching decode analysis, syndrome
+#       density stats, and MWPM speedup breakdown.
+#
+# DataLoader workers (env override for container/shm safety):
+#   PREDECODER_SDR_NUM_WORKERS / PREDECODER_EVAL_NUM_WORKERS /
+#   PREDECODER_INFERENCE_NUM_WORKERS
+#
+# At startup, a single [LER Config] line is printed showing all active
+# settings. Example:
+#   [LER Config] ONNX_WORKFLOW=torch-only | torch.compile=on |
+#       channels_last_3d=on | prefetcher=on | timing=off
+# ============================================================================
 import pymatching
 import numpy as np
 import torch
@@ -37,9 +71,13 @@ import time
 import warnings
 
 from qec.surface_code.data_mapping import (
-    normalized_weight_mapping_Xstab_memory, normalized_weight_mapping_Zstab_memory,
-    compute_stabX_to_data_index_map, compute_stabZ_to_data_index_map, map_grid_to_stabilizer_tensor,
-    construct_X_stab_Parity_check_Mat, construct_Z_stab_Parity_check_Mat
+    compute_stabX_to_data_index_map,
+    compute_stabZ_to_data_index_map,
+    map_grid_to_stabilizer_tensor,
+    construct_X_stab_Parity_check_Mat,
+    construct_Z_stab_Parity_check_Mat,
+    normalized_weight_mapping_Xstab_memory,
+    normalized_weight_mapping_Zstab_memory,
 )
 
 
@@ -49,6 +87,14 @@ def _detect_shm_bytes() -> Optional[int]:
         return int(st.f_frsize * st.f_blocks)
     except Exception:
         return None
+
+
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    val = str(raw).strip().lower()
+    return val not in ("0", "false", "no", "off", "")
 
 
 def _parse_quant_format(rank: int = 0) -> str:
@@ -806,7 +852,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     """
     Runs inference with the trained model, forms residual syndromes consistent with the DEM,
     and computes the final logical error rate with PyMatching.
-    Returns: (num_logic_errors_after_predecoder+pymatching, num_samples, num_pymatch_errors_baseline)
+
+    Returns:
+        (num_logic_errors, num_samples, num_pymatch_errors, baseline_us_per_round, predecoder_us_per_round)
     """
 
     th_data = float(getattr(cfg.test, "th_data", 0.0))
@@ -839,7 +887,47 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         else:
             print(f"[LER] Sampling mode: threshold (th_data={th_data}, th_syn={th_syn})")
 
+    enable_timing_instrumentation = bool(getattr(cfg.test, "enable_timing_instrumentation", False))
+    enable_timing_instrumentation = _get_env_bool(
+        "PREDECODER_ENABLE_TIMING_INSTRUMENTATION",
+        enable_timing_instrumentation,
+    )
+    timing_rank0 = bool(enable_timing_instrumentation and dist.rank == 0)
+
     model.eval()
+
+    # Determine if ONNX export will happen -- torch.compile is incompatible with ONNX export.
+    _onnx_workflow_raw = int(os.environ.get("ONNX_WORKFLOW", "0").strip() or "0")
+    _will_export_onnx = (_onnx_workflow_raw in (1, 2))
+
+    _applied_channels_last = False
+    try:
+        model = model.to(memory_format=torch.channels_last_3d)
+        _applied_channels_last = True
+    except Exception as e:
+        if dist.rank == 0:
+            print(f"[LER] channels_last_3d not applied: {e}")
+
+    _applied_compile = False
+    _compile_enabled = _get_env_bool("PREDECODER_TORCH_COMPILE", True)
+    if not _will_export_onnx and _compile_enabled:
+        try:
+            model = torch.compile(model, mode="default")
+            _applied_compile = True
+        except Exception as e:
+            if dist.rank == 0:
+                print(f"[LER] torch.compile not applied: {e}")
+
+    if dist.rank == 0:
+        _onnx_names = {0: "torch-only", 1: "export-ONNX", 2: "export+TRT", 3: "load-engine"}
+        _onnx_label = _onnx_names.get(_onnx_workflow_raw, str(_onnx_workflow_raw))
+        print(
+            f"[LER Config] ONNX_WORKFLOW={_onnx_label}"
+            f" | torch.compile={'on' if _applied_compile else ('skipped(ONNX)' if _will_export_onnx else ('off(env)' if not _compile_enabled else 'off'))}"
+            f" | channels_last_3d={'on' if _applied_channels_last else 'off'}"
+            f" | prefetcher={'on' if device.type == 'cuda' else 'off(cpu)'}"
+            f" | timing={'on' if enable_timing_instrumentation else 'off'}"
+        )
 
     # Latency measurement: sample a small subset and time decode at batch_size=1.
     # Default: time on 10k single-shot decodes (batch_size=1) for a stable, informative metric.
@@ -922,10 +1010,6 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
-
-    batch_size_original = test_loader_kwargs.get("batch_size", 1)
-    T_original = cfg.test.n_rounds
-
     # Allow env override for SDR DataLoader workers (container/shm safety).
     try:
         override_workers = (
@@ -963,18 +1047,22 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     # Use regular DataLoader - no sampler partitioning
     test_dataloader = DataLoader(test_dataset, shuffle=False, **test_loader_kwargs)
 
-    # --- Precompute parity structs and build eval pipeline (nn.Module for inference + post-process) ---
+    # --- Precompute parity structs ---
     D = cfg.distance
     code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
     maps = _build_stab_maps(D, code_rotation)
-    pipeline_module = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
-    pipeline_module.eval()
 
     basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
     if basis not in ("X", "Z"):
         raise AssertionError(f"Invalid meas_basis_test='{basis}'. Use 'X' or 'Z'.")
 
-    # --- ONNX_WORKFLOW: 0=torch only, 1=export ONNX only, 2=export ONNX and use TensorRT, 3=use engine file only ---
+    batch_size_original = test_loader_kwargs.get("batch_size", 1)
+    T_original = cfg.test.n_rounds
+
+    pipeline_module = PreDecoderMemoryEvalModule(model, cfg, maps, device).to(device)
+    pipeline_module.eval()
+
+    # --- ONNX_WORKFLOW ---
     _workflow_raw = os.environ.get("ONNX_WORKFLOW", "0").strip()
     try:
         onnx_workflow = OnnxWorkflow(int(_workflow_raw))
@@ -982,8 +1070,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         onnx_workflow = OnnxWorkflow.TORCH_ONLY
         if dist.rank == 0:
             print(f"[LER] Invalid ONNX_WORKFLOW='{_workflow_raw}', using 0 (torch only).")
-    trt_context = None  # (context, engine, device_id) when using TensorRT
-    # --- QUANT_FORMAT: optional quantization (int8, fp8) applied to ONNX after FP32 export ---
+    trt_context = None
     quant_format = _parse_quant_format(rank=dist.rank)
     quant_suffix = f"_{quant_format}" if quant_format else ""
     onnx_path = os.path.join(
@@ -1011,7 +1098,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 trt_context = (engine.create_execution_context(), engine)
                 if dist.rank == 0:
                     print(
-                        f"[LER] TensorRT engine loaded from {engine_path} in {t_load_end - t_load_start:.3f}s"
+                        f"[LER] TensorRT engine loaded from {engine_path} "
+                        f"in {t_load_end - t_load_start:.3f}s"
                     )
             except ImportError as e:
                 raise RuntimeError(
@@ -1025,7 +1113,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         else:
             if dist.rank == 0:
                 print(
-                    f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; falling back to PyTorch."
+                    f"[LER] ONNX_WORKFLOW=3 but engine file not found: {engine_path}; "
+                    "falling back to PyTorch."
                 )
 
     elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
@@ -1135,7 +1224,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 config = builder.create_builder_config()
                 if not quant_format:
                     config.set_flag(trt.BuilderFlag.FP16)
-                # Uncomment this out to speedup engine build time.
+                # Uncomment to speedup engine build time:
                 # config.builder_optimization_level = 0
                 in_name = "dets"
                 in_cols_trt = 2 * T_original * half
@@ -1147,7 +1236,6 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                     (batch_size_original, in_cols_trt),
                 )
                 config.add_optimization_profile(profile)
-                # TensorRT 8.5+ removed builder.build_engine(); use build_serialized_network + deserialize.
                 t_build_start = time.perf_counter()
                 serialized = builder.build_serialized_network(network, config)
                 t_build_end = time.perf_counter()
@@ -1165,7 +1253,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 trt_context = (engine.create_execution_context(), engine)
                 t_create_context_end = time.perf_counter()
                 print(
-                    f"[LER] TensorRT execution context created in {t_create_context_end - t_create_context_start:.3f}s"
+                    f"[LER] TensorRT execution context created in "
+                    f"{t_create_context_end - t_create_context_start:.3f}s"
                 )
                 if dist.rank == 0:
                     print(f"[LER] TensorRT engine built from {onnx_path}")
@@ -1203,6 +1292,21 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     logical_errors = 0
     total_samples = 0
 
+    use_prefetcher = device.type == "cuda"
+    if use_prefetcher:
+        data_iter = CUDAPrefetcher(test_dataloader, device)
+    else:
+        data_iter = test_dataloader
+
+    # Timing instrumentation accumulators (used when timing_rank0 is True)
+    residual_syndrome_density_sum = 0.0
+    predecoder_batch_times = [] if timing_rank0 else None
+    baseline_syndrome_density = float(
+        stim_dets.sum()
+    ) / stim_dets.size if stim_dets.size > 0 else 0.0
+    floor_time_per_round = None
+    detector_shape = None
+
     t_start = time.perf_counter()
     t_model_time = 0.0
     t_pm_time = 0.0
@@ -1211,16 +1315,19 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     t_postmodel_s = 0.0  # sampling + syndrome + residuals + residual build
     t_cpu_copy_s = 0.0  # .cpu().numpy() + latency_predecoder_rows
     t_post_decode_s = 0.0  # as_tensor, final_L, gt_obs, logical_errors
-    for batch_idx, batch in enumerate(test_dataloader):
-        # print(f"Batch {batch_idx} of {len(test_dataloader)}")
+    for batch_idx, batch in enumerate(data_iter):
         _t0 = time.perf_counter()
-        batch = dict_to_device(batch, device)
+        if not use_prefetcher:
+            batch = dict_to_device(batch, device)
         t_to_device_s += time.perf_counter() - _t0
 
         dets_and_obs = batch["dets_and_obs"]
-        dets_only = dets_and_obs[:, :-num_obs].contiguous()
         B = dets_and_obs.shape[0]
 
+        if detector_shape is None:
+            detector_shape = (B, det_model.num_detectors)
+
+        dets_only = dets_and_obs[:, :-num_obs].contiguous()
         t_model_start = time.perf_counter()
         if trt_context is not None:
             context, engine = trt_context
@@ -1245,13 +1352,18 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         pre_L = L_and_residual_dets[:, 0].to(torch.int32)
         residual = L_and_residual_dets[:, 1:].to(torch.int32)
         t_model_time += time.perf_counter() - t_model_start
+
         if residual.shape[1] != det_model.num_detectors:
             raise ValueError(
                 f"Residual shape {residual.shape} != DEM detectors {det_model.num_detectors}. "
                 f"Check interleave order for basis '{basis}' and time slicing."
             )
+
         _t_cpu = time.perf_counter()
-        residual_np = residual.cpu().numpy()
+        residual_cpu = residual.to('cpu', non_blocking=True)
+        if device.type == "cuda":
+            torch.cuda.current_stream().synchronize()
+        residual_np = residual_cpu.numpy()
         if dist.rank == 0 and latency_predecoder_rows is not None and len(
             latency_predecoder_rows
         ) < latency_num_samples:
@@ -1260,16 +1372,31 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             for i in range(take):
                 latency_predecoder_rows.append(residual_np[i].copy())
         t_cpu_copy_s += time.perf_counter() - _t_cpu
+
+        if timing_rank0:
+            residual_syndrome_density_sum += float(residual_np.sum()) / residual_np.size
+
         t_dem_decode = time.perf_counter()
-        pred_obs = matcher.decode_batch(residual_np)
-        t_pm_time += time.perf_counter() - t_dem_decode
+        pred_obs = matcher.decode_batch(residual_np)  # (B,) or (B,1)
+        t_dem_decode_end = time.perf_counter()
+        batch_pred_time = t_dem_decode_end - t_dem_decode
+        t_pm_time += batch_pred_time
+        if timing_rank0 and predecoder_batch_times is not None:
+            predecoder_batch_times.append(batch_pred_time)
         dem_decode_s += time.perf_counter() - t_dem_decode
+
         _t_postdecode = time.perf_counter()
-        pred_obs = torch.as_tensor(pred_obs, dtype=torch.long, device=device)
-        pred_obs = pred_obs.view(-1).contiguous()
-        final_L = (pre_L + pred_obs).remainder_(2)
-        gt_obs = dets_and_obs[:, -num_obs:].view(-1).contiguous()
-        logical_errors += int((final_L != gt_obs).sum().item())
+        pred_obs_t = torch.as_tensor(pred_obs, dtype=torch.long)  # stays on CPU
+        pre_L_cpu = pre_L.cpu() if pre_L.is_cuda else pre_L
+        pred_obs_t = pred_obs_t.view(-1).contiguous()  # always (B,)
+        final_L = (pre_L_cpu + pred_obs_t).remainder_(2)  # (B,)
+
+        # Ground truth (same for X or Z; DEM has 1 observable)
+        gt_obs = dets_and_obs[:, -num_obs:]
+        gt_obs_cpu = gt_obs.cpu() if gt_obs.is_cuda else gt_obs
+        gt_obs_cpu = gt_obs_cpu.view(-1).contiguous()  # (B,)
+
+        logical_errors += int((final_L != gt_obs_cpu).sum())
         total_samples += B
         t_post_decode_s += time.perf_counter() - _t_postdecode
 
@@ -1279,13 +1406,84 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     t_dataloader_s = (t_end - t_start) - (
         t_to_device_s + t_model_time + t_postmodel_s + t_cpu_copy_s + t_pm_time + t_post_decode_s
     )
-    # Disable detailed printing for now
-    if False:
-        print(f"Time taken for total_samples={total_samples}: {t_end - t_start:.3f}s")
-        print(f"  Model: {t_model_time:.3f}s  PyMatching: {t_pm_time:.3f}s")
+    t_pm_baseline_s = dem_decode_s - t_pm_time
+
+    if timing_rank0:
+        print(f"\n[Phase Timing] Breakdown across {num_batches} batches:")
+        print(f"  Data generation:       {t_dataloader_s:.3f}s")
+        print(f"  Model forward:         {t_model_time:.3f}s")
+        print(f"  Residual construction: {t_postmodel_s:.3f}s")
+        print(f"  GPU→CPU transfer:      {t_cpu_copy_s:.3f}s")
+        print(f"  PyMatching baseline:   {t_pm_baseline_s:.3f}s")
+        print(f"  PyMatching predecoder: {t_pm_time:.3f}s")
+        print(f"  Post-decode logic:     {t_post_decode_s:.3f}s")
+
+        # Detailed PyMatching timing
+        print(f"\n[PyMatching Timing] Decoder Input Info:")
+        print(f"  Detector array shape: {detector_shape} (batch_size, num_detectors)")
+        print(f"  Total samples decoded: {total_samples}")
+        print(f"  Number of batches: {num_batches} (across {dist.world_size} GPU(s))")
+
+        avg_residual_density = residual_syndrome_density_sum / num_batches if num_batches > 0 else 0
+        print(f"\n[PyMatching Timing] Syndrome Density:")
         print(
-            f"  ToDevice: {t_to_device_s:.3f}s  PostModel (syn+residual): {t_postmodel_s:.3f}s  CPU copy: {t_cpu_copy_s:.3f}s  PostDecode: {t_post_decode_s:.3f}s  Dataloader (est.): {t_dataloader_s:.3f}s"
+            f"  Baseline (no pre-decoder): {baseline_syndrome_density:.6f} ({baseline_syndrome_density*100:.4f}% non-zero)"
         )
+        print(
+            f"  After pre-decoder:         {avg_residual_density:.6f} ({avg_residual_density*100:.4f}% non-zero)"
+        )
+        density_reduction = (
+            baseline_syndrome_density - avg_residual_density
+        ) / baseline_syndrome_density * 100 if baseline_syndrome_density > 0 else 0
+        print(f"  Density reduction:         {density_reduction:.2f}%")
+
+        n_rounds = cfg.n_rounds
+        total_rounds = total_samples * n_rounds
+        print(
+            f"\n[PyMatching Timing] Decode Time (ONLY matcher.decode_batch, excludes GPU→CPU transfer):"
+        )
+        print(f"  n_rounds per sample: {n_rounds}")
+        print(f"  Total rounds decoded: {total_rounds:,}")
+        baseline_time_per_round = t_pm_baseline_s / total_rounds * 1e6 if total_rounds > 0 else 0
+        predecoder_time_per_round = t_pm_time / total_rounds * 1e6 if total_rounds > 0 else 0
+        floor_us = floor_time_per_round * 1e6 if floor_time_per_round else 0
+        print(f"  Floor (zero density):      {floor_us:.3f} µs/round (fixed overhead)")
+        print(
+            f"  Baseline (no pre-decoder): {t_pm_baseline_s*1000:.2f} ms total, {baseline_time_per_round:.3f} µs/round"
+        )
+        print(
+            f"  After pre-decoder:         {t_pm_time*1000:.2f} ms total, {predecoder_time_per_round:.3f} µs/round"
+        )
+
+        baseline_above_floor = baseline_time_per_round - floor_us
+        predecoder_above_floor = predecoder_time_per_round - floor_us
+        print(f"\n[PyMatching Timing] Breakdown (time above floor = density-dependent MWPM work):")
+        print(f"  Baseline above floor:      {baseline_above_floor:.3f} µs/round")
+        print(f"  Pre-decoder above floor:   {predecoder_above_floor:.3f} µs/round")
+        if baseline_above_floor > 0:
+            mwpm_speedup = baseline_above_floor / predecoder_above_floor if predecoder_above_floor > 0 else float(
+                'inf'
+            )
+            print(f"  MWPM-only speedup:         {mwpm_speedup:.2f}x (density-dependent portion)")
+        speedup = t_pm_baseline_s / t_pm_time if t_pm_time > 0 else 0
+        time_saved_pct = (
+            t_pm_baseline_s - t_pm_time
+        ) / t_pm_baseline_s * 100 if t_pm_baseline_s > 0 else 0
+        print(f"\n  Total speedup:             {speedup:.4f}x ({time_saved_pct:.2f}% faster)")
+
+        if predecoder_batch_times is not None and len(predecoder_batch_times) > 0:
+            batch_size = detector_shape[0] if detector_shape else 1
+            rounds_per_batch = batch_size * n_rounds
+            predecoder_times_arr = np.array(predecoder_batch_times)
+            predecoder_per_round_min = predecoder_times_arr.min() / rounds_per_batch * 1e6
+            predecoder_per_round_max = predecoder_times_arr.max() / rounds_per_batch * 1e6
+            predecoder_per_round_std = predecoder_times_arr.std() / rounds_per_batch * 1e6
+            print(f"\n[PyMatching Timing] Per-Batch Variability (µs/round):")
+            print(
+                f"  Pre-decoder:  min={predecoder_per_round_min:.3f}, max={predecoder_per_round_max:.3f}, "
+                f"std={predecoder_per_round_std:.3f}, range={predecoder_per_round_max - predecoder_per_round_min:.3f}"
+            )
+
     if dist.world_size > 1:
         t_log = torch.tensor(logical_errors, device=device, dtype=torch.long)
         t_n = torch.tensor(total_samples, device=device, dtype=torch.long)
@@ -1309,6 +1507,19 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             n_rounds=int(cfg.n_rounds),
             warmup_iterations=50,
         )
+
+    # Floor time: decode an all-zeros syndrome to measure fixed overhead
+    if timing_rank0:
+        n_r = max(int(cfg.n_rounds), 1)
+        zero_syn = np.zeros((1, det_model.num_detectors), dtype=np.uint8)
+        for _ in range(20):
+            _ = matcher.decode(zero_syn[0])
+        _floor_times = []
+        for _ in range(100):
+            _ft0 = time.perf_counter()
+            _ = matcher.decode(zero_syn[0])
+            _floor_times.append(time.perf_counter() - _ft0)
+        floor_time_per_round = float(np.mean(_floor_times)) / n_r
 
     if dist.rank == 0:
         LAST_DEM_TIMING.update(
@@ -1467,7 +1678,7 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
 
     model.eval()
     try:
-        model = torch.compile(model, mode="reduce-overhead")
+        model = torch.compile(model, mode="default")
     except Exception:
         pass
     try:

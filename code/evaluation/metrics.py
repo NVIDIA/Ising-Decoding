@@ -105,8 +105,42 @@ def _extract_reduction_factor(result, rank=0):
     return reduction_factor
 
 
-def compute_syndrome_density(model, device, dist, cfg, generator=None, rank=0):
-    """Compute syndrome density reduction factor for validation."""
+def _factor_to_percent(factor):
+    """Convert an SDR reduction factor (X times) to a percentage reduction.
+
+    factor = input_density / residual_density, so the fraction of syndromes
+    removed is  1 - 1/factor  and the percentage is  (1 - 1/factor) * 100.
+
+    Examples:
+        2.0x  -> 50.0%   (half the syndromes remain)
+        3.7x  -> 73.0%   (~27% remain)
+        10.0x -> 90.0%   (10% remain)
+        inf   -> 100.0%  (perfect correction)
+        1.0x  -> 0.0%    (no improvement)
+        nan   -> nan
+    """
+    import math
+    if factor is None:
+        return None
+    if math.isnan(factor):
+        return float('nan')
+    if math.isinf(factor):
+        return 100.0
+    if factor <= 0:
+        return float('nan')
+    return (1.0 - 1.0 / factor) * 100.0
+
+
+def compute_syndrome_density(
+    model, device, dist, cfg, generator=None, rank=0, sdr_as_percent=False
+):
+    """Compute syndrome density reduction factor for validation.
+
+    Args:
+        sdr_as_percent: If True, return SDR as a percentage reduction (0-100)
+            instead of the default X-times multiplier.  A 3.7x factor becomes
+            ~73%.  Controlled by cfg.sdr_as_percent when called from training.
+    """
     if not HAS_LER_MODULE or compute_syndrome_density_reduction is None:
         if rank == 0:
             print(
@@ -138,9 +172,13 @@ def compute_syndrome_density(model, device, dist, cfg, generator=None, rank=0):
                 reduction_factor = _extract_reduction_factor(result, rank)
 
                 if reduction_factor is not None:
-                    results[(d, r)] = reduction_factor
+                    value = _factor_to_percent(
+                        reduction_factor
+                    ) if sdr_as_percent else reduction_factor
+                    results[(d, r)] = value
                     if rank == 0:
-                        print(f"[Syndrome Density] (d={d}, r={r}): {reduction_factor:.4f}x")
+                        unit = "%" if sdr_as_percent else "x"
+                        print(f"[Syndrome Density] (d={d}, r={r}): {value:.4f}{unit}")
 
                 cfg.distance, cfg.n_rounds = orig_d, orig_r
 
@@ -162,9 +200,11 @@ def compute_syndrome_density(model, device, dist, cfg, generator=None, rank=0):
             reduction_factor = _extract_reduction_factor(result, rank)
 
             if reduction_factor is not None:
+                value = _factor_to_percent(reduction_factor) if sdr_as_percent else reduction_factor
                 if rank == 0:
-                    print(f"[Syndrome Density] Reduction factor: {reduction_factor:.4f}x")
-                return float(reduction_factor)
+                    unit = "%" if sdr_as_percent else "x"
+                    print(f"[Syndrome Density] Reduction: {value:.4f}{unit}")
+                return float(value)
             else:
                 if rank == 0:
                     print(

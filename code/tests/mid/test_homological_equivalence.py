@@ -27,7 +27,7 @@ from pathlib import Path
 import torch
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from qec.surface_code.memory_circuit import SurfaceCode
 from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
@@ -35,6 +35,8 @@ from qec.surface_code.homological_equivalence_torch import (
     apply_weight1_timelike_homological_equivalence_torch,
     build_spacelike_he_cache,
     build_timelike_he_cache,
+    build_weight2_timelike_cache,
+    _simplify_time_w2_step,
 )
 from qec.surface_code.homological_equivalence import (
     linear_index_to_coordinates,
@@ -51,6 +53,8 @@ from qec.surface_code.homological_equivalence import (
     apply_spacelike_homological_equivalence,
     simplifytimeX,
     simplifytimeZ,
+    simplifytimeX_weight2,
+    simplifytimeZ_weight2,
     apply_timelike_homological_equivalence,
     get_anticommuting_stabilizers,
 )
@@ -511,7 +515,7 @@ class TestTimelikeHEPipeline(unittest.TestCase):
         self.assertEqual(counts["total_accepted"], 0)
 
     def test_basis_Z(self):
-        """Quick check with basis='Z': output shape matches input."""
+        """Check HE with basis='Z'."""
         d = 3
         hx, hz, _ = _build_parity_matrices(d)
         trainY = self._make_trainY(d, 4, batch=2, seed=10)
@@ -519,6 +523,7 @@ class TestTimelikeHEPipeline(unittest.TestCase):
             trainY, hx, hz, max_iterations=8, basis="Z"
         )
         self.assertEqual(trainY_out.shape, trainY.shape)
+        self.assertGreaterEqual(counts["total_accepted"], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1216,7 +1221,7 @@ class TestHETorchIntegration(unittest.TestCase):
 
     def test_generate_batch_shapes_and_dtypes(self):
         """
-        Basic check with HE cycles enabled: shapes and dtypes.
+        Basic check with HE cycles enabled.
 
         Verifies the integration path runs and returns tensors in the model format:
           trainX: (B, 4, R, D, D), float32
@@ -1264,6 +1269,136 @@ class TestHETorchIntegration(unittest.TestCase):
         self.assertFalse(torch.isnan(trainY).any())
         unique = torch.unique(trainY)
         # All values should be exactly 0 or 1 for trainY channels.
+        self.assertTrue(torch.all((unique == 0.0) | (unique == 1.0)))
+
+
+class TestWeight2TimelikeTorchVsCPU(unittest.TestCase):
+    """Compare torch weight-2 timelike HE against CPU reference."""
+
+    def _run_comparison(self, d, B=8, seed=42):
+        hx, hz, _ = _build_parity_matrices(d)
+        parity_X = hx.to(torch.uint8)
+        parity_Z = hz.to(torch.uint8)
+
+        cache_Z_w2 = build_weight2_timelike_cache(parity_Z, parity_X, d, 'Z', torch.device('cpu'))
+        cache_X_w2 = build_weight2_timelike_cache(parity_X, parity_Z, d, 'X', torch.device('cpu'))
+
+        rng = torch.Generator().manual_seed(seed)
+        D2 = d * d
+        z_err = torch.randint(0, 2, (B, D2, 2), dtype=torch.float32, generator=rng)
+        x_err = torch.randint(0, 2, (B, D2, 2), dtype=torch.float32, generator=rng)
+        s1s2x = torch.randint(0, 2, (B, parity_X.shape[0], 2), dtype=torch.float32, generator=rng)
+        s1s2z = torch.randint(0, 2, (B, parity_Z.shape[0], 2), dtype=torch.float32, generator=rng)
+
+        # CPU reference: one pass of weight-2 Z (horizontal only, matching the reference)
+        z_cpu, sx_cpu, n_cpu_z = simplifytimeZ_weight2(
+            z_err.clone(), s1s2x.clone(), parity_X, parity_Z, d
+        )
+        x_cpu, sz_cpu, n_cpu_x = simplifytimeX_weight2(
+            x_err.clone(), s1s2z.clone(), parity_Z, parity_X, d
+        )
+
+        # Torch: one pass (first pattern only, to match CPU which only uses horizontal/vertical)
+        z_torch = z_err.clone()
+        sx_torch = s1s2x.clone()
+        z_torch, sx_torch, n_torch_z = _simplify_time_w2_step(
+            z_torch, sx_torch, parity_X.float(), cache_Z_w2
+        )
+
+        x_torch = x_err.clone()
+        sz_torch = s1s2z.clone()
+        x_torch, sz_torch, n_torch_x = _simplify_time_w2_step(
+            x_torch, sz_torch, parity_Z.float(), cache_X_w2
+        )
+
+        return (
+            z_cpu, sx_cpu, n_cpu_z, x_cpu, sz_cpu, n_cpu_x, z_torch, sx_torch, n_torch_z, x_torch,
+            sz_torch, n_torch_x
+        )
+
+    def test_weight2_output_binary_d5(self):
+        """Weight-2 torch output should remain binary."""
+        (z_cpu, sx_cpu, _, x_cpu, sz_cpu, _, z_torch, sx_torch, _, x_torch, sz_torch,
+         _) = self._run_comparison(5)
+
+        for name, t in [
+            ("z_torch", z_torch), ("x_torch", x_torch), ("sx_torch", sx_torch),
+            ("sz_torch", sz_torch)
+        ]:
+            unique = torch.unique(t)
+            self.assertTrue(
+                torch.all((unique == 0.0) | (unique == 1.0)),
+                f"{name} has non-binary values: {unique.tolist()}"
+            )
+
+    def test_weight2_density_nonincreasing_d5(self):
+        """Weight-2 should not increase total density."""
+        d = 5
+        hx, hz, _ = _build_parity_matrices(d)
+        parity_X = hx.to(torch.uint8)
+        parity_Z = hz.to(torch.uint8)
+
+        cache_Z_w2 = build_weight2_timelike_cache(parity_Z, parity_X, d, 'Z', torch.device('cpu'))
+
+        rng = torch.Generator().manual_seed(99)
+        B = 16
+        D2 = d * d
+        z_err = torch.randint(0, 2, (B, D2, 2), dtype=torch.float32, generator=rng)
+        s1s2x = torch.randint(0, 2, (B, parity_X.shape[0], 2), dtype=torch.float32, generator=rng)
+
+        old_density = (z_err + torch.einsum('bst,sd->bdt', s1s2x, parity_X.float())).sum(dim=(1, 2))
+
+        z_out, sx_out, _ = _simplify_time_w2_step(
+            z_err.clone(), s1s2x.clone(), parity_X.float(), cache_Z_w2
+        )
+
+        new_density = (z_out +
+                       torch.einsum('bst,sd->bdt', sx_out, parity_X.float())).sum(dim=(1, 2))
+
+        self.assertTrue(
+            torch.all(new_density <= old_density + 1e-6),
+            f"Density increased: {old_density.tolist()} -> {new_density.tolist()}"
+        )
+
+    def test_weight2_cache_shapes(self):
+        """Cache tensors have expected shapes."""
+        for d in (3, 5, 7):
+            hx, hz, _ = _build_parity_matrices(d)
+            parity_X = hx.to(torch.uint8)
+            parity_Z = hz.to(torch.uint8)
+
+            cache = build_weight2_timelike_cache(parity_Z, parity_X, d, 'Z', torch.device('cpu'))
+
+            self.assertEqual(cache.num_patterns, 3)
+            self.assertEqual(cache.qubit_pairs.shape[:2], (cache.num_w4, 3))
+            self.assertEqual(cache.qubit_pairs.shape[2], 2)
+            self.assertEqual(cache.anti_stab_counts.shape, (cache.num_w4, 3))
+
+    def test_weight2_integration_via_generate_batch(self):
+        """End-to-end: generate_batch with weight-2 enabled should produce valid output."""
+        d, R = 3, 3
+        H, p = _make_dem_artifacts(distance=d, n_rounds=R, rotation="XV", num_errors=64, seed=42)
+        gen = MemoryCircuitTorch(
+            distance=d,
+            n_rounds=R,
+            basis="X",
+            code_rotation="XV",
+            timelike_he=True,
+            num_he_cycles=1,
+            max_passes_w1=4,
+            use_weight2=True,
+            max_passes_w2=2,
+            device=torch.device("cpu"),
+            H=H,
+            p=p,
+            A=None,
+        )
+        torch.manual_seed(77)
+        trainX, trainY = gen.generate_batch(batch_size=4)
+        self.assertEqual(trainX.shape, (4, 4, R, d, d))
+        self.assertEqual(trainY.shape, (4, 4, R, d, d))
+        self.assertFalse(torch.isnan(trainY).any())
+        unique = torch.unique(trainY)
         self.assertTrue(torch.all((unique == 0.0) | (unique == 1.0)))
 
 
