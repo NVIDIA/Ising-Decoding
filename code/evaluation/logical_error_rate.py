@@ -53,6 +53,10 @@ from pathlib import Path
 from typing import Optional
 
 
+def _decode_batch(matcher, detectors, enable_correlated):
+    return matcher.decode_batch(detectors, enable_correlations=enable_correlated)
+
+
 class OnnxWorkflow(IntEnum):
     """ONNX_WORKFLOW env: 0=torch only, 1=export ONNX only, 2=export ONNX and use TensorRT, 3=use engine file only."""
 
