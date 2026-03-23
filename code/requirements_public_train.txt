@@ -14,6 +14,10 @@
 -r requirements_public_inference.txt
 tensorboard
 torchinfo
+# decoder_ablation workflow
+scipy
+ldpc
+beliefmatching
 # ONNX quantization (INT8/FP8 via QUANT_FORMAT).
 # nvidia-modelopt[onnx] officially caps at Python <3.13 but works on 3.13 in practice.
 # check_python_compat.sh installs it with --ignore-requires-python on Python 3.13+.
