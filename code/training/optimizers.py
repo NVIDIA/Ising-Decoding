@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Optimizer and learning rate scheduler implementations.
 """
@@ -193,7 +192,8 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
         def cosine_with_warmup(current_step):
             if current_step < warmup_steps:
                 return float(current_step) / float(max(1, warmup_steps))
-            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            progress = float(current_step -
+                             warmup_steps) / float(max(1, total_steps - warmup_steps))
             cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
             return cosine_decay * (1.0 - min_lr_ratio) + min_lr_ratio
 
@@ -201,5 +201,3 @@ def get_lr_scheduler(cfg, optimizer, total_steps):
 
     else:
         raise ValueError(f"Unknown lr_scheduler.type: {cfg.lr_scheduler.type}")
-
-

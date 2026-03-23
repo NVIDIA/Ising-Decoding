@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Factory module for creating datapipes.
 
@@ -31,7 +30,7 @@ class DatapipeFactory:
     Training: Uses on-the-fly generation (train.py creates generators directly)
     Inference: Uses Stim-based QCDataPipePreDecoder_Memory_inference
     """
-    
+
     @staticmethod
     def create_datapipe(cfg):
         """Create datapipe for training - returns None to signal generator mode."""
@@ -88,17 +87,23 @@ class DatapipeFactory:
                 noise_model_cfg = getattr(cfg.data, "noise_model", None)
                 if noise_model_cfg is not None:
                     from omegaconf import OmegaConf
-                    nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True) if hasattr(noise_model_cfg, "items") else noise_model_cfg
+                    nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True) if hasattr(
+                        noise_model_cfg, "items"
+                    ) else noise_model_cfg
                     if nm_dict is not None:
                         noise_model_obj = NoiseModel.from_config_dict(dict(nm_dict))
             elif test_nm_mode == "none":
                 noise_model_obj = None
             else:
-                raise ValueError(f"Invalid cfg.test.noise_model={test_nm_mode!r} (expected 'train' or 'none')")
+                raise ValueError(
+                    f"Invalid cfg.test.noise_model={test_nm_mode!r} (expected 'train' or 'none')"
+                )
 
             # Fail fast: if the user provided an explicit 25p noise model and asked to use it,
             # do not silently fall back to legacy p_error-based generation.
-            if test_nm_mode == "train" and getattr(cfg.data, "noise_model", None) is not None and noise_model_obj is None:
+            if test_nm_mode == "train" and getattr(
+                cfg.data, "noise_model", None
+            ) is not None and noise_model_obj is None:
                 raise ValueError(
                     "cfg.test.noise_model='train' but failed to construct NoiseModel from cfg.data.noise_model. "
                     "Refusing to fall back to legacy cfg.test.p_error."

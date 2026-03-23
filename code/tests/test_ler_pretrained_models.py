@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Automated LER collection using pre-generated models over multiple p values
 and noise model modes (single-p vs explicit 25p).
@@ -67,7 +66,8 @@ def _find_model_file() -> Path | None:
     candidates.extend(
         [
             repo_root / "models" / "PreDecoderModelMemory_v1.0.94.pt",
-            repo_root / "outputs" / "predecoder_model_1" / "models" / "PreDecoderModelMemory_v1.0.94.pt",
+            repo_root / "outputs" / "predecoder_model_1" / "models" /
+            "PreDecoderModelMemory_v1.0.94.pt",
         ]
     )
     for path in candidates:
@@ -141,6 +141,7 @@ def _collect_model_paths(repo_root: Path) -> list[tuple[Path, int]]:
 def _clone_cfg(cfg):
     """Deep copy an OmegaConf config with resolved values."""
     return OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+
 
 def _scale_noise_dict(noise_dict: Dict[str, float], scale: float) -> Dict[str, float]:
     """Scale a 25p noise model dict by a factor, clamping to [0, 1]."""
@@ -275,7 +276,9 @@ class TestLERPretrainedModels(unittest.TestCase):
                         ler = float(result[basis]["logical error ratio (mean)"])
                         baseline = float(result[basis]["logical error ratio (pymatch mean)"])
                         err = float(result[basis]["logical error ratio (standard error)"])
-                        base_err = float(result[basis]["logical error ratio (pymatch standard error)"])
+                        base_err = float(
+                            result[basis]["logical error ratio (pymatch standard error)"]
+                        )
                         self.assertGreaterEqual(ler, 0.0)
                         self.assertLessEqual(ler, 1.0)
                         self.assertGreaterEqual(baseline, 0.0)
@@ -286,7 +289,8 @@ class TestLERPretrainedModels(unittest.TestCase):
                         self.assertLessEqual(
                             ler,
                             baseline + tol,
-                            msg=f"{basis}: LER after ({ler:.6f}) > baseline ({baseline:.6f}) + {tol:.6f}",
+                            msg=
+                            f"{basis}: LER after ({ler:.6f}) > baseline ({baseline:.6f}) + {tol:.6f}",
                         )
 
                 if dist.rank == 0:

@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Torch-only DEM sampling utilities for training data generation.
 
@@ -44,10 +43,7 @@ def dem_sampling(H: torch.Tensor, p: torch.Tensor, batch_size: int) -> torch.Ten
 
 
 def measure_from_stacked_frames(
-    frames_xz: torch.Tensor,
-    meas_qubits: torch.Tensor,
-    meas_bases: torch.Tensor,
-    nq: int
+    frames_xz: torch.Tensor, meas_qubits: torch.Tensor, meas_bases: torch.Tensor, nq: int
 ) -> torch.Tensor:
     """
     Extract measurement outcomes from stacked frame data.
@@ -64,13 +60,15 @@ def measure_from_stacked_frames(
     Returns:
         meas_old: (batch_size, n_rounds, num_meas) uint8 - Measurement outcomes
     """
-    meas_qubits = torch.as_tensor(meas_qubits, device=frames_xz.device, dtype=torch.long).reshape(-1)
+    meas_qubits = torch.as_tensor(meas_qubits, device=frames_xz.device,
+                                  dtype=torch.long).reshape(-1)
     meas_bases = torch.as_tensor(meas_bases, device=frames_xz.device, dtype=torch.long).reshape(-1)
     D = frames_xz.shape[1] // 2
     R = D // int(nq)
     assert D == R * int(nq), f"Detector count {D} must be divisible by nq={nq}"
 
-    idx = (torch.arange(R, device=frames_xz.device)[:, None] * int(nq) + meas_qubits[None, :]).reshape(-1)
+    idx = (torch.arange(R, device=frames_xz.device)[:, None] * int(nq) +
+           meas_qubits[None, :]).reshape(-1)
     x = frames_xz[:, :D].index_select(1, idx).reshape(frames_xz.shape[0], R, -1)
     z = frames_xz[:, D:].index_select(1, idx).reshape(frames_xz.shape[0], R, -1)
     # Z-basis reads X-component, X-basis reads Z-component (anti-commutation)
@@ -78,9 +76,7 @@ def measure_from_stacked_frames(
 
 
 def timelike_syndromes(
-    frames_xz: torch.Tensor,
-    A: torch.Tensor,
-    meas_old: torch.Tensor
+    frames_xz: torch.Tensor, A: torch.Tensor, meas_old: torch.Tensor
 ) -> torch.Tensor:
     """
     Apply timelike corrections to measurements using the A matrix.

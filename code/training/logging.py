@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Minimal logging helpers to replace physicsnemo.launch.logging.
 """
@@ -23,6 +22,7 @@ import logging
 
 
 class PythonLogger:
+
     def __init__(self, name: str) -> None:
         self._logger = logging.getLogger(name)
         if not self._logger.handlers:

@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for evaluation.metrics (configure_metrics, _extract_reduction_factor)."""
 
 import sys
@@ -27,6 +26,7 @@ from evaluation.metrics import configure_metrics, _extract_reduction_factor
 
 
 class TestConfigureMetrics(unittest.TestCase):
+
     def test_configure_metrics_returns_two_callables(self):
         a, b = configure_metrics(rank=0)
         self.assertIsNotNone(a)
@@ -38,6 +38,7 @@ class TestConfigureMetrics(unittest.TestCase):
 
 
 class TestExtractReductionFactor(unittest.TestCase):
+
     def test_extract_from_dict_stim_x_z(self):
         result = {"stim": {"reduction factor (X)": 2.0, "reduction factor (Z)": 4.0}}
         self.assertEqual(_extract_reduction_factor(result), 3.0)

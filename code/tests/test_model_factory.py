@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for model.factory (ModelFactory)."""
 
 import sys
@@ -28,6 +27,7 @@ from model.predecoder import get_mock_config
 
 
 class TestModelFactory(unittest.TestCase):
+
     def test_invalid_code_raises(self):
         from types import SimpleNamespace
         cfg = SimpleNamespace(code="invalid")

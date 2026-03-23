@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for training.capture (_StaticCapture)."""
 
 import sys
@@ -27,6 +26,7 @@ from training.capture import _StaticCapture
 
 
 class TestStaticCapture(unittest.TestCase):
+
     def test_state_dict_empty(self):
         _StaticCapture.load_state_dict({"amp_scalers": {}, "amp_scaler_checkpoints": {}})
         d = _StaticCapture.state_dict()

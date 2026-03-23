@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for qec.dem_sampling (DEM sampling and timelike corrections)."""
 
 import sys
@@ -29,6 +28,7 @@ from qec.dem_sampling import dem_sampling, measure_from_stacked_frames, timelike
 
 
 class TestDemSampling(unittest.TestCase):
+
     def test_dem_sampling_shape_and_dtype(self):
         num_detectors = 4
         num_errors = 6
@@ -49,6 +49,7 @@ class TestDemSampling(unittest.TestCase):
 
 
 class TestMeasureFromStackedFrames(unittest.TestCase):
+
     def test_measure_from_stacked_frames_shape(self):
         batch_size = 4
         nq = 3
@@ -63,6 +64,7 @@ class TestMeasureFromStackedFrames(unittest.TestCase):
 
 
 class TestTimelikeSyndromes(unittest.TestCase):
+
     def test_timelike_syndromes_xor_effect(self):
         batch_size = 2
         n_rounds = 2

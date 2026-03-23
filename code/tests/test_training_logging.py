@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for training.logging (PythonLogger)."""
 
 import sys
@@ -27,6 +26,7 @@ from training.logging import PythonLogger
 
 
 class TestPythonLogger(unittest.TestCase):
+
     def test_init_and_info(self):
         log = PythonLogger("test_training_logging")
         log.info("info message")

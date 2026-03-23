@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for qec.surface_code.stim_utils (REPEAT unfolding, add_instruction)."""
 
 import sys
@@ -27,6 +26,7 @@ from qec.surface_code import stim_utils
 
 
 class TestUnfoldRepeatInstruction(unittest.TestCase):
+
     def test_no_repeat_returns_unchanged(self):
         lines = ["R 0 1", "H 0", "M 0"]
         out = stim_utils.unfold_repeat_instruction(lines[:], ignore_detectors=True)
@@ -60,6 +60,7 @@ class TestUnfoldRepeatInstruction(unittest.TestCase):
 
 
 class TestAddInstruction(unittest.TestCase):
+
     def test_single_qubit_gate(self):
         import numpy as np
         flips = {"X": np.array([0, 2])}

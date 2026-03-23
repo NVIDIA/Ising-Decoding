@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for data.factory (DatapipeFactory)."""
 
 import sys
@@ -29,6 +28,7 @@ from data.factory import DatapipeFactory
 
 
 class TestDatapipeFactoryCreateDatapipe(unittest.TestCase):
+
     def test_surface_memory_returns_none_none(self):
         cfg = OmegaConf.create({
             "code": "surface",
@@ -53,6 +53,7 @@ class TestDatapipeFactoryCreateDatapipe(unittest.TestCase):
 
 
 class TestDatapipeFactoryCreateDatapipeInference(unittest.TestCase):
+
     def test_invalid_code_raises(self):
         cfg = OmegaConf.create({"code": "invalid"})
         with self.assertRaises(ValueError):
@@ -67,19 +68,25 @@ class TestDatapipeFactoryCreateDatapipeInference(unittest.TestCase):
             DatapipeFactory.create_datapipe_inference(cfg)
 
     def test_surface_memory_creates_dataset_with_minimal_cfg(self):
-        cfg = OmegaConf.create({
-            "code": "surface",
-            "datapipe": "memory",
-            "distance": 5,
-            "n_rounds": 5,
-            "data": {"error_mode": "circuit_level_surface_custom", "code_rotation": "XV"},
-            "test": {
-                "num_samples": 100,
-                "p_error": 0.01,
-                "meas_basis_test": "X",
-                "noise_model": "none",
-            },
-        })
+        cfg = OmegaConf.create(
+            {
+                "code": "surface",
+                "datapipe": "memory",
+                "distance": 5,
+                "n_rounds": 5,
+                "data": {
+                    "error_mode": "circuit_level_surface_custom",
+                    "code_rotation": "XV"
+                },
+                "test":
+                    {
+                        "num_samples": 100,
+                        "p_error": 0.01,
+                        "meas_basis_test": "X",
+                        "noise_model": "none",
+                    },
+            }
+        )
         pipe = DatapipeFactory.create_datapipe_inference(cfg)
         self.assertIsNotNone(pipe)
         self.assertTrue(hasattr(pipe, "__iter__") or callable(getattr(pipe, "__getitem__", None)))

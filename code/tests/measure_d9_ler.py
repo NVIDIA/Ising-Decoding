@@ -13,7 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """One-off script to measure LER at d=9, n_rounds=9 for TestPublicInferenceModelV1 baseline.
 
 Who: Maintainers or developers working on the public inference model or d=9 test bounds.
@@ -33,6 +32,7 @@ from workflows.config_validator import apply_public_defaults_and_model, validate
 from workflows.run import _load_model
 from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from training.distributed import DistributedManager
+
 
 def main():
     repo_root = Path(__file__).resolve().parents[2]
@@ -98,6 +98,7 @@ def main():
     print(f"  LER avg:        {ler_avg:.6f}")
     print("\n# Suggested test bounds (mean ± delta): use ler_avg with delta e.g. 1e-3 or 5e-4")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

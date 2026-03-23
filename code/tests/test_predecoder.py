@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests for model/predecoder: forward pass shape (v1 and v2). Catches breakage from architecture/config changes."""
 
 import unittest
@@ -31,6 +30,7 @@ from model.predecoder import (
 
 
 class TestPreDecoderModelMemoryV1(unittest.TestCase):
+
     def test_forward_shape(self):
         cfg = get_mock_config()
         model = PreDecoderModelMemory_v1(cfg)
@@ -41,6 +41,7 @@ class TestPreDecoderModelMemoryV1(unittest.TestCase):
 
 
 class TestPreDecoderModelMemoryV2(unittest.TestCase):
+
     def test_forward_shape(self):
         cfg = get_mock_config_v2()
         model = PreDecoderModelMemory_v2(cfg)
