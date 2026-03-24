@@ -362,3 +362,28 @@ License at <https://github.com/matplotlib/matplotlib/blob/main/LICENSE/LICENSE>
 Copyright (c) 2012-2013 Matplotlib Development Team; All Rights Reserved
 
 ----------------------------------------------------------------
+
+CuPy - MIT License
+<https://github.com/cupy/cupy>
+
+License at <https://github.com/cupy/cupy/blob/main/LICENSE>
+Copyright (c) 2015 Preferred Infrastructure, Inc.
+Copyright (c) 2015 Preferred Networks, Inc.
+
+----------------------------------------------------------------
+
+TensorRT - Apache 2.0
+<https://github.com/NVIDIA/TensorRT>
+
+License at <https://github.com/NVIDIA/TensorRT/blob/main/LICENSE>
+Copyright (c) 2021, NVIDIA CORPORATION. All rights reserved.
+
+----------------------------------------------------------------
+
+onnxscript - MIT License
+<https://github.com/microsoft/onnxscript>
+
+License at <https://github.com/microsoft/onnxscript/blob/main/LICENSE>
+Copyright (c) Microsoft Corporation
+
+----------------------------------------------------------------
