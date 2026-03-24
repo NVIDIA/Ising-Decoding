@@ -27,7 +27,11 @@ safetensors>=0.4.0
 scipy
 ldpc
 beliefmatching
-# Optional GPU-only prerequisite (not pip-installed here due to size and CUDA dependency):
+# Optional GPU-only prerequisites (not pip-installed here due to size and CUDA dependency):
 #   tensorrt  -- required for ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT) and ONNX_WORKFLOW=3
 #               (USE_ENGINE_ONLY). Install via: pip install tensorrt
 #               Absent at runtime raises RuntimeError (workflows 2/3 require TensorRT).
+#   cupy-cudaXXX -- enables zero-copy DLPack GPU transfers in the cuStabilizer
+#               (BitMatrixSampler) path in dem_sampling.py.
+#               Install the wheel matching your CUDA version, e.g.: pip install cupy-cuda12x
+#               Absent at runtime falls back to the NumPy path automatically.
