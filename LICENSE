@@ -1,0 +1,60 @@
+NVIDIA CORPORATION
+SOFTWARE LICENSE AGREEMENT
+
+IMPORTANT NOTICE -- PLEASE READ AND AGREE BEFORE USING THE SOFTWARE.
+
+This license agreement ("Agreement") is a legal agreement between you (either
+an individual or a legal entity) and NVIDIA Corporation ("NVIDIA") and governs
+your use of the NVIDIA software and materials provided hereunder ("Software").
+
+This Software is licensed, not sold. NVIDIA reserves all rights not expressly
+granted.
+
+IF YOU DO NOT AGREE TO THE TERMS OF THIS AGREEMENT, DO NOT USE THE SOFTWARE.
+
+1. LICENSE GRANT
+   Subject to the terms of this Agreement, NVIDIA grants you a non-exclusive,
+   non-transferable license to:
+   (a) Install and use the Software for your internal use;
+   (b) Modify the Software solely for your internal use; and
+   (c) Distribute the Software and modifications thereof only as expressly
+       permitted by NVIDIA in writing.
+
+2. LIMITATIONS
+   You may not:
+   (a) Copy or use the Software other than as specified above;
+   (b) Sell, rent, sub-license, or transfer the Software to any third party;
+   (c) Remove or alter any proprietary notices, labels, or marks on the
+       Software;
+   (d) Use the Software to develop products that compete with NVIDIA products.
+
+3. INTELLECTUAL PROPERTY
+   The Software and related documentation are proprietary to NVIDIA and its
+   suppliers. Title to the Software and all copies remain with NVIDIA.
+   The Software is copyrighted and protected by the laws of the United States
+   and other countries, and by international treaty provisions.
+
+   Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+4. THIRD-PARTY SOFTWARE
+   This Software incorporates third-party open source software components. The
+   licenses and copyright notices for these components are provided in the
+   NOTICE file included in this distribution.
+
+5. DISCLAIMER OF WARRANTIES
+   THE SOFTWARE IS PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+6. LIMITATION OF LIABILITY
+   IN NO EVENT SHALL NVIDIA BE LIABLE FOR ANY SPECIAL, INCIDENTAL, INDIRECT,
+   OR CONSEQUENTIAL DAMAGES WHATSOEVER (INCLUDING, WITHOUT LIMITATION,
+   DAMAGES FOR LOSS OF BUSINESS PROFITS, BUSINESS INTERRUPTION, LOSS OF
+   BUSINESS INFORMATION, OR ANY OTHER PECUNIARY LOSS) ARISING OUT OF THE USE
+   OF OR INABILITY TO USE THIS SOFTWARE, EVEN IF NVIDIA HAS BEEN ADVISED OF
+   THE POSSIBILITY OF SUCH DAMAGES.
+
+7. GOVERNING LAW
+   This Agreement shall be governed by the laws of the State of Delaware,
+   United States of America, without giving effect to any conflict of laws
+   provisions.
