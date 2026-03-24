@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Run tests by tier: short (pre-merge), mid (~5-10 min), long (30 min+).
 # See code/tests/README_TEST_TIERS.md for purposes and when to run each tier.
@@ -35,6 +35,10 @@ case "${TIER}" in
       export EXPERIMENT_NAME="${EXPERIMENT_NAME:-tier_mid}"
       bash "${REPO_ROOT}/code/scripts/smoke_run.sh"
     fi
+    echo "------------------------------------------"
+    echo "Mid-tier HE compile tests"
+    echo "------------------------------------------"
+    python3 -m unittest discover -s "${REPO_ROOT}/code/tests/mid" -p "test_*.py" -v
     ;;
   long)
     echo "=========================================="

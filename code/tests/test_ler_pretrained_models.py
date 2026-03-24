@@ -1,26 +1,27 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Automated LER collection using pre-generated models over multiple p values
 and noise model modes (single-p vs explicit 25p).
 
-By default, the test iterates over the two shipped models:
-  - PreDecoderModelMemory_r9_v1.0.77.pt  (model_id=1, R=9)
-  - PreDecoderModelMemory_r13_v1.0.86.pt (model_id=4, R=13)
-
 Env overrides (optional):
-  PREDECODER_TEST_MODEL_FILE=/path/to/model.pt   (single file override)
+  PREDECODER_TEST_MODEL_FILE=/path/to/PreDecoderModelMemory_v1.0.94.pt
   PREDECODER_TEST_MODEL_DIR=/path/to/models
   PREDECODER_TEST_ALL_MODELS=1
-  PREDECODER_TEST_MODEL_GLOB=PreDecoderModelMemory_*.pt
-  PREDECODER_TEST_MODEL_ID=1          (only used with PREDECODER_TEST_MODEL_FILE)
+  PREDECODER_TEST_MODEL_GLOB=PreDecoderModelMemory_v1.0.*.pt
+  PREDECODER_TEST_MODEL_ID=1
   PREDECODER_TEST_DISTANCE=9
   PREDECODER_TEST_N_ROUNDS=9
   PREDECODER_TEST_NUM_SAMPLES=2048
@@ -51,49 +52,28 @@ from training.distributed import DistributedManager
 from workflows.config_validator import apply_public_defaults_and_model, validate_public_config
 from workflows.run import _load_model
 
-_DEFAULT_MODELS = [
-    ("PreDecoderModelMemory_r9_v1.0.77.pt", 1),
-    ("PreDecoderModelMemory_r13_v1.0.86.pt", 4),
-]
 
-_MODEL_ID_BY_RECEPTIVE_FIELD = {9: 1, 13: 4}
-
-
-def _infer_model_id_from_filename(filename: str) -> int | None:
-    """Extract receptive field from rXX prefix and map to model_id."""
-    import re
-    m = re.match(r"PreDecoderModelMemory_r(\d+)_", filename)
-    if m:
-        rf = int(m.group(1))
-        return _MODEL_ID_BY_RECEPTIVE_FIELD.get(rf)
-    return None
-
-
-def _find_model_files() -> list[tuple[Path, int | None]]:
-    """Find pre-generated model files. Returns list of (path, model_id)."""
+def _find_model_file() -> Path | None:
+    """Find the pre-generated model file in common locations or env overrides."""
     repo_root = Path(__file__).resolve().parents[2]
     env_file = os.environ.get("PREDECODER_TEST_MODEL_FILE")
-    if env_file:
-        p = Path(env_file)
-        if p.exists():
-            mid = _infer_model_id_from_filename(p.name)
-            return [(p, mid)]
-        return []
-
     env_dir = os.environ.get("PREDECODER_TEST_MODEL_DIR")
-    search_dirs = [Path(env_dir)] if env_dir else [repo_root / "models"]
-    search_dirs.append(repo_root / "outputs" / "predecoder_model_1" / "models")
-
-    found: list[tuple[Path, int | None]] = []
-    seen: set[str] = set()
-    for fname, default_mid in _DEFAULT_MODELS:
-        for d in search_dirs:
-            p = d / fname
-            if p.exists() and fname not in seen:
-                seen.add(fname)
-                found.append((p, default_mid))
-                break
-    return found
+    candidates = []
+    if env_file:
+        candidates.append(Path(env_file))
+    if env_dir:
+        candidates.append(Path(env_dir) / "PreDecoderModelMemory_v1.0.94.pt")
+    candidates.extend(
+        [
+            repo_root / "models" / "PreDecoderModelMemory_v1.0.94.pt",
+            repo_root / "outputs" / "predecoder_model_1" / "models" /
+            "PreDecoderModelMemory_v1.0.94.pt",
+        ]
+    )
+    for path in candidates:
+        if path is not None and path.exists():
+            return path
+    return None
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -138,28 +118,24 @@ def _parse_checkpoint_from_name(path: Path) -> int | None:
         return None
 
 
-def _collect_model_paths(repo_root: Path) -> list[tuple[Path, int, int | None]]:
-    """Return list of (path, checkpoint, model_id) tuples."""
+def _collect_model_paths(repo_root: Path) -> list[tuple[Path, int]]:
     if _get_env_bool("PREDECODER_TEST_ALL_MODELS", False):
         model_dir = Path(os.environ.get("PREDECODER_TEST_MODEL_DIR", repo_root / "models"))
-        pattern = os.environ.get("PREDECODER_TEST_MODEL_GLOB", "PreDecoderModelMemory_*.pt")
+        pattern = os.environ.get("PREDECODER_TEST_MODEL_GLOB", "PreDecoderModelMemory_v1.0.*.pt")
         paths = sorted(model_dir.glob(pattern))
         out = []
         for path in paths:
             ckpt = _parse_checkpoint_from_name(path)
             if ckpt is not None:
-                mid = _infer_model_id_from_filename(path.name)
-                out.append((path, ckpt, mid))
+                out.append((path, ckpt))
         return out
-    found = _find_model_files()
-    if not found:
+    model_file = _find_model_file()
+    if model_file is None:
         return []
-    out = []
-    for model_file, mid in found:
-        ckpt = _parse_checkpoint_from_name(model_file)
-        if ckpt is not None:
-            out.append((model_file, ckpt, mid))
-    return out
+    ckpt = _parse_checkpoint_from_name(model_file)
+    if ckpt is None:
+        return []
+    return [(model_file, ckpt)]
 
 
 def _clone_cfg(cfg):
@@ -209,14 +185,29 @@ class TestLERPretrainedModels(unittest.TestCase):
         model_entries = _collect_model_paths(repo_root)
         if not model_entries:
             raise unittest.SkipTest(
-                "Missing pre-generated models. Set PREDECODER_TEST_MODEL_FILE or "
+                "Missing pre-generated model. Set PREDECODER_TEST_MODEL_FILE or "
                 "PREDECODER_TEST_MODEL_DIR, or PREDECODER_TEST_ALL_MODELS=1 to run LER collection tests."
             )
 
-        env_model_id = os.environ.get("PREDECODER_TEST_MODEL_ID")
-        env_distance = _get_env_int("PREDECODER_TEST_DISTANCE", 0)
-        env_n_rounds = _get_env_int("PREDECODER_TEST_N_ROUNDS", 0)
-        num_samples = _get_env_int("PREDECODER_TEST_NUM_SAMPLES", 2048)
+        cfg_path = repo_root / "conf" / "config_public.yaml"
+        cfg = OmegaConf.load(str(cfg_path))
+        cfg.model_id = _get_env_int("PREDECODER_TEST_MODEL_ID", 1)
+        cfg.distance = _get_env_int("PREDECODER_TEST_DISTANCE", 9)
+        cfg.n_rounds = _get_env_int("PREDECODER_TEST_N_ROUNDS", cfg.distance)
+        cfg.workflow.task = "inference"
+
+        model_spec = validate_public_config(cfg)
+        merged = apply_public_defaults_and_model(cfg, model_spec)
+
+        merged.test.latency_num_samples = 0
+        merged.test.verbose_inference = False
+        # Keep this reasonably fast; adjust if you want tighter bounds.
+        merged.test.num_samples = _get_env_int("PREDECODER_TEST_NUM_SAMPLES", 2048)
+        if "dataloader" in merged.test:
+            merged.test.dataloader.num_workers = 0
+            merged.test.dataloader.persistent_workers = False
+            if hasattr(merged.test.dataloader, "prefetch_factor"):
+                merged.test.dataloader.prefetch_factor = None
 
         # Keep dataloader stable in containers and avoid env overrides.
         env_overrides = {
@@ -237,50 +228,28 @@ class TestLERPretrainedModels(unittest.TestCase):
             "PREDECODER_TEST_P_VALUES",
             [0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008],
         )
+        # Noise model variants (keep small but tweakable):
+        # - single_p: legacy p_error
+        # - explicit_25p: scale config 25p noise dict by p/p_ref and apply small random jitter
+        base_25p = OmegaConf.to_container(merged.data.noise_model, resolve=True)
         p_ref = _get_env_float("PREDECODER_TEST_P_REF", 0.003)
         rng = random.Random(_get_env_int("PREDECODER_TEST_NOISE_SEED", 1234))
-        jitter = _get_env_float("PREDECODER_TEST_NOISE_JITTER", 0.2)
+        jitter = _get_env_float("PREDECODER_TEST_NOISE_JITTER", 0.2)  # +/- 20% per-parameter
         random_variants = _get_env_int("PREDECODER_TEST_RANDOM_VARIANTS", 2)
+
+        cases: Iterable[Tuple[str, float, str | None, Dict[str, float] | None]] = []
+        for p_value in p_values:
+            cases.append(("single_p", p_value, None, None))
+            scale = float(p_value) / float(p_ref)
+            for i in range(random_variants):
+                noise = _randomize_noise_dict(base_25p, scale, rng, jitter)
+                cases.append(("explicit_25p_random", p_value, f"rand{i + 1}", noise))
 
         try:
             DistributedManager.initialize()
             dist = DistributedManager()
 
-            for model_path, checkpoint, inferred_mid in model_entries:
-                model_id = int(env_model_id
-                              ) if env_model_id else (inferred_mid if inferred_mid else 1)
-                distance = env_distance if env_distance > 0 else 9
-                n_rounds = env_n_rounds if env_n_rounds > 0 else distance
-
-                cfg_path = repo_root / "conf" / "config_public.yaml"
-                cfg = OmegaConf.load(str(cfg_path))
-                cfg.model_id = model_id
-                cfg.distance = distance
-                cfg.n_rounds = n_rounds
-                cfg.workflow.task = "inference"
-
-                model_spec = validate_public_config(cfg)
-                merged = apply_public_defaults_and_model(cfg, model_spec)
-
-                merged.test.latency_num_samples = 0
-                merged.test.verbose_inference = False
-                merged.test.num_samples = num_samples
-                if "dataloader" in merged.test:
-                    merged.test.dataloader.num_workers = 0
-                    merged.test.dataloader.persistent_workers = False
-                    if hasattr(merged.test.dataloader, "prefetch_factor"):
-                        merged.test.dataloader.prefetch_factor = None
-
-                base_25p = OmegaConf.to_container(merged.data.noise_model, resolve=True)
-
-                cases: Iterable[Tuple[str, float, str | None, Dict[str, float] | None]] = []
-                for p_value in p_values:
-                    cases.append(("single_p", p_value, None, None))
-                    scale = float(p_value) / float(p_ref)
-                    for i in range(random_variants):
-                        noise = _randomize_noise_dict(base_25p, scale, rng, jitter)
-                        cases.append(("explicit_25p_random", p_value, f"rand{i + 1}", noise))
-
+            for model_path, checkpoint in model_entries:
                 merged.model_checkpoint_dir = str(model_path.parent)
                 merged.test.use_model_checkpoint = int(checkpoint)
                 model = _load_model(merged, dist)
@@ -294,12 +263,14 @@ class TestLERPretrainedModels(unittest.TestCase):
                         case_cfg.data.noise_model = None
                     else:
                         case_cfg.test.noise_model = "train"
+                        # Apply scaled + jittered 25p noise dict.
                         case_cfg.data.noise_model = noise_dict
                         case_cfg.test.p_error = float(p_value)
 
                     result = count_logical_errors_with_errorbar(model, dist.device, dist, case_cfg)
                     results.append((mode, p_value, tag, result))
 
+                    # Basic sanity checks on collected metrics.
                     for basis in ("X", "Z"):
                         self.assertIn(basis, result)
                         ler = float(result[basis]["logical error ratio (mean)"])
@@ -312,6 +283,8 @@ class TestLERPretrainedModels(unittest.TestCase):
                         self.assertLessEqual(ler, 1.0)
                         self.assertGreaterEqual(baseline, 0.0)
                         self.assertLessEqual(baseline, 1.0)
+                        # Predecoder should not be worse than baseline within tolerance.
+                        # Use a base tolerance plus a few standard errors for stability.
                         tol = 5e-4 + 3.0 * max(err, base_err)
                         self.assertLessEqual(
                             ler,
@@ -321,9 +294,7 @@ class TestLERPretrainedModels(unittest.TestCase):
                         )
 
                 if dist.rank == 0:
-                    print(
-                        f"[LER] model={model_path.name} (checkpoint={checkpoint}, model_id={model_id})"
-                    )
+                    print(f"[LER] model={model_path.name} (checkpoint={checkpoint})")
                     for mode, p_value, tag, result in results:
                         x = result["X"]
                         z = result["Z"]

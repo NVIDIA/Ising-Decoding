@@ -20,9 +20,10 @@ Or use the tier script:
 bash code/scripts/run_tests_tier.sh short
 ```
 
-CI uses the same discovery pattern; no per-file registration.
+CI uses the same discovery pattern; no per-file registration. Tests in `code/tests/mid/`
+are **not** discovered here (subdirectory without `__init__.py`).
 
-**CI jobs:** `unit-tests`, `unit-tests-coverage` (in `ci.yml`); `gpu-tests` (in `ci-gpu.yml`). GPU job runs short training + inference and asserts validation LER is below threshold.
+**CI jobs:** `unit-tests`, `unit-tests-coverage` (in `ci.yml`); `gpu-tests`, `gpu-coverage` (in `ci-gpu.yml`). GPU job runs short training + inference and asserts validation LER is below threshold.
 
 ---
 
@@ -38,6 +39,8 @@ CI uses the same discovery pattern; no per-file registration.
 
 - Mid-tier run: 2 epochs, 32k training samples, 4k val/test samples.
 - Training + inference end-to-end with LER validation.
+- HE compile tests (`code/tests/mid/`): torch.compile + autotune on GPU
+  (`test_homological_equivalence`, `test_w2_compile`, `test_w2_verify`).
 
 **How to run:**
 
@@ -52,6 +55,12 @@ EXPERIMENT_NAME=my_mid \
 PREDECODER_TRAIN_SAMPLES=32768 \
 PREDECODER_TRAIN_EPOCHS=2 \
 bash code/scripts/smoke_run.sh
+```
+
+Run mid-tier unit tests only:
+
+```bash
+PYTHONPATH=code python -m unittest discover -s code/tests/mid -p "test_*.py" -v
 ```
 
 **CI job:** `mid-gpu-tests` (in `ci-gpu.yml`).

@@ -1,12 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
-# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual
-# property and proprietary rights in and to this material, related
-# documentation and any modifications thereto. Any use, reproduction,
-# disclosure or distribution of this material and related documentation
-# without an express license agreement from NVIDIA CORPORATION or
-# its affiliates is strictly prohibited.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 GPU-specific unit tests.
 
@@ -236,7 +241,7 @@ class TestQCDataGeneratorTorchGPU(unittest.TestCase):
 # ---------------------------------------------------------------------------
 @_require_cuda
 class TestPreDecoderModelGPU(unittest.TestCase):
-    """PreDecoderModelMemory v1 and v2 forward pass on CUDA."""
+    """PreDecoderModelMemory v1 forward pass on CUDA."""
 
     def setUp(self):
         self.device = torch.device("cuda")
@@ -246,17 +251,6 @@ class TestPreDecoderModelGPU(unittest.TestCase):
 
         cfg = get_mock_config()
         model = PreDecoderModelMemory_v1(cfg).to(self.device)
-        B, C, T, D = 4, cfg.model.input_channels, cfg.n_rounds, cfg.distance
-        x = torch.randn(B, C, T, D, D, device=self.device)
-        out = model(x)
-        self.assertEqual(out.device.type, "cuda")
-        self.assertEqual(out.shape, (B, cfg.model.out_channels, T, D, D))
-
-    def test_v2_forward_on_cuda(self):
-        from model.predecoder import PreDecoderModelMemory_v2, get_mock_config_v2
-
-        cfg = get_mock_config_v2()
-        model = PreDecoderModelMemory_v2(cfg).to(self.device)
         B, C, T, D = 4, cfg.model.input_channels, cfg.n_rounds, cfg.distance
         x = torch.randn(B, C, T, D, D, device=self.device)
         out = model(x)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Oracle test: use trainY as the would-be predictions of a perfect pre-decoder.
 # Given (trainX, trainY) from the data generator (no model), verify:

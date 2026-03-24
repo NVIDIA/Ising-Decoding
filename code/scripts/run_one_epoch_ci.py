@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-NvidiaProprietary
+# SPDX-License-Identifier: Apache-2.0
 #
 # Long-running test: run 1 epoch training + validation (5-10 min), assert LER <= threshold.
 # Skipped (exit 0) if no GPU. Intended for a separate CI job with GPU and sufficient timeout.
