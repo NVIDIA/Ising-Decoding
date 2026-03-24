@@ -483,3 +483,21 @@ dispatch:
 | `python-compat` | CPU | Import/install check across Python 3.11 / 3.12 / 3.13 |
 | `gpu-tests` | GPU | Full test suite on a self-hosted GPU runner |
 | `gpu-tests` (train+inference) | GPU | Short train + inference with LER check |
+
+## License
+
+This project is released under the [Apache License 2.0](LICENSE).
+
+Every source file in this repository carries an [SPDX](https://spdx.dev/) copyright and license
+header of the form:
+
+```
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+```
+
+Presence of these headers is enforced automatically by the `spdx-header-check` CI job (see
+`.github/workflows/ci.yml`).
+
+Third-party open source components bundled with or required by this project are listed with their
+respective copyright notices and license texts in [NOTICE](NOTICE).
