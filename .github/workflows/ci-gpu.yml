@@ -96,6 +96,21 @@ jobs:
           PREDECODER_TEST_SAMPLES: "2048"
           PREDECODER_TRAIN_EPOCHS: "2"
 
+      - name: Training + inference with multi-worker DataLoader (num_workers=2)
+        shell: bash
+        run: |
+          source .venv_train_${{ matrix.python-version }}/bin/activate
+          bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_multiworker.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          python code/scripts/check_ler_from_log.py /tmp/ci_multiworker.log --max-ler 0.35
+        env:
+          EXPERIMENT_NAME: ci_multiworker
+          PREDECODER_TRAIN_SAMPLES: "16384"
+          PREDECODER_VAL_SAMPLES: "2048"
+          PREDECODER_TEST_SAMPLES: "2048"
+          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_INFERENCE_NUM_WORKERS: "2"
+
   # ---------------------------------------------------------------------------
   # Mid-tier (~5-10 min): extended training + inference with LER check.
   # Runs only after merge to main (not on PR branches) to save GPU time.
