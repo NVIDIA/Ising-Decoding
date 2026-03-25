@@ -635,6 +635,21 @@ class _DummyCudaqDecoder:
         return _DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64))
 
 
+class _DummyCudaqDecoderBatch:
+    """Mock cudaq-qec decoder that exposes decode_batch() for the fast path"""
+
+    def __init__(self, n_bits):
+        self._n_bits = n_bits
+
+    def decode(self, syndrome):
+        return _DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64))
+
+    def decode_batch(self, syndromes):
+        """Accept (B, n_dets) float64 array, return list of DecoderResults"""
+        B = syndromes.shape[0]
+        return [_DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64)) for _ in range(B)]
+
+
 class TestDecodeCudaqBatch(unittest.TestCase):
     """_decode_cudaq_batch must return correct shape/dtype and collect stats"""
 
@@ -700,6 +715,60 @@ class TestDecodeCudaqBatch(unittest.TestCase):
         obs, _ = self._fn(decoder, L_dense, syndromes)
         self.assertEqual(obs.shape, (B,))
         self.assertTrue(np.all((obs == 0) | (obs == 1)))
+
+    def test_decode_batch_fast_path_zero_syndrome(self):
+        B = 4
+        decoder = _DummyCudaqDecoderBatch(self.n_bits)
+        L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+        obs, _ = self._fn(decoder, L_dense, syndromes)
+        np.testing.assert_array_equal(obs, np.zeros(B, dtype=np.uint8))
+
+    def test_decode_batch_fast_path_output_shape_and_dtype(self):
+        for B in (1, 5):
+            decoder = _DummyCudaqDecoderBatch(self.n_bits)
+            L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+            syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+            obs, stats = self._fn(decoder, L_dense, syndromes)
+            self.assertEqual(obs.shape, (B,))
+            self.assertEqual(obs.dtype, np.uint8)
+            self.assertEqual(stats["converged_flags"].shape, (B,))
+            self.assertEqual(stats["iter_counts"].shape, (B,))
+
+    def test_decode_batch_fast_path_convergence_flags(self):
+        B = 3
+        decoder = _DummyCudaqDecoderBatch(self.n_bits)
+        L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+        _, stats = self._fn(decoder, L_dense, syndromes)
+        self.assertTrue(np.all(stats["converged_flags"]))
+        np.testing.assert_array_equal(stats["iter_counts"], np.full(B, 10, dtype=np.int32))
+
+    def test_decode_batch_and_loop_paths_agree(self):
+        B = 4
+        n_bits = self.n_bits
+        L_dense = np.zeros((1, n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+
+        loop_decoder = _DummyCudaqDecoder(n_bits)
+        batch_decoder = _DummyCudaqDecoderBatch(n_bits)
+
+        obs_loop, stats_loop = self._fn(loop_decoder, L_dense, syndromes)
+        obs_batch, stats_batch = self._fn(batch_decoder, L_dense, syndromes)
+
+        np.testing.assert_array_equal(obs_loop, obs_batch)
+        np.testing.assert_array_equal(stats_loop["converged_flags"], stats_batch["converged_flags"])
+        np.testing.assert_array_equal(stats_loop["iter_counts"], stats_batch["iter_counts"])
+
+    def test_decode_batch_called_not_decode(self):
+        from unittest.mock import patch
+        B = 3
+        decoder = _DummyCudaqDecoderBatch(self.n_bits)
+        L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+        with patch.object(decoder, 'decode', wraps=decoder.decode) as mock_decode:
+            self._fn(decoder, L_dense, syndromes)
+            mock_decode.assert_not_called()
 
 
 class TestBuildCudaqDecoders(unittest.TestCase):
