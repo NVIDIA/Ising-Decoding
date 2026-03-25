@@ -1425,7 +1425,6 @@ def main(cfg: DictConfig) -> None:
                         cfg=cfg,
                         generator=val_generator,
                         rank=dist.rank,
-                        sdr_as_percent=sdr_as_percent,
                     )
                     sdr_s = time.perf_counter() - t_sdr_start
                 # If multi-pair dict, reduce to a single scalar for logging (average over pairs).
