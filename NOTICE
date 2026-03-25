@@ -387,3 +387,28 @@ License at <https://github.com/microsoft/onnxscript/blob/main/LICENSE>
 Copyright (c) Microsoft Corporation
 
 ----------------------------------------------------------------
+
+SciPy - BSD-3-Clause
+<https://pypi.org/project/scipy>
+
+License at <https://github.com/scipy/scipy/blob/main/LICENSE.txt>
+Copyright (c) 2001-2002 Enthought, Inc. 2003, SciPy Developers.
+All rights reserved.
+
+----------------------------------------------------------------
+
+ldpc - MIT License
+<https://pypi.org/project/ldpc>
+
+License at <https://github.com/quantumgizmos/ldpc/blob/main/LICENSE>
+Copyright (c) 2024 Joschka Roffe
+
+----------------------------------------------------------------
+
+BeliefMatching - Apache 2.0
+<https://github.com/oscarhiggott/BeliefMatching>
+
+License at <https://github.com/oscarhiggott/BeliefMatching/blob/main/LICENSE>
+Copyright (c) Oscar Higgott
+
+----------------------------------------------------------------
