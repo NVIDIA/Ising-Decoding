@@ -1046,6 +1046,10 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         pass
     except Exception:
         pass
+    # torch.compile + DataLoader spawn workers causes a segfault; fall back to
+    # single-process loading when compile was applied.
+    if _applied_compile and int(test_loader_kwargs.get("num_workers", 0)) > 0:
+        test_loader_kwargs["num_workers"] = 0
     # Handle prefetch_factor when num_workers=0
     if test_loader_kwargs.get('num_workers', 0) == 0:
         test_loader_kwargs.pop('prefetch_factor', None)
@@ -1653,6 +1657,11 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
                         pass
     except Exception:
         pass
+    # torch.compile + DataLoader spawn workers causes a segfault; fall back to
+    # single-process loading when compile will be applied.
+    if _get_env_bool("PREDECODER_TORCH_COMPILE",
+                     True) and int(test_loader_kwargs.get("num_workers", 0)) > 0:
+        test_loader_kwargs["num_workers"] = 0
     if int(test_loader_kwargs.get("num_workers", 0)) == 0:
         test_loader_kwargs.pop("prefetch_factor", None)
         if test_loader_kwargs.get("persistent_workers", False):
