@@ -25,7 +25,7 @@ Target Python versions: **3.11, 3.12, 3.13**.
 Two minimal requirements files are provided:
 
 - `code/requirements_public_inference.txt` (Stim + PyTorch path)
-- `code/requirements_public_train.txt` (training path)
+- `code/requirements_public_train-cuXY.txt` (training path, where XY = 12 or 13)
 
 Install examples (virtual environment is optional but recommended):
 
@@ -41,8 +41,8 @@ export TORCH_CUDA=cu130
 # Inference-only (training install is a superset)
 pip install -r code/requirements_public_inference.txt
 
-# Training (includes inference deps)
-pip install -r code/requirements_public_train.txt
+# Training (includes inference deps, adjust to cu13 as appropriate)
+pip install -r code/requirements_public_train-cu12.txt
 
 bash code/scripts/check_python_compat.sh
 ```

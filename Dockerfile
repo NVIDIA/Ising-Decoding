@@ -35,11 +35,16 @@ RUN python${PYTHON_VERSION} -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY code/requirements_public_inference.txt /tmp/requirements_public_inference.txt
-COPY code/requirements_public_train.txt /tmp/requirements_public_train.txt
+COPY code/requirements_public_train-cu*.txt /tmp/
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+# Derive the CUDA major version from the base image's $CUDA_VERSION env var
+# (e.g. "12.1.0" -> "12") and install the matching requirements file.
+RUN CUDA_MAJOR_VERSION=$(echo "${CUDA_VERSION}" | cut -d. -f1) && \
+    echo "Detected CUDA major version: ${CUDA_MAJOR_VERSION}" && \
+    echo "export CUDA_MAJOR_VERSION=${CUDA_MAJOR_VERSION}" >> /etc/bash.bashrc && \
+    pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
-        -r /tmp/requirements_public_train.txt \
+        -r /tmp/requirements_public_train-cu${CUDA_MAJOR_VERSION}.txt \
         --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" \
         --extra-index-url https://pypi.org/simple && \
     python -c "import torch; print('PyTorch', torch.__version__, '(CUDA build:', torch.version.cuda, ')')"

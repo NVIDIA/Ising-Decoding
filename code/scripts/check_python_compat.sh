@@ -23,6 +23,11 @@ REQUIRE_GPU="${REQUIRE_GPU:-0}"
 REQUIRE_CUQUANTUM="${REQUIRE_CUQUANTUM:-0}"
 TORCH_CUDA="${TORCH_CUDA:-}"  # e.g., cu118, cu121, cu128
 TORCH_WHL_INDEX="${TORCH_WHL_INDEX:-}"  # override full index URL
+if [[ -n "${TORCH_CUDA}" ]]; then
+  CUDA_MAJOR_VERSION=${TORCH_CUDA:2:2}  # e.g., cu121 -> 12
+else
+  CUDA_MAJOR_VERSION=${CUDA_MAJOR_VERSION:-12}
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -43,7 +48,7 @@ REQ_FILE="${REQ_FILE:-}"
 EXTRA_PKGS="${EXTRA_PKGS:-}"
 if [[ -z "${REQ_FILE}" ]]; then
   if [[ "${MODE}" == "train" ]]; then
-    REQ_FILE="${ROOT_DIR}/code/requirements_public_train.txt"
+    REQ_FILE="${ROOT_DIR}/code/requirements_public_train-cu${CUDA_MAJOR_VERSION}.txt"
   else
     REQ_FILE="${ROOT_DIR}/code/requirements_public_inference.txt"
   fi
