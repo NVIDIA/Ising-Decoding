@@ -212,7 +212,7 @@ jobs:
           python3 -m venv .venv_gpu_cov
           . .venv_gpu_cov/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_inference.txt
+          pip install -r code/requirements_public_train.txt
           pip install -r code/requirements_ci.txt
 
       - name: Run tests with GPU coverage

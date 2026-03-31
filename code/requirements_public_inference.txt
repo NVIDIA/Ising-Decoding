@@ -34,4 +34,3 @@ beliefmatching
 #   cupy-cudaXXX -- enables zero-copy DLPack GPU transfers in the cuStabilizer
 #               (BitMatrixSampler) path in dem_sampling.py.
 #               Install the wheel matching your CUDA version, e.g.: pip install cupy-cuda12x
-#               Absent at runtime falls back to the NumPy path automatically.
