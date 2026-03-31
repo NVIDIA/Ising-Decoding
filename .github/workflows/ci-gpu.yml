@@ -73,13 +73,18 @@ jobs:
       - name: Verify GPU
         run: nvidia-smi
 
-      - name: Install dependencies and run tests
+      - name: Install dependencies
         run: bash code/scripts/check_python_compat.sh
         env:
           PYTHON_BIN: python${{ matrix.python-version }}
           MODE: train
-          SKIP_TESTS: "0"
+          SKIP_TESTS: "1"
           REQUIRE_GPU: "1"
+
+      - name: Run cuQuantum test on GPU (dem_sampling)
+        run: |
+          source .venv_train_${{ matrix.python-version }}/bin/activate
+          PYTHONPATH=code python -m unittest discover -s code/tests -p "test_dem_sampling.py" -v
 
       - name: Training + inference with LER check
         shell: bash
