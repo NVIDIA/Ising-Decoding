@@ -71,6 +71,7 @@ jobs:
       - name: Install dependencies and run tests
         run: |
           bash code/scripts/check_python_compat.sh
+          source .venv_inference_${{ matrix.python-version }}/bin/activate
           for test_file in code/tests/test_*.py; do
             base_name="$(basename "$test_file")"
             case "$base_name" in
