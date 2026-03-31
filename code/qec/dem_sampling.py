@@ -30,16 +30,13 @@ from collections import deque
 import torch
 import numpy as np
 
-from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
-from cuquantum.stabilizer.simulator import Options
-
 try:
     import cupy as _cp  # noqa: F401
     _CUPY_AVAILABLE = True
 except ImportError:
     _CUPY_AVAILABLE = False
 
-_cached_sampler: "BitMatrixSampler | None" = None
+_cached_sampler = None
 _cached_H: "torch.Tensor | None" = None
 _cached_HT: "torch.Tensor | None" = None
 _cached_max_shots: int = 0
@@ -81,6 +78,9 @@ def dem_sampling(
     Returns:
         frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
     """
+    from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
+    from cuquantum.stabilizer.simulator import Options
+
     global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _custab_path_logged
 
     if H.ndim != 2:
