@@ -69,24 +69,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies and run tests
-        run: |
-          bash code/scripts/check_python_compat.sh
-          source .venv_inference_${{ matrix.python-version }}/bin/activate
-          for test_file in code/tests/test_*.py; do
-            base_name="$(basename "$test_file")"
-            case "$base_name" in
-              test_dem_sampling.py|test_oracle_predecoder.py|test_torch_setup.py)
-                echo "Skipping GPU-runtime dependent test on CPU CI: $base_name"
-                ;;
-              *)
-                PYTHONPATH=code python -m unittest discover -s code/tests -p "$base_name" -v
-                ;;
-            esac
-          done
+        run: bash code/scripts/check_python_compat.sh
         env:
           PYTHON_BIN: python
           MODE: inference
-          SKIP_TESTS: "1"
+          SKIP_TESTS: "0"
           PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
   # ---------------------------------------------------------------------------
@@ -130,18 +117,7 @@ jobs:
           pip install -r code/requirements_ci.txt
       - name: Run tests with coverage
         run: |
-          coverage erase
-          for test_file in code/tests/test_*.py; do
-            base_name="$(basename "$test_file")"
-            case "$base_name" in
-              test_dem_sampling.py|test_oracle_predecoder.py|test_torch_setup.py)
-                echo "Skipping GPU-runtime dependent test on CPU coverage: $base_name"
-                ;;
-              *)
-                PYTHONPATH=code coverage run -a -m unittest discover -s code/tests -p "$base_name" -v
-                ;;
-            esac
-          done
+          PYTHONPATH=code coverage run -m unittest discover -s code/tests -p "test_*.py"
           coverage report
           coverage html -d htmlcov
           coverage xml -o coverage.xml
