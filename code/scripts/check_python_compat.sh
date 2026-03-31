@@ -20,6 +20,7 @@ PYTHON_BIN="${PYTHON_BIN:-${1:-python3}}"
 MODE="${MODE:-inference}"  # inference | train
 SKIP_TESTS="${SKIP_TESTS:-0}"
 REQUIRE_GPU="${REQUIRE_GPU:-0}"
+REQUIRE_CUQUANTUM="${REQUIRE_CUQUANTUM:-0}"
 TORCH_CUDA="${TORCH_CUDA:-}"  # e.g., cu118, cu121, cu128
 TORCH_WHL_INDEX="${TORCH_WHL_INDEX:-}"  # override full index URL
 
@@ -94,6 +95,7 @@ fi
 
 python - <<'PY'
 import importlib
+import os
 mods = [
     "hydra",
     "omegaconf",
@@ -102,6 +104,8 @@ mods = [
     "stim",
     "pymatching",
 ]
+if os.environ.get("REQUIRE_CUQUANTUM", "0") == "1":
+    mods.append("cuquantum.stabilizer.dem_sampling")
 missing = []
 for m in mods:
     try:

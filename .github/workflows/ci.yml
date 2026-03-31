@@ -74,6 +74,8 @@ jobs:
           PYTHON_BIN: python
           MODE: inference
           SKIP_TESTS: "0"
+          REQUIRE_CUQUANTUM: "1"
+          EXTRA_PKGS: "cuquantum-python-cu12>=26.3.0"
           PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
   # ---------------------------------------------------------------------------
@@ -114,9 +116,11 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_inference.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install "cuquantum-python-cu12>=26.3.0"
           pip install -r code/requirements_ci.txt
       - name: Run tests with coverage
         run: |
+          python -c "from cuquantum.stabilizer.dem_sampling import BitMatrixSampler; print('cuquantum ok')"
           PYTHONPATH=code coverage run -m unittest discover -s code/tests -p "test_*.py"
           coverage report
           coverage html -d htmlcov
