@@ -849,10 +849,23 @@ class TestDecoderAblationStudyWithCudaq(unittest.TestCase):
         self.assertLessEqual(result["decoder_errors"]["cudaq-BP"], result["total_samples"])
 
 
-class _MockCUDADevice:
-    """CPU-compatible mock device that reports type='cuda' for TRT guard checks."""
-    type = "cuda"
-    index = 0
+class _MockCUDADevice(torch.device):
+    """
+    A CPU-backed torch.device that reports type='cuda' so the TRT guard
+    (``if device.type == "cuda"``) is exercised without a physical GPU.
+    All tensor operations use the real torch.device("cpu") machinery.
+    """
+
+    def __new__(cls):
+        return super().__new__(cls, "cpu")
+
+    @property
+    def type(self):  # type: ignore[override]
+        return "cuda"
+
+    @property
+    def index(self):
+        return 0
 
     def __str__(self):
         return "cuda:0"
@@ -957,45 +970,19 @@ def _make_mock_trt_module(num_detectors):
     return mock_trt
 
 
-def _redirect_mock_device(device):
-    """Return torch.device("cpu") if device is _MockCUDADevice, else device unchanged."""
-    return torch.device("cpu") if isinstance(device, _MockCUDADevice) else device
-
-
 def _patch_tensor_to_for_mock_cuda():
     """
-    Return a context manager that redirects _MockCUDADevice to CPU for all torch
-    tensor creation calls (Tensor.to, zeros, ones, empty, arange, full, etc.).
-    This allows TRT tests to exercise the CUDA code path without a physical GPU.
-    """
-    from contextlib import contextmanager, ExitStack
+    Return a context manager that allows TRT tests to run without a physical GPU.
 
-    # All torch factory functions that accept a `device` keyword argument.
-    _FACTORY_NAMES = ["zeros", "ones", "empty", "arange", "full", "rand", "randn", "randint"]
+    _MockCUDADevice inherits from torch.device("cpu") so all torch factory
+    functions (zeros, arange, empty, …) and nn.Module.to() work natively.
+    The only remaining gap is torch.cuda.synchronize(), which we stub out.
+    """
+    from contextlib import contextmanager
 
     @contextmanager
     def _ctx():
-        _orig_to = torch.Tensor.to
-
-        def _patched_to(self, *args, **kwargs):
-            new_args = [_redirect_mock_device(a) for a in args]
-            new_kwargs = {k: _redirect_mock_device(v) for k, v in kwargs.items()}
-            return _orig_to(self, *new_args, **new_kwargs)
-
-        def _make_patched_factory(orig):
-
-            def _patched(*args, **kwargs):
-                if "device" in kwargs:
-                    kwargs["device"] = _redirect_mock_device(kwargs["device"])
-                return orig(*args, **kwargs)
-
-            return _patched
-
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(torch.Tensor, "to", _patched_to))
-            for _name in _FACTORY_NAMES:
-                _orig = getattr(torch, _name)
-                stack.enter_context(patch.object(torch, _name, _make_patched_factory(_orig)))
+        with patch("torch.cuda.synchronize"):
             yield
 
     return _ctx()
