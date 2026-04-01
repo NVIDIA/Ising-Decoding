@@ -17,6 +17,7 @@
 # Install a PyTorch build compatible with your Python/CUDA stack.
 # Target Python versions: 3.11, 3.12, 3.13
 -r requirements_public_inference.txt
+cuquantum-python-cu13>=26.03.0
 tensorboard
 torchinfo
 # decoder_ablation workflow

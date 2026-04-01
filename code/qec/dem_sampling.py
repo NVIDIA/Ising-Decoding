@@ -15,10 +15,8 @@
 """
 DEM sampling utilities for training data generation.
 
-When cuQuantum's cuStabilizer (BitMatrixSampler) is installed the sampling
-runs on the GPU via the cuST sparse sampler with optional CuPy zero-copy
-DLPack transfers.  When cuST is absent or disabled (USE_CUSTAB=0) the module
-falls back to a pure-torch implementation.
+Sampling runs on the GPU via cuQuantum's cuStabilizer BitMatrixSampler with
+optional CuPy zero-copy DLPack transfers.  cuquantum>=26.3.0 is required.
 
 This module provides the sampling functions needed by MemoryCircuitTorch
 to generate training batches from precomputed DEM matrices (H, p, A).
@@ -26,7 +24,6 @@ to generate training batches from precomputed DEM matrices (H, p, A).
 
 from __future__ import annotations
 
-import os
 import time
 from collections import deque
 
@@ -38,6 +35,9 @@ try:
     from cuquantum.stabilizer.simulator import Options
     _CUSTAB_AVAILABLE = True
 except ImportError:
+    # This should only happen if cuquantum is not installed. That is expected
+    # for some test environments that don't need DEM sampling, so handle that
+    # gracefully here.
     BitMatrixSampler = None  # type: ignore[misc, assignment]
     Options = None  # type: ignore[misc, assignment]
     _CUSTAB_AVAILABLE = False
@@ -54,14 +54,14 @@ def _custab_available() -> bool:
     return _CUSTAB_AVAILABLE
 
 
-_cached_sampler: "BitMatrixSampler | None" = None
-_cached_H_id: int | None = None
+_cached_sampler = None
+_cached_H: "torch.Tensor | None" = None
+_cached_HT: "torch.Tensor | None" = None
 _cached_max_shots: int = 0
+_cached_device_id: int | None = None
 
 _DEM_TIMINGS_S: deque[float] = deque(maxlen=200)
-_use_custab_cached: bool | None = None
 _custab_path_logged: bool = False
-_fallback_path_logged: bool = False
 
 _MIN_MAX_SHOTS = 1024
 
@@ -75,42 +75,75 @@ def get_dem_sampling_avg_ms() -> float:
 
 def _reset_sampler_cache() -> None:
     """Reset the module-level sampler cache."""
-    global _cached_sampler, _cached_H_id, _cached_max_shots
+    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _cached_device_id
     _cached_sampler = None
-    _cached_H_id = None
+    _cached_H = None
+    _cached_HT = None
     _cached_max_shots = 0
+    _cached_device_id = None
 
 
-def custab_matrix_sampling(
-    H: torch.Tensor, p: torch.Tensor, batch_size: int, device_id: int = 0
+def dem_sampling(
+    H: torch.Tensor,
+    p: torch.Tensor,
+    batch_size: int,
+    device_id: int | None = None
 ) -> torch.Tensor:
     """
-    Sample from a DEM using cuST BitMatrixSampler. H must be (errors, result) layout.
+    Sample errors from a detector error model (DEM) via cuST BitMatrixSampler.
 
-    When CuPy is available the entire pipeline stays on GPU:
-      torch CUDA -> CuPy (zero-copy DLPack) -> cuStabilizer -> CuPy -> torch (zero-copy DLPack)
+    Args:
+        H: (2*num_detectors, num_errors) uint8 - Detector-error incidence matrix
+        p: (num_errors,) float32 - Per-error probabilities
+        batch_size: int - Number of samples to generate
+        device_id: Optional int - Device ID for cuST. If omitted, infer from
+            H.device when H is on CUDA.
+
+    Returns:
+        frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
     """
-    if not _CUSTAB_AVAILABLE or BitMatrixSampler is None or Options is None:
-        raise RuntimeError("custab_matrix_sampling requires cuquantum.stabilizer")
+    from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
+    from cuquantum.stabilizer.simulator import Options
 
-    global _cached_sampler, _cached_H_id, _cached_max_shots, _custab_path_logged
+    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
+    global _cached_device_id, _custab_path_logged
 
-    # id(H) is the tensor's memory address — fast but not content-based.
-    # Safe in training loops where H is a long-lived tensor; a content hash
-    # (like cuda-qx-g uses) would be more robust but slower on every call.
-    H_id = id(H)
-    need_new = (_cached_sampler is None or _cached_H_id != H_id or batch_size > _cached_max_shots)
+    if H.ndim != 2:
+        raise ValueError(f"H must be 2-D, got ndim={H.ndim}")
+    if p.ndim != 1:
+        raise ValueError(f"p must be 1-D, got ndim={p.ndim}")
+    if H.shape[1] != p.shape[0]:
+        raise ValueError(f"H has {H.shape[1]} columns but p has {p.shape[0]} entries")
+
+    if device_id is None:
+        if H.is_cuda:
+            device_index = H.device.index
+            device_id = int(torch.cuda.current_device() if device_index is None else device_index)
+        else:
+            device_id = 0
+
+    gpu_native = _CUPY_AVAILABLE and H.is_cuda
+
+    if _cached_H is not H:
+        _cached_HT = H.T
+        _cached_H = H
+        _cached_sampler = None
+        _cached_device_id = None
+
+    need_new = (
+        _cached_sampler is None or batch_size > _cached_max_shots or _cached_device_id != device_id
+    )
 
     if need_new:
         max_shots = max(batch_size, _MIN_MAX_SHOTS)
-        gpu_native = _CUPY_AVAILABLE and H.is_cuda
         if gpu_native:
             import cupy as cp
-            H_in = cp.from_dlpack(H.detach())
-            p_in = cp.from_dlpack(p.detach().to(torch.float64))
+            with cp.cuda.Device(device_id):
+                H_in = cp.from_dlpack(_cached_HT.detach())
+                p_in = cp.from_dlpack(p.detach().to(torch.float64))
             pkg = "cupy"
         else:
-            H_in = H.detach().cpu().numpy().astype(np.uint8)
+            H_in = _cached_HT.detach().cpu().numpy().astype(np.uint8)
             p_in = p.detach().cpu().numpy().astype(np.float64)
             pkg = "numpy"
         _cached_sampler = BitMatrixSampler(
@@ -120,96 +153,32 @@ def custab_matrix_sampling(
             package=pkg,
             options=Options(device_id=device_id),
         )
-        _cached_H_id = H_id
         _cached_max_shots = max_shots
+        _cached_device_id = device_id
 
-    _cached_sampler.sample(batch_size)
-
-    out = _cached_sampler.get_outcomes(bit_packed=False)
+    t0 = time.perf_counter()
+    if gpu_native:
+        import cupy as cp
+        with cp.cuda.Device(device_id):
+            _cached_sampler.sample(batch_size)
+            out = _cached_sampler.get_outcomes(bit_packed=False)
+    else:
+        _cached_sampler.sample(batch_size)
+        out = _cached_sampler.get_outcomes(bit_packed=False)
     if isinstance(out, np.ndarray):
         out = torch.as_tensor(out, device=H.device).to(dtype=torch.uint8)
     else:
         out = torch.from_dlpack(out).to(dtype=torch.uint8)
+    _DEM_TIMINGS_S.append(time.perf_counter() - t0)
 
     if not _custab_path_logged:
         print(
             f"---- [dem_sampling] Using cuST BitMatrixSampler path "
-            f"(max_shots={_cached_max_shots}, gpu_native={_CUPY_AVAILABLE})"
+            f"(max_shots={_cached_max_shots}, gpu_native={gpu_native}, device_id={device_id})"
         )
         _custab_path_logged = True
 
     return out
-
-
-def _use_custab() -> bool:
-    """Use cuST if available and not disabled by USE_CUSTAB=0. Cached after first call."""
-    global _use_custab_cached
-    if _use_custab_cached is None:
-        if not _CUSTAB_AVAILABLE:
-            _use_custab_cached = False
-        else:
-            v = os.environ.get("USE_CUSTAB", "1").strip().lower()
-            _use_custab_cached = v not in ("0", "false", "no", "off")
-    return _use_custab_cached
-
-
-def _reset_use_custab_cache() -> None:
-    """Reset the _use_custab cache (e.g. after changing USE_CUSTAB in tests)."""
-    global _use_custab_cached
-    _use_custab_cached = None
-
-
-def dem_sampling(
-    H: torch.Tensor, p: torch.Tensor, batch_size: int, device_id: int = 0
-) -> torch.Tensor:
-    """
-    Sample errors from a detector error model (DEM) using precomputed H and p matrices.
-    Uses cuST BitMatrixSampler when available; if cuST is not present or USE_CUSTAB=0,
-    uses the torch fallback.
-
-    Args:
-        H: (2*num_detectors, num_errors) uint8 - Detector-error incidence matrix
-        p: (num_errors,) float32 - Per-error probabilities
-        batch_size: int - Number of samples to generate
-        device_id: int - Device ID for cuST (ignored by torch path).
-
-    Returns:
-        frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
-    """
-    if H.ndim != 2:
-        raise ValueError(f"H must be 2-D, got ndim={H.ndim}")
-    if p.ndim != 1:
-        raise ValueError(f"p must be 1-D, got ndim={p.ndim}")
-    if H.shape[1] != p.shape[0]:
-        raise ValueError(f"H has {H.shape[1]} columns but p has {p.shape[0]} entries")
-
-    global _fallback_path_logged
-    t0 = time.perf_counter()
-
-    if _use_custab():
-        # cuST expects (errors, result); dem_sampling H is (result, errors) -> pass H.T
-        out = custab_matrix_sampling(H.T, p, batch_size, device_id)
-        _DEM_TIMINGS_S.append(time.perf_counter() - t0)
-        return out
-
-    num_errors = int(H.shape[1])
-    device = H.device
-
-    # Sample errors according to their probabilities (independent Bernoulli)
-    rand_vals = torch.rand(batch_size, num_errors, device=device, dtype=torch.float32)
-    errors = (rand_vals < p[None, :]).to(torch.uint8)  # (batch_size, num_errors)
-
-    # Matrix multiply H @ errors^T to get detector outcomes
-    # H is (2*num_detectors, num_errors), errors is (batch_size, num_errors)
-    frames_xz = torch.matmul(errors.to(torch.float32), H.T.to(torch.float32))
-    frames_xz = frames_xz.to(torch.uint8) % 2  # Binary GF(2) arithmetic
-
-    _DEM_TIMINGS_S.append(time.perf_counter() - t0)
-    if not _fallback_path_logged:
-        print("Used fallback torch path for dem_sampling")
-        _fallback_path_logged = True
-
-    return frames_xz
 
 
 def measure_from_stacked_frames(

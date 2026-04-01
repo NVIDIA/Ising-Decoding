@@ -334,6 +334,10 @@ def _simplify_time_w1_step_nobreak(
     return err_out, syn_out
 
 
+_INT8_GEMM_OK: dict[str, bool] = {}
+_INT8_GEMM_WARNED: set[str] = set()
+
+
 def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tensor:
     """
     Weight reduction (parallel within disjoint stabilizer layers).
@@ -355,7 +359,11 @@ def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tenso
     # at most 4 (stabilizer support size) and act1/act2 are bool→int8 with at
     # most L ones, so intermediate sums stay well within int8 range as long as
     # L < 128 (true for practical surface code distances).
-    _use_int8 = True
+    #
+    # _INT8_GEMM_OK caches per-device results so after one failure on a given
+    # device we skip int8 permanently (no repeated exceptions / warnings).
+    dev_key = str(cfg.device)
+    _use_int8 = _INT8_GEMM_OK.get(dev_key, True)
 
     for layer_idx in cache.layers:
         if layer_idx.numel() == 0:
@@ -372,12 +380,16 @@ def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tenso
                 flip_mask = ((act2.to(torch.int8) @ masks_i8).to(torch.int32)
                              > 0) & (~set_to_zero_mask)
             except RuntimeError as exc:
-                warnings.warn(
-                    f"Int8 GEMM failed, falling back to float32 for weight reduction: {exc}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
                 _use_int8 = False
+                _INT8_GEMM_OK[dev_key] = False
+                if dev_key not in _INT8_GEMM_WARNED:
+                    _INT8_GEMM_WARNED.add(dev_key)
+                    warnings.warn(
+                        f"Int8 GEMM failed on {dev_key}, permanently falling back to "
+                        f"float32 for weight reduction: {exc}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                 masks_f = cache.support_masks.to(torch.float32).index_select(0, layer_idx)
                 error_counts = (cfg.to(torch.float32) @ masks_f.t()).to(torch.int32)
                 act1 = (error_counts == 4) | ((error_counts == 2) & (sizes.unsqueeze(0) == 2))
@@ -395,6 +407,9 @@ def _weight_reduction(cfg: torch.Tensor, cache: SpacelikeHECache) -> torch.Tenso
         cfg = cfg * (~set_to_zero_mask).to(cfg.dtype)
         cfg = cfg ^ flip_mask.to(cfg.dtype)
         cfg_i8 = cfg.to(torch.int8)
+
+    if _use_int8 and dev_key not in _INT8_GEMM_OK:
+        _INT8_GEMM_OK[dev_key] = True
 
     return cfg
 

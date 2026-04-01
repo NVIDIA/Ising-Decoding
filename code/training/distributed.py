@@ -53,11 +53,14 @@ class DistributedManager:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         if backend == "nccl":
             torch.cuda.set_device(local_rank)
+            # torch.distributed expects a torch.device-like object for `device_id`
+            # in recent PyTorch releases; passing an int raises AttributeError.
+            device = torch.device("cuda", local_rank)
             dist.init_process_group(
                 backend=backend,
                 rank=rank,
                 world_size=world_size,
-                device_id=local_rank,
+                device_id=device,
             )
         else:
             dist.init_process_group(backend=backend, rank=rank, world_size=world_size)

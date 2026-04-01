@@ -15,6 +15,8 @@ if str(_repo_code) not in sys.path:
 
 import torch
 
+import qec.dem_sampling as _dem_mod
+
 
 class TestTorchSetup(unittest.TestCase):
     """Verify Torch-only setup: imports, DEM sampling, generator init, batch generation."""
@@ -35,6 +37,7 @@ class TestTorchSetup(unittest.TestCase):
         from data.generator_torch import QCDataGeneratorTorch
         self.assertTrue(QCDataGeneratorTorch is not None)
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_dem_sampling_shape(self):
         from qec.dem_sampling import dem_sampling
         torch.manual_seed(42)
@@ -63,6 +66,7 @@ class TestTorchSetup(unittest.TestCase):
         meas_new = timelike_syndromes(frames_xz, A, meas_old)
         self.assertEqual(meas_new.shape, meas_old.shape)
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_generator_init_and_batch(self):
         from data.generator_torch import QCDataGeneratorTorch
         torch.manual_seed(42)

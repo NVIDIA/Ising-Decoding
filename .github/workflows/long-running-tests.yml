@@ -166,7 +166,8 @@ jobs:
           python${{ env.PYTHON_VERSION }} -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_train.txt
+          # TODO: matrix by CUDA major version [cu12, cu13]
+          pip install -r code/requirements_public_train-cu12.txt
 
       - name: Verify GPU
         run: |
@@ -302,7 +303,8 @@ jobs:
           python${{ env.PYTHON_VERSION }} -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_train.txt
+          # TODO: matrix by CUDA major version [cu12, cu13]
+          pip install -r code/requirements_public_train-cu12.txt
 
       - name: Verify GPU
         run: |
