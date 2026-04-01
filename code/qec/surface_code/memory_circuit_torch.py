@@ -263,9 +263,7 @@ class MemoryCircuitTorch:
         device_id = None
         if self.device.type == "cuda":
             device_index = self.device.index
-            device_id = int(
-                torch.cuda.current_device() if device_index is None else device_index
-            )
+            device_id = int(torch.cuda.current_device() if device_index is None else device_index)
         frames_xz = dem_sampling(
             self.H,
             self.p,

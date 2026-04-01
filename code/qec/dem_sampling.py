@@ -84,7 +84,10 @@ def _reset_sampler_cache() -> None:
 
 
 def dem_sampling(
-    H: torch.Tensor, p: torch.Tensor, batch_size: int, device_id: int | None = None
+    H: torch.Tensor,
+    p: torch.Tensor,
+    batch_size: int,
+    device_id: int | None = None
 ) -> torch.Tensor:
     """
     Sample errors from a detector error model (DEM) via cuST BitMatrixSampler.
@@ -115,9 +118,7 @@ def dem_sampling(
     if device_id is None:
         if H.is_cuda:
             device_index = H.device.index
-            device_id = int(
-                torch.cuda.current_device() if device_index is None else device_index
-            )
+            device_id = int(torch.cuda.current_device() if device_index is None else device_index)
         else:
             device_id = 0
 
@@ -130,9 +131,7 @@ def dem_sampling(
         _cached_device_id = None
 
     need_new = (
-        _cached_sampler is None
-        or batch_size > _cached_max_shots
-        or _cached_device_id != device_id
+        _cached_sampler is None or batch_size > _cached_max_shots or _cached_device_id != device_id
     )
 
     if need_new:
