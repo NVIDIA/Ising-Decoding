@@ -58,6 +58,7 @@ _cached_sampler = None
 _cached_H: "torch.Tensor | None" = None
 _cached_HT: "torch.Tensor | None" = None
 _cached_max_shots: int = 0
+_cached_device_id: int | None = None
 
 _DEM_TIMINGS_S: deque[float] = deque(maxlen=200)
 _custab_path_logged: bool = False
@@ -74,15 +75,16 @@ def get_dem_sampling_avg_ms() -> float:
 
 def _reset_sampler_cache() -> None:
     """Reset the module-level sampler cache."""
-    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
+    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _cached_device_id
     _cached_sampler = None
     _cached_H = None
     _cached_HT = None
     _cached_max_shots = 0
+    _cached_device_id = None
 
 
 def dem_sampling(
-    H: torch.Tensor, p: torch.Tensor, batch_size: int, device_id: int = 0
+    H: torch.Tensor, p: torch.Tensor, batch_size: int, device_id: int | None = None
 ) -> torch.Tensor:
     """
     Sample errors from a detector error model (DEM) via cuST BitMatrixSampler.
@@ -91,7 +93,8 @@ def dem_sampling(
         H: (2*num_detectors, num_errors) uint8 - Detector-error incidence matrix
         p: (num_errors,) float32 - Per-error probabilities
         batch_size: int - Number of samples to generate
-        device_id: int - Device ID for cuST.
+        device_id: Optional int - Device ID for cuST. If omitted, infer from
+            H.device when H is on CUDA.
 
     Returns:
         frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
@@ -99,7 +102,8 @@ def dem_sampling(
     from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
     from cuquantum.stabilizer.simulator import Options
 
-    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _custab_path_logged
+    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
+    global _cached_device_id, _custab_path_logged
 
     if H.ndim != 2:
         raise ValueError(f"H must be 2-D, got ndim={H.ndim}")
@@ -108,20 +112,36 @@ def dem_sampling(
     if H.shape[1] != p.shape[0]:
         raise ValueError(f"H has {H.shape[1]} columns but p has {p.shape[0]} entries")
 
+    if device_id is None:
+        if H.is_cuda:
+            device_index = H.device.index
+            device_id = int(
+                torch.cuda.current_device() if device_index is None else device_index
+            )
+        else:
+            device_id = 0
+
+    gpu_native = _CUPY_AVAILABLE and H.is_cuda
+
     if _cached_H is not H:
         _cached_HT = H.T
         _cached_H = H
         _cached_sampler = None
+        _cached_device_id = None
 
-    need_new = _cached_sampler is None or batch_size > _cached_max_shots
+    need_new = (
+        _cached_sampler is None
+        or batch_size > _cached_max_shots
+        or _cached_device_id != device_id
+    )
 
     if need_new:
         max_shots = max(batch_size, _MIN_MAX_SHOTS)
-        gpu_native = _CUPY_AVAILABLE and _cached_HT.is_cuda
         if gpu_native:
             import cupy as cp
-            H_in = cp.from_dlpack(_cached_HT.detach())
-            p_in = cp.from_dlpack(p.detach().to(torch.float64))
+            with cp.cuda.Device(device_id):
+                H_in = cp.from_dlpack(_cached_HT.detach())
+                p_in = cp.from_dlpack(p.detach().to(torch.float64))
             pkg = "cupy"
         else:
             H_in = _cached_HT.detach().cpu().numpy().astype(np.uint8)
@@ -135,10 +155,17 @@ def dem_sampling(
             options=Options(device_id=device_id),
         )
         _cached_max_shots = max_shots
+        _cached_device_id = device_id
 
     t0 = time.perf_counter()
-    _cached_sampler.sample(batch_size)
-    out = _cached_sampler.get_outcomes(bit_packed=False)
+    if gpu_native:
+        import cupy as cp
+        with cp.cuda.Device(device_id):
+            _cached_sampler.sample(batch_size)
+            out = _cached_sampler.get_outcomes(bit_packed=False)
+    else:
+        _cached_sampler.sample(batch_size)
+        out = _cached_sampler.get_outcomes(bit_packed=False)
     if isinstance(out, np.ndarray):
         out = torch.as_tensor(out, device=H.device).to(dtype=torch.uint8)
     else:
@@ -148,7 +175,7 @@ def dem_sampling(
     if not _custab_path_logged:
         print(
             f"---- [dem_sampling] Using cuST BitMatrixSampler path "
-            f"(max_shots={_cached_max_shots}, gpu_native={_CUPY_AVAILABLE})"
+            f"(max_shots={_cached_max_shots}, gpu_native={gpu_native})"
         )
         _custab_path_logged = True
 
