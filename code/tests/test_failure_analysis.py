@@ -872,6 +872,7 @@ def _make_mock_trt_module(num_detectors):
     B_holder = [None]
 
     class _Ctx:
+
         def set_input_shape(self, name, shape):
             B_holder[0] = shape[0]
 
@@ -886,6 +887,7 @@ def _make_mock_trt_module(num_detectors):
             return None  # not accessed in ablation path
 
     class _Engine:
+
         def create_execution_context(self):
             return _Ctx()
 
@@ -893,6 +895,7 @@ def _make_mock_trt_module(num_detectors):
             return b""
 
     class _Runtime:
+
         def deserialize_cuda_engine(self, data):
             return _Engine()
 
@@ -907,6 +910,7 @@ def _make_mock_trt_module(num_detectors):
         STRONGLY_TYPED = 1
 
     class _OnnxParser:
+
         def __init__(self, network, logger):
             pass
 
@@ -914,10 +918,12 @@ def _make_mock_trt_module(num_detectors):
             return True
 
     class _Profile:
+
         def set_shape(self, name, mn, opt, mx):
             pass
 
     class _BuilderConfig:
+
         def set_flag(self, flag):
             pass
 
@@ -928,6 +934,7 @@ def _make_mock_trt_module(num_detectors):
         pass
 
     class _Builder:
+
         def create_network(self, flags):
             return _Network()
 
@@ -950,28 +957,43 @@ def _make_mock_trt_module(num_detectors):
     return mock_trt
 
 
+def _redirect_mock_device(device):
+    """Return torch.device("cpu") if device is _MockCUDADevice, else device unchanged."""
+    return torch.device("cpu") if isinstance(device, _MockCUDADevice) else device
+
+
 def _patch_tensor_to_for_mock_cuda():
     """
-    Return a context manager that makes torch.Tensor.to(device=_MockCUDADevice)
-    silently redirect to the CPU device, so TRT tests can run without a real GPU.
+    Return a context manager that makes torch.Tensor.to, torch.zeros, torch.empty,
+    and torch.empty_like work with _MockCUDADevice by silently redirecting to CPU.
+    This allows TRT tests to run without a real GPU.
     """
     from contextlib import contextmanager
 
     @contextmanager
     def _ctx():
-        _orig = torch.Tensor.to
+        _orig_to = torch.Tensor.to
+        _orig_zeros = torch.zeros
+        _orig_empty = torch.empty
 
-        def _patched(self, *args, **kwargs):
-            new_args = [
-                torch.device("cpu") if isinstance(a, _MockCUDADevice) else a for a in args
-            ]
-            new_kwargs = {
-                k: (torch.device("cpu") if isinstance(v, _MockCUDADevice) else v)
-                for k, v in kwargs.items()
-            }
-            return _orig(self, *new_args, **new_kwargs)
+        def _patched_to(self, *args, **kwargs):
+            new_args = [_redirect_mock_device(a) for a in args]
+            new_kwargs = {k: _redirect_mock_device(v) for k, v in kwargs.items()}
+            return _orig_to(self, *new_args, **new_kwargs)
 
-        with patch.object(torch.Tensor, "to", _patched):
+        def _patched_zeros(*args, **kwargs):
+            if "device" in kwargs:
+                kwargs["device"] = _redirect_mock_device(kwargs["device"])
+            return _orig_zeros(*args, **kwargs)
+
+        def _patched_empty(*args, **kwargs):
+            if "device" in kwargs:
+                kwargs["device"] = _redirect_mock_device(kwargs["device"])
+            return _orig_empty(*args, **kwargs)
+
+        with patch.object(torch.Tensor, "to", _patched_to), \
+             patch("torch.zeros", _patched_zeros), \
+             patch("torch.empty", _patched_empty):
             yield
 
     return _ctx()
@@ -989,8 +1011,10 @@ class TestOnnxWorkflowParsing(unittest.TestCase):
 
     def test_valid_values_parse(self):
         from evaluation.logical_error_rate import OnnxWorkflow
-        for raw, expected in (("0", OnnxWorkflow.TORCH_ONLY), ("1", OnnxWorkflow.EXPORT_ONNX_ONLY),
-                               ("2", OnnxWorkflow.EXPORT_AND_USE_TRT), ("3", OnnxWorkflow.USE_ENGINE_ONLY)):
+        for raw, expected in (
+            ("0", OnnxWorkflow.TORCH_ONLY), ("1", OnnxWorkflow.EXPORT_ONNX_ONLY),
+            ("2", OnnxWorkflow.EXPORT_AND_USE_TRT), ("3", OnnxWorkflow.USE_ENGINE_ONLY)
+        ):
             with patch.dict("os.environ", {"ONNX_WORKFLOW": raw}):
                 val = OnnxWorkflow(int(os.environ.get("ONNX_WORKFLOW", "0").strip()))
             self.assertEqual(val, expected, f"raw={raw!r}")
@@ -1024,8 +1048,9 @@ class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
             code_rotation="XV",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(tmpdir, distance=self._D, n_rounds=self._T, basis=basis,
-                            n_samples=self._N)
+            cfg = _make_cfg(
+                tmpdir, distance=self._D, n_rounds=self._T, basis=basis, n_samples=self._N
+            )
             cfg.test.n_rounds = self._T
             with patch("data.factory.DatapipeFactory") as mf, \
                  patch.dict("os.environ", {"ONNX_WORKFLOW": "3"}), \
@@ -1042,8 +1067,10 @@ class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
 
     def test_missing_engine_result_structure_intact(self):
         result = self._run("X")
-        for key in ("baseline_errors", "decoder_errors", "residual_weights",
-                    "weight_bucket_stats", "agreement_count", "unavailable_decoders"):
+        for key in (
+            "baseline_errors", "decoder_errors", "residual_weights", "weight_bucket_stats",
+            "agreement_count", "unavailable_decoders"
+        ):
             self.assertIn(key, result)
 
     def test_missing_engine_decoder_errors_all_base_decoders_present(self):
@@ -1084,8 +1111,9 @@ class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
             exported.append(kwargs.get("f") or (args[1] if len(args) > 1 else None))
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(tmpdir, distance=self._D, n_rounds=self._T, basis="X",
-                            n_samples=self._N)
+            cfg = _make_cfg(
+                tmpdir, distance=self._D, n_rounds=self._T, basis="X", n_samples=self._N
+            )
             cfg.test.n_rounds = self._T
             with patch("data.factory.DatapipeFactory") as mf, \
                  patch.dict("os.environ", {"ONNX_WORKFLOW": "1"}), \
@@ -1116,8 +1144,9 @@ class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
             code_rotation="XV",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(tmpdir, distance=self._D, n_rounds=self._T, basis="X",
-                            n_samples=self._N)
+            cfg = _make_cfg(
+                tmpdir, distance=self._D, n_rounds=self._T, basis="X", n_samples=self._N
+            )
             cfg.test.n_rounds = self._T
             with patch("data.factory.DatapipeFactory") as mf, \
                  patch.dict("os.environ", {"ONNX_WORKFLOW": "1"}), \
@@ -1168,8 +1197,9 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
         mock_device = _MockCUDADevice()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(tmpdir, distance=self._D, n_rounds=self._T, basis=basis,
-                            n_samples=self._N)
+            cfg = _make_cfg(
+                tmpdir, distance=self._D, n_rounds=self._T, basis=basis, n_samples=self._N
+            )
             cfg.test.n_rounds = self._T
             # Create a dummy engine file so ONNX_WORKFLOW=3 finds it
             engine_path = os.path.join(
@@ -1184,9 +1214,7 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
                  patch("os.getcwd", return_value=tmpdir), \
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
-                result = decoder_ablation_study(
-                    _ZeroModel(), mock_device, _DummyDist(), cfg
-                )
+                result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
         return result, DECODER_NAMES
 
     def test_trt_path_returns_correct_sample_count(self):
@@ -1195,8 +1223,10 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
 
     def test_trt_path_result_has_all_required_keys(self):
         result, _ = self._run_with_mock_trt("X")
-        for key in ("baseline_errors", "decoder_errors", "residual_weights",
-                    "weight_bucket_stats", "agreement_count", "unavailable_decoders"):
+        for key in (
+            "baseline_errors", "decoder_errors", "residual_weights", "weight_bucket_stats",
+            "agreement_count", "unavailable_decoders"
+        ):
             self.assertIn(key, result)
 
     def test_trt_path_base_decoders_present(self):
