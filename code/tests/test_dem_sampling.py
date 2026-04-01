@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import torch
 
-import pytest
 import qec.dem_sampling as _dem_mod
 from qec.dem_sampling import (
     dem_sampling,
@@ -40,10 +39,8 @@ from qec.dem_sampling import (
 # infrastructure does inference only (and sometimes on CPU only), so it skips
 # installation of the cuquantum package. Skip these tests if cuquantum is not
 # available.
-pytestmark = pytest.mark.skipif(
-    not _dem_mod._CUSTAB_AVAILABLE,
-    reason="cuquantum>=26.3.0 (stabilizer) not available",
-)
+if not _dem_mod._CUSTAB_AVAILABLE:
+    raise unittest.SkipTest("cuquantum>=26.3.0 (stabilizer) not available")
 
 # ============================================================================
 # Helpers
