@@ -14,6 +14,8 @@
 # Schedule: daily at 02:00 UTC, but skipped if no commits landed on main
 # in the last 24 hours (saves GPU runner time on quiet days).
 # Manual dispatch always runs regardless of commit activity.
+# Re-run attempts (run_attempt > 1) always run, bypassing the commit check —
+# this lets you retry failed jobs from the UI even on quiet days.
 # All jobs use Python 3.13 (multi-version coverage is handled by short-tier CI).
 # See code/tests/README_TEST_TIERS.md for the tier model.
 
@@ -54,6 +56,9 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             echo "Manual dispatch — always run."
+          elif [[ "${{ github.run_attempt }}" -gt 1 ]]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Re-run attempt ${{ github.run_attempt }} — always run."
           else
             SINCE="$(date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ')"
             COUNT=$(git log --oneline --since="$SINCE" origin/main | wc -l)
