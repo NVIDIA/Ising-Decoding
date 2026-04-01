@@ -849,23 +849,18 @@ class TestDecoderAblationStudyWithCudaq(unittest.TestCase):
         self.assertLessEqual(result["decoder_errors"]["cudaq-BP"], result["total_samples"])
 
 
-class _MockCUDADevice(torch.device):
+class _MockCUDADevice:
     """
-    A CPU-backed torch.device that reports type='cuda' so the TRT guard
+    CPU-compatible mock device that reports type='cuda' so the TRT guard
     (``if device.type == "cuda"``) is exercised without a physical GPU.
-    All tensor operations use the real torch.device("cpu") machinery.
+
+    torch.device cannot be subclassed, so this is a plain Python object.
+    All torch factory functions and nn.Module.to() that receive this device
+    must be patched (see _patch_tensor_to_for_mock_cuda) to redirect to the
+    real CPU device before reaching PyTorch's C layer.
     """
-
-    def __new__(cls):
-        return super().__new__(cls, "cpu")
-
-    @property
-    def type(self):  # type: ignore[override]
-        return "cuda"
-
-    @property
-    def index(self):
-        return 0
+    type = "cuda"
+    index = 0
 
     def __str__(self):
         return "cuda:0"
@@ -970,19 +965,69 @@ def _make_mock_trt_module(num_detectors):
     return mock_trt
 
 
+def _redirect_mock_device(v):
+    """Return torch.device("cpu") when v is a _MockCUDADevice; else v unchanged."""
+    return torch.device("cpu") if isinstance(v, _MockCUDADevice) else v
+
+
 def _patch_tensor_to_for_mock_cuda():
     """
     Return a context manager that allows TRT tests to run without a physical GPU.
 
-    _MockCUDADevice inherits from torch.device("cpu") so all torch factory
-    functions (zeros, arange, empty, …) and nn.Module.to() work natively.
-    The only remaining gap is torch.cuda.synchronize(), which we stub out.
+    torch.device cannot be subclassed, so _MockCUDADevice is a plain Python
+    object.  PyTorch's C layer rejects it in every tensor-creation call, so we
+    patch all relevant entry points to redirect _MockCUDADevice -> cpu before
+    the C layer sees it.  torch.cuda.synchronize is stubbed to a no-op.
+
+    Functions patched:
+      - torch.Tensor.to        (Tensor moves)
+      - torch.nn.Module.to     (model moves)
+      - torch.zeros/ones/empty/arange/full/rand/randn/randint/as_tensor/tensor
+      - torch.cuda.synchronize (no GPU available)
     """
-    from contextlib import contextmanager
+    from contextlib import contextmanager, ExitStack
+
+    _FACTORY_NAMES = [
+        "zeros", "ones", "empty", "arange", "full", "rand", "randn", "randint", "as_tensor",
+        "tensor"
+    ]
 
     @contextmanager
     def _ctx():
-        with patch("torch.cuda.synchronize"):
+        _orig_tensor_to = torch.Tensor.to
+        _orig_module_to = torch.nn.Module.to
+
+        def _patched_tensor_to(self, *args, **kwargs):
+            return _orig_tensor_to(
+                self, *[_redirect_mock_device(a) for a in args], **{
+                    k: _redirect_mock_device(v) for k, v in kwargs.items()
+                }
+            )
+
+        def _patched_module_to(self, *args, **kwargs):
+            return _orig_module_to(
+                self, *[_redirect_mock_device(a) for a in args], **{
+                    k: _redirect_mock_device(v) for k, v in kwargs.items()
+                }
+            )
+
+        def _make_factory_patch(orig):
+
+            def _patched(*args, **kwargs):
+                if "device" in kwargs:
+                    kwargs["device"] = _redirect_mock_device(kwargs["device"])
+                return orig(*args, **kwargs)
+
+            return _patched
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(torch.Tensor, "to", _patched_tensor_to))
+            stack.enter_context(patch.object(torch.nn.Module, "to", _patched_module_to))
+            stack.enter_context(patch("torch.cuda.synchronize"))
+            for _name in _FACTORY_NAMES:
+                stack.enter_context(
+                    patch.object(torch, _name, _make_factory_patch(getattr(torch, _name)))
+                )
             yield
 
     return _ctx()
