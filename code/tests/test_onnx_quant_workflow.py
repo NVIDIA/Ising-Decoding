@@ -385,23 +385,23 @@ class TestModeloptQuantize(unittest.TestCase):
 class TestModeloptPrerequisite(unittest.TestCase):
     """Verify quantization package prerequisites are correctly declared."""
 
-    _TRAIN_REQS = Path(__file__).resolve().parent.parent / "requirements_public_train.txt"
+    _TRAIN_REQS = Path(__file__).resolve().parent.parent / "requirements_public_train-cu12.txt"
 
     def test_nvidia_modelopt_in_train_requirements(self):
-        """nvidia-modelopt[onnx] must be listed in requirements_public_train.txt."""
+        """nvidia-modelopt[onnx] must be listed in requirements_public_train-cu12.txt."""
         text = self._TRAIN_REQS.read_text()
         self.assertTrue(
             re.search(r"(?m)^nvidia-modelopt", text),
-            "nvidia-modelopt[onnx] must appear in requirements_public_train.txt; "
+            "nvidia-modelopt[onnx] must appear in requirements_public_train-cu12.txt; "
             "it is used for INT8/FP8 quantization on Python <3.13.",
         )
 
     def test_onnxruntime_in_train_requirements(self):
-        """onnxruntime must be listed in requirements_public_train.txt for Python 3.13+."""
+        """onnxruntime must be listed in requirements_public_train-cu12.txt for Python 3.13+."""
         text = self._TRAIN_REQS.read_text()
         self.assertTrue(
             re.search(r"(?m)^onnxruntime", text),
-            "onnxruntime must appear in requirements_public_train.txt; "
+            "onnxruntime must appear in requirements_public_train-cu12.txt; "
             "it is the INT8 quantization backend on Python 3.13+ "
             "(nvidia-modelopt does not support Python 3.13+).",
         )
@@ -412,11 +412,11 @@ class TestModeloptPrerequisite(unittest.TestCase):
         text = infer_reqs.read_text()
         self.assertFalse(
             re.search(r"(?m)^nvidia-modelopt", text),
-            "nvidia-modelopt must not be in requirements_public_inference.txt.",
+            "nvidia-modelopt must not be in requirements_public_train-cu12.txt.",
         )
         self.assertFalse(
             re.search(r"(?m)^onnxruntime", text),
-            "onnxruntime must not be in requirements_public_inference.txt.",
+            "onnxruntime must not be in requirements_public_train-cu12.txt.",
         )
 
     def test_modelopt_importable_when_installed(self):

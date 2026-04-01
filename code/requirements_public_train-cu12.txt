@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Public training requirements (Torch-only pipeline).
+# Install a PyTorch build compatible with your Python/CUDA stack.
+# Target Python versions: 3.11, 3.12, 3.13
+-r requirements_public_inference.txt
+cuquantum-python-cu12>=26.03.0
+tensorboard
+torchinfo
+# decoder_ablation workflow
+scipy
+ldpc
+beliefmatching
+# ONNX quantization (INT8/FP8 via QUANT_FORMAT).
+# nvidia-modelopt[onnx] officially caps at Python <3.13 but works on 3.13 in practice.
+# check_python_compat.sh installs it with --ignore-requires-python on Python 3.13+.
+# For manual installs on Python 3.13+: pip install nvidia-modelopt[onnx] --ignore-requires-python
+# onnxruntime is the INT8-only fallback when modelopt is not importable.
+nvidia-modelopt[onnx]; python_version < "3.13"
+onnxruntime; python_version >= "3.13"
