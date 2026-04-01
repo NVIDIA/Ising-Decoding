@@ -154,7 +154,8 @@ jobs:
           python3.13 -m venv .venv_mid
           . .venv_mid/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_train.txt
+          # TODO: matrix by CUDA major version [cu12, cu13]
+          pip install -r code/requirements_public_train-cu12.txt
 
       - name: Mid-tier training + inference with LER check (32k train, 2 epochs)
         shell: bash
@@ -212,7 +213,8 @@ jobs:
           python3 -m venv .venv_gpu_cov
           . .venv_gpu_cov/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_inference.txt
+          # TODO: matrix by CUDA major version [cu12, cu13]
+          pip install -r code/requirements_public_train-cu12.txt
           pip install -r code/requirements_ci.txt
 
       - name: Run tests with GPU coverage
