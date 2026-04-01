@@ -31,10 +31,28 @@ import torch
 import numpy as np
 
 try:
+    from cuquantum.stabilizer.dem_sampling import BitMatrixSampler
+    from cuquantum.stabilizer.simulator import Options
+    _CUSTAB_AVAILABLE = True
+except ImportError:
+    # This should only happen if cuquantum is not installed. That is expected
+    # for some test environments that don't need DEM sampling, so handle that
+    # gracefully here.
+    BitMatrixSampler = None  # type: ignore[misc, assignment]
+    Options = None  # type: ignore[misc, assignment]
+    _CUSTAB_AVAILABLE = False
+
+try:
     import cupy as _cp  # noqa: F401
     _CUPY_AVAILABLE = True
 except ImportError:
     _CUPY_AVAILABLE = False
+
+
+def _custab_available() -> bool:
+    """True if custabilizer (cuquantum.stabilizer) is present. For use by tests/skip logic."""
+    return _CUSTAB_AVAILABLE
+
 
 _cached_sampler = None
 _cached_H: "torch.Tensor | None" = None
