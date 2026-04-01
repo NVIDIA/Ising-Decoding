@@ -964,36 +964,38 @@ def _redirect_mock_device(device):
 
 def _patch_tensor_to_for_mock_cuda():
     """
-    Return a context manager that makes torch.Tensor.to, torch.zeros, torch.empty,
-    and torch.empty_like work with _MockCUDADevice by silently redirecting to CPU.
-    This allows TRT tests to run without a real GPU.
+    Return a context manager that redirects _MockCUDADevice to CPU for all torch
+    tensor creation calls (Tensor.to, zeros, ones, empty, arange, full, etc.).
+    This allows TRT tests to exercise the CUDA code path without a physical GPU.
     """
-    from contextlib import contextmanager
+    from contextlib import contextmanager, ExitStack
+
+    # All torch factory functions that accept a `device` keyword argument.
+    _FACTORY_NAMES = ["zeros", "ones", "empty", "arange", "full", "rand", "randn", "randint"]
 
     @contextmanager
     def _ctx():
         _orig_to = torch.Tensor.to
-        _orig_zeros = torch.zeros
-        _orig_empty = torch.empty
 
         def _patched_to(self, *args, **kwargs):
             new_args = [_redirect_mock_device(a) for a in args]
             new_kwargs = {k: _redirect_mock_device(v) for k, v in kwargs.items()}
             return _orig_to(self, *new_args, **new_kwargs)
 
-        def _patched_zeros(*args, **kwargs):
-            if "device" in kwargs:
-                kwargs["device"] = _redirect_mock_device(kwargs["device"])
-            return _orig_zeros(*args, **kwargs)
+        def _make_patched_factory(orig):
 
-        def _patched_empty(*args, **kwargs):
-            if "device" in kwargs:
-                kwargs["device"] = _redirect_mock_device(kwargs["device"])
-            return _orig_empty(*args, **kwargs)
+            def _patched(*args, **kwargs):
+                if "device" in kwargs:
+                    kwargs["device"] = _redirect_mock_device(kwargs["device"])
+                return orig(*args, **kwargs)
 
-        with patch.object(torch.Tensor, "to", _patched_to), \
-             patch("torch.zeros", _patched_zeros), \
-             patch("torch.empty", _patched_empty):
+            return _patched
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(torch.Tensor, "to", _patched_to))
+            for _name in _FACTORY_NAMES:
+                _orig = getattr(torch, _name)
+                stack.enter_context(patch.object(torch, _name, _make_patched_factory(_orig)))
             yield
 
     return _ctx()
