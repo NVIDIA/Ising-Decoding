@@ -175,7 +175,7 @@ def dem_sampling(
     if not _custab_path_logged:
         print(
             f"---- [dem_sampling] Using cuST BitMatrixSampler path "
-            f"(max_shots={_cached_max_shots}, gpu_native={gpu_native})"
+            f"(max_shots={_cached_max_shots}, gpu_native={gpu_native}, device_id={device_id})"
         )
         _custab_path_logged = True
 
