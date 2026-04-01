@@ -788,8 +788,7 @@ def decoder_ablation_study(model, device, dist, cfg):
         quant_suffix = f"_{quant_format}" if quant_format else ""
         T_test = int(getattr(cfg.test, "n_rounds", cfg.n_rounds))
         onnx_path = os.path.join(
-            os.getcwd(),
-            f"predecoder_memory_d{D}_T{T_test}_{basis}{quant_suffix}.onnx"
+            os.getcwd(), f"predecoder_memory_d{D}_T{T_test}_{basis}{quant_suffix}.onnx"
         )
         engine_path = onnx_path.replace(".onnx", ".engine")
         batch_size_onnx = int(getattr(cfg.test.dataloader, "batch_size", 2048))
@@ -826,13 +825,12 @@ def decoder_ablation_study(model, device, dist, cfg):
             if dist.rank == 0:
                 try:
                     fp32_onnx_path = (
-                        onnx_path if not quant_format
-                        else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                        onnx_path if not quant_format else
+                        onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
                     )
                     # stim_dets already has shape (N, 2*T*half) — use it as sample input.
-                    example_dets = torch.from_numpy(
-                        stim_dets[:batch_size_onnx]
-                    ).to(device=device, dtype=torch.uint8)
+                    example_dets = torch.from_numpy(stim_dets[:batch_size_onnx]
+                                                   ).to(device=device, dtype=torch.uint8)
                     torch.onnx.export(
                         pipeline_module,
                         example_dets,
@@ -841,7 +839,14 @@ def decoder_ablation_study(model, device, dist, cfg):
                         external_data=False,
                         input_names=["dets"],
                         output_names=["L_and_residual_dets"],
-                        dynamic_axes={"dets": {0: "batch"}, "L_and_residual_dets": {0: "batch"}},
+                        dynamic_axes={
+                            "dets": {
+                                0: "batch"
+                            },
+                            "L_and_residual_dets": {
+                                0: "batch"
+                            }
+                        },
                         do_constant_folding=True,
                         dynamo=False,
                     )
@@ -891,8 +896,8 @@ def decoder_ablation_study(model, device, dist, cfg):
                     network = builder.create_network(net_flags)
                     parser = trt.OnnxParser(network, logger)
                     _onnx_to_parse = (
-                        onnx_path if os.path.isfile(onnx_path)
-                        else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                        onnx_path if os.path.isfile(onnx_path) else
+                        onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
                     )
                     with open(_onnx_to_parse, "rb") as _f:
                         if not parser.parse(_f.read()):
@@ -954,8 +959,7 @@ def decoder_ablation_study(model, device, dist, cfg):
         )
         _backend = (
             f"TRT (ONNX_WORKFLOW={onnx_workflow.value})"
-            if trt_context is not None
-            else f"PyTorch (ONNX_WORKFLOW={onnx_workflow.value})"
+            if trt_context is not None else f"PyTorch (ONNX_WORKFLOW={onnx_workflow.value})"
         )
         print(f"[Decoder Ablation] Pre-decoder backend: {_backend}")
 
@@ -1041,15 +1045,15 @@ def decoder_ablation_study(model, device, dist, cfg):
         # dets ready for cudaq-qec and other global decoders.
         _t0 = _time.perf_counter()
         if trt_context is not None:
-            dets_batch = torch.from_numpy(baseline_detectors_batch).to(
-                device=device, dtype=torch.uint8
-            )
+            dets_batch = torch.from_numpy(baseline_detectors_batch
+                                         ).to(device=device, dtype=torch.uint8)
             context, _engine = trt_context
             context.set_input_shape("dets", dets_batch.shape)
             out_shape = tuple(context.get_tensor_shape("L_and_residual_dets"))
             L_and_residual_out = torch.empty(out_shape, device=device, dtype=torch.uint8)
             context.execute_v2(
-                bindings=[int(dets_batch.data_ptr()), int(L_and_residual_out.data_ptr())]
+                bindings=[int(dets_batch.data_ptr()),
+                          int(L_and_residual_out.data_ptr())]
             )
             if device.type == "cuda":
                 torch.cuda.synchronize()
