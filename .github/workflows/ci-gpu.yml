@@ -176,7 +176,6 @@ jobs:
   # Runs only after merge to main (not on PR branches) to conserve GPU quota.
   # ---------------------------------------------------------------------------
   multi-gpu-tests:
-    if: github.ref == 'refs/heads/main'
     needs: gpu-tests
     runs-on: linux-amd64-gpu-rtxpro6000-latest-2
     container:

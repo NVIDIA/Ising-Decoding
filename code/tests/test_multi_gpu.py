@@ -53,6 +53,7 @@ def _setup_sys_path():
 # Worker functions executed inside spawned subprocesses
 # ---------------------------------------------------------------------------
 
+
 def _worker_nccl_allreduce(rank, world_size, init_file):
     """All_reduce sum: ranks hold (rank+1), result must equal world_size*(world_size+1)/2."""
     _setup_sys_path()
@@ -113,9 +114,7 @@ def _worker_ddp_step(rank, world_size, init_file):
 
     for name, param in ddp_model.named_parameters():
         if param.grad is not None:
-            assert torch.isfinite(param.grad).all(), (
-                f"Rank {rank}: non-finite gradient in {name}"
-            )
+            assert torch.isfinite(param.grad).all(), (f"Rank {rank}: non-finite gradient in {name}")
 
     dist.destroy_process_group()
 
@@ -158,6 +157,7 @@ def _worker_data_generator(rank, world_size, init_file):
 # Helper: create a fresh rendezvous file path (must not exist before init)
 # ---------------------------------------------------------------------------
 
+
 def _fresh_rendezvous_file():
     fd, path = tempfile.mkstemp(suffix=".rendezvous")
     os.close(fd)
@@ -168,6 +168,7 @@ def _fresh_rendezvous_file():
 # ---------------------------------------------------------------------------
 # Test classes
 # ---------------------------------------------------------------------------
+
 
 @_require_multi_gpu
 class TestNCCLCommunication(unittest.TestCase):
