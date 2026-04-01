@@ -13,24 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Public inference requirements (Stim + PyTorch path).
+# Public training requirements (Torch-only pipeline).
 # Install a PyTorch build compatible with your Python/CUDA stack.
 # Target Python versions: 3.11, 3.12, 3.13
-hydra-core
-omegaconf
-numpy
-torch
-stim
-pymatching
-matplotlib
-safetensors>=0.4.0
+-r requirements_public_inference.txt
+cuquantum-python-cu12>=26.03.0
+tensorboard
+torchinfo
+# decoder_ablation workflow
 scipy
 ldpc
 beliefmatching
-# Optional GPU-only prerequisites (not pip-installed here due to size and CUDA dependency):
-#   tensorrt  -- required for ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT) and ONNX_WORKFLOW=3
-#               (USE_ENGINE_ONLY). Install via: pip install tensorrt
-#               Absent at runtime raises RuntimeError (workflows 2/3 require TensorRT).
-#   cupy-cudaXXX -- enables zero-copy DLPack GPU transfers in the cuStabilizer
-#               (BitMatrixSampler) path in dem_sampling.py.
-#               Install the wheel matching your CUDA version, e.g.: pip install cupy-cuda12x
+# ONNX quantization (INT8/FP8 via QUANT_FORMAT).
+# nvidia-modelopt[onnx] officially caps at Python <3.13 but works on 3.13 in practice.
+# check_python_compat.sh installs it with --ignore-requires-python on Python 3.13+.
+# For manual installs on Python 3.13+: pip install nvidia-modelopt[onnx] --ignore-requires-python
+# onnxruntime is the INT8-only fallback when modelopt is not importable.
+nvidia-modelopt[onnx]; python_version < "3.13"
+onnxruntime; python_version >= "3.13"

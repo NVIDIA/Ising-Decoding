@@ -23,6 +23,11 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 TORCH_CUDA="${TORCH_CUDA:-cu121}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+if [[ -n "${TORCH_CUDA}" ]]; then
+  CUDA_MAJOR_VERSION=${TORCH_CUDA:2:2}  # e.g., cu121 -> 12
+else
+  CUDA_MAJOR_VERSION=${CUDA_MAJOR_VERSION:-12}
+fi
 
 echo "=========================================="
 echo "Pre-decoder cluster dependency install"
@@ -76,7 +81,7 @@ cd "$REPO_ROOT"
 # TORCH_CUDA e.g. cu121 or cu124; default cu121 to match nvidia/cuda:12.1 base image.
 PYTORCH_INDEX="https://download.pytorch.org/whl/${TORCH_CUDA}"
 echo "Installing requirements (torch from CUDA index: ${TORCH_CUDA})..."
-"$PYTHON_BIN" -m pip install -r code/requirements_public_train.txt \
+"$PYTHON_BIN" -m pip install -r code/requirements_public_train-cu${CUDA_MAJOR_VERSION}.txt \
   --index-url "${PYTORCH_INDEX}" --extra-index-url https://pypi.org/simple
 
 "$PYTHON_BIN" -c "
