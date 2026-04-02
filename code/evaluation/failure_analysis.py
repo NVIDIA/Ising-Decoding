@@ -1008,7 +1008,6 @@ def decoder_ablation_study(model, device, dist, cfg):
         # Baseline detectors/obs are needed for both TRT and PyTorch paths.
         baseline_detectors_batch = stim_dets[start:end]
         gt_obs_batch = stim_obs[start:end]
-        all_baseline_weights.extend(baseline_detectors_batch.sum(axis=1).tolist())
 
         _t0 = _time.perf_counter()
         if trt_context is None:
@@ -1028,6 +1027,10 @@ def decoder_ablation_study(model, device, dist, cfg):
             _, _, T = x_syn_diff.shape
             if T < 2:
                 continue
+
+        # Weight accumulation must happen after the T < 2 guard so that skipped
+        # batches (PyTorch path, T < 2) do not inflate baseline weight counts.
+        all_baseline_weights.extend(baseline_detectors_batch.sum(axis=1).tolist())
 
         _t0 = _time.perf_counter()
         baseline_pred_obs = _decode_batch(matcher_corr, baseline_detectors_batch, True)

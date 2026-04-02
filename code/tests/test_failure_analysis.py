@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 import sys
 import tempfile
 import types
@@ -1038,9 +1037,9 @@ class TestOnnxWorkflowParsing(unittest.TestCase):
 
     def test_default_is_torch_only(self):
         from evaluation.logical_error_rate import OnnxWorkflow
-        with patch.dict("os.environ", {}, clear=False):
-            os.environ.pop("ONNX_WORKFLOW", None)
-            val = OnnxWorkflow(int(os.environ.get("ONNX_WORKFLOW", "0").strip()))
+        # When ONNX_WORKFLOW is absent the default int is 0 → TORCH_ONLY.
+        with patch.dict("os.environ", {}, clear=True):
+            val = OnnxWorkflow(0)
         self.assertEqual(val, OnnxWorkflow.TORCH_ONLY)
 
     def test_valid_values_parse(self):
@@ -1049,9 +1048,7 @@ class TestOnnxWorkflowParsing(unittest.TestCase):
             ("0", OnnxWorkflow.TORCH_ONLY), ("1", OnnxWorkflow.EXPORT_ONNX_ONLY),
             ("2", OnnxWorkflow.EXPORT_AND_USE_TRT), ("3", OnnxWorkflow.USE_ENGINE_ONLY)
         ):
-            with patch.dict("os.environ", {"ONNX_WORKFLOW": raw}):
-                val = OnnxWorkflow(int(os.environ.get("ONNX_WORKFLOW", "0").strip()))
-            self.assertEqual(val, expected, f"raw={raw!r}")
+            self.assertEqual(OnnxWorkflow(int(raw)), expected, f"raw={raw!r}")
 
     def test_invalid_value_raises_valueerror(self):
         from evaluation.logical_error_rate import OnnxWorkflow
@@ -1236,8 +1233,8 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
             )
             cfg.test.n_rounds = self._T
             # Create a dummy engine file so ONNX_WORKFLOW=3 finds it
-            engine_path = os.path.join(
-                tmpdir, f"predecoder_memory_d{self._D}_T{self._T}_{basis}.engine"
+            engine_path = str(
+                Path(tmpdir) / f"predecoder_memory_d{self._D}_T{self._T}_{basis}.engine"
             )
             with open(engine_path, "wb") as _f:
                 _f.write(b"dummy_engine")
