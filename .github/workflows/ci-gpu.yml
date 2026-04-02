@@ -240,7 +240,8 @@ jobs:
           EXPERIMENT_NAME=ci_multi_gpu WORKFLOW=inference GPUS=2 \
             bash code/scripts/local_run.sh 2>&1 | tee /tmp/ci_multigpu_infer.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          python code/scripts/check_ler_from_log.py /tmp/ci_multigpu_infer.log --max-ler 0.35
+          # [LER Validation] lines are emitted during training, not inference
+          python code/scripts/check_ler_from_log.py /tmp/ci_multigpu_train.log --max-ler 0.35
         env:
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
