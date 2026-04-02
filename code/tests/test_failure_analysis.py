@@ -1066,23 +1066,26 @@ class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
     _T = 3
     _N = 8
 
-    def _run(self, basis="X"):
+    @classmethod
+    def setUpClass(cls):
+        cls._result = cls._run_once("X")
+
+    @classmethod
+    def _run_once(cls, basis="X"):
         from evaluation.failure_analysis import decoder_ablation_study
         from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
         real_ds = QCDataPipePreDecoder_Memory_inference(
-            distance=self._D,
-            n_rounds=self._T,
-            num_samples=self._N,
+            distance=cls._D,
+            n_rounds=cls._T,
+            num_samples=cls._N,
             error_mode="circuit_level_surface_custom",
             p_error=0.01,
             measure_basis=basis,
             code_rotation="XV",
         )
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(
-                tmpdir, distance=self._D, n_rounds=self._T, basis=basis, n_samples=self._N
-            )
-            cfg.test.n_rounds = self._T
+            cfg = _make_cfg(tmpdir, distance=cls._D, n_rounds=cls._T, basis=basis, n_samples=cls._N)
+            cfg.test.n_rounds = cls._T
             with patch("data.factory.DatapipeFactory") as mf, \
                  patch.dict("os.environ", {"ONNX_WORKFLOW": "3"}), \
                  patch("os.getcwd", return_value=tmpdir):
@@ -1093,25 +1096,21 @@ class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
         return result
 
     def test_missing_engine_does_not_crash(self):
-        result = self._run("X")
-        self.assertEqual(result["total_samples"], self._N)
+        self.assertEqual(self._result["total_samples"], self._N)
 
     def test_missing_engine_result_structure_intact(self):
-        result = self._run("X")
         for key in (
             "baseline_errors", "decoder_errors", "residual_weights", "weight_bucket_stats",
             "agreement_count", "unavailable_decoders"
         ):
-            self.assertIn(key, result)
+            self.assertIn(key, self._result)
 
     def test_missing_engine_decoder_errors_all_base_decoders_present(self):
         from evaluation.failure_analysis import DECODER_NAMES
-        result = self._run("X")
-        self.assertTrue(set(DECODER_NAMES).issubset(set(result["decoder_errors"].keys())))
+        self.assertTrue(set(DECODER_NAMES).issubset(set(self._result["decoder_errors"].keys())))
 
     def test_missing_engine_sample_count_correct(self):
-        result = self._run("X")
-        self.assertEqual(len(result["residual_weights"]), self._N)
+        self.assertEqual(len(self._result["residual_weights"]), self._N)
 
 
 class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
@@ -1207,13 +1206,21 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
     _T = 3
     _N = 8
 
-    def _run_with_mock_trt(self, basis="X"):
-        from evaluation.failure_analysis import decoder_ablation_study, DECODER_NAMES
+    @classmethod
+    def setUpClass(cls):
+        from evaluation.failure_analysis import DECODER_NAMES
+        cls._decoder_names = DECODER_NAMES
+        cls._result_x = cls._run_once("X")
+        cls._result_z = cls._run_once("Z")
+
+    @classmethod
+    def _run_once(cls, basis="X"):
+        from evaluation.failure_analysis import decoder_ablation_study
         from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
         real_ds = QCDataPipePreDecoder_Memory_inference(
-            distance=self._D,
-            n_rounds=self._T,
-            num_samples=self._N,
+            distance=cls._D,
+            n_rounds=cls._T,
+            num_samples=cls._N,
             error_mode="circuit_level_surface_custom",
             p_error=0.01,
             measure_basis=basis,
@@ -1228,13 +1235,11 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
         mock_device = _MockCUDADevice()
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _make_cfg(
-                tmpdir, distance=self._D, n_rounds=self._T, basis=basis, n_samples=self._N
-            )
-            cfg.test.n_rounds = self._T
+            cfg = _make_cfg(tmpdir, distance=cls._D, n_rounds=cls._T, basis=basis, n_samples=cls._N)
+            cfg.test.n_rounds = cls._T
             # Create a dummy engine file so ONNX_WORKFLOW=3 finds it
             engine_path = str(
-                Path(tmpdir) / f"predecoder_memory_d{self._D}_T{self._T}_{basis}.engine"
+                Path(tmpdir) / f"predecoder_memory_d{cls._D}_T{cls._T}_{basis}.engine"
             )
             with open(engine_path, "wb") as _f:
                 _f.write(b"dummy_engine")
@@ -1246,43 +1251,38 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
-        return result, DECODER_NAMES
+        return result
 
     def test_trt_path_returns_correct_sample_count(self):
-        result, _ = self._run_with_mock_trt("X")
-        self.assertEqual(result["total_samples"], self._N)
+        self.assertEqual(self._result_x["total_samples"], self._N)
 
     def test_trt_path_result_has_all_required_keys(self):
-        result, _ = self._run_with_mock_trt("X")
         for key in (
             "baseline_errors", "decoder_errors", "residual_weights", "weight_bucket_stats",
             "agreement_count", "unavailable_decoders"
         ):
-            self.assertIn(key, result)
+            self.assertIn(key, self._result_x)
 
     def test_trt_path_base_decoders_present(self):
-        result, DECODER_NAMES = self._run_with_mock_trt("X")
-        self.assertTrue(set(DECODER_NAMES).issubset(set(result["decoder_errors"].keys())))
+        self.assertTrue(
+            set(self._decoder_names).issubset(set(self._result_x["decoder_errors"].keys()))
+        )
 
     def test_trt_path_residual_weights_length_matches_sample_count(self):
-        result, _ = self._run_with_mock_trt("X")
-        self.assertEqual(len(result["residual_weights"]), self._N)
+        self.assertEqual(len(self._result_x["residual_weights"]), self._N)
 
     def test_trt_path_decoder_error_counts_are_non_negative(self):
-        result, DECODER_NAMES = self._run_with_mock_trt("X")
-        for name in DECODER_NAMES:
+        for name in self._decoder_names:
             with self.subTest(decoder=name):
-                self.assertGreaterEqual(result["decoder_errors"][name], 0)
-                self.assertLessEqual(result["decoder_errors"][name], self._N)
+                self.assertGreaterEqual(self._result_x["decoder_errors"][name], 0)
+                self.assertLessEqual(self._result_x["decoder_errors"][name], self._N)
 
     def test_trt_path_z_basis_also_works(self):
-        result, _ = self._run_with_mock_trt("Z")
-        self.assertEqual(result["total_samples"], self._N)
+        self.assertEqual(self._result_z["total_samples"], self._N)
 
     def test_trt_path_agreement_count_within_bounds(self):
-        result, _ = self._run_with_mock_trt("X")
-        self.assertGreaterEqual(result["agreement_count"], 0)
-        self.assertLessEqual(result["agreement_count"], self._N)
+        self.assertGreaterEqual(self._result_x["agreement_count"], 0)
+        self.assertLessEqual(self._result_x["agreement_count"], self._N)
 
 
 if __name__ == "__main__":
