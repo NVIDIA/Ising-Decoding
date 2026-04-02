@@ -229,7 +229,8 @@ jobs:
           python3 -m venv .venv_multigpu
           . .venv_multigpu/bin/activate
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r code/requirements_public_train.txt
+          # TODO: matrix by CUDA major version [cu12, cu13]
+          pip install -r code/requirements_public_train-cu12.txt
 
       - name: Run multi-GPU unit tests
         run: |
