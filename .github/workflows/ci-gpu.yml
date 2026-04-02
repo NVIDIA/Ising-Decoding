@@ -178,6 +178,93 @@ jobs:
           PYTHONPATH=code python -m unittest discover -s code/tests/mid -p "test_*.py" -v
 
   # ---------------------------------------------------------------------------
+  # Multi-GPU tests: validates NCCL, DDP gradient sync, and per-rank data
+  # generation across 2 GPUs.
+  #
+  # Runner requirement: a self-hosted runner with >=2 GPUs.
+  # NVIDIA GHA runners follow the naming pattern
+  #   linux-amd64-gpu-<model>-latest-<gpu-count>
+  # so the 2-GPU variant of the existing rtxpro6000 runner would be:
+  #   linux-amd64-gpu-rtxpro6000-latest-2
+  # Confirm this label with your runner pool before enabling; if no 2-GPU
+  # runner exists the job will queue indefinitely.
+  #
+  # Runs only after merge to main (not on PR branches) to conserve GPU quota.
+  # ---------------------------------------------------------------------------
+  multi-gpu-tests:
+    needs: gpu-tests
+    runs-on: linux-amd64-gpu-rtxpro6000-latest-2
+    container:
+      image: ubuntu:24.04
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    timeout-minutes: 20
+    steps:
+      - name: Setup proxy cache
+        uses: nv-gha-runners/setup-proxy-cache@main
+        with:
+          enable-apt: true
+
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y git git-lfs python3 python3-pip python3-venv
+          git lfs install
+
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify 2 GPUs are visible
+        run: |
+          nvidia-smi
+          count=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
+          echo "GPU count: ${count}"
+          [ "${count}" -ge 2 ] || { echo "ERROR: expected >=2 GPUs, found ${count}"; exit 1; }
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m venv .venv_multigpu
+          . .venv_multigpu/bin/activate
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_train.txt
+
+      - name: Run multi-GPU unit tests
+        run: |
+          . .venv_multigpu/bin/activate
+          PYTHONPATH=code python -m unittest discover \
+            -s code/tests -p "test_multi_gpu.py" -v
+
+      - name: Multi-GPU smoke training (2 GPUs, DDP)
+        # smoke_run.sh hardcodes GPUS=1; call local_run.sh directly so we
+        # can pass GPUS=2 and exercise the torch.distributed.run path.
+        shell: bash
+        run: |
+          . .venv_multigpu/bin/activate
+          export PREDECODER_TIMING_RUN=1
+          export PREDECODER_DISABLE_SDR=1
+          export PREDECODER_LER_FINAL_ONLY=1
+          export PREDECODER_INFERENCE_NUM_SAMPLES=32
+          export PREDECODER_INFERENCE_LATENCY_SAMPLES=0
+          export PREDECODER_INFERENCE_MEAS_BASIS=both
+          export PREDECODER_INFERENCE_NUM_WORKERS=0
+          EXPERIMENT_NAME=ci_multi_gpu WORKFLOW=train GPUS=2 \
+            bash code/scripts/local_run.sh 2>&1 | tee /tmp/ci_multigpu_train.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          EXPERIMENT_NAME=ci_multi_gpu WORKFLOW=inference GPUS=2 \
+            bash code/scripts/local_run.sh 2>&1 | tee /tmp/ci_multigpu_infer.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          # [LER Validation] lines are emitted during training, not inference
+          python code/scripts/check_ler_from_log.py /tmp/ci_multigpu_train.log --max-ler 0.35
+        env:
+          PREDECODER_TRAIN_SAMPLES: "16384"
+          PREDECODER_VAL_SAMPLES: "2048"
+          PREDECODER_TEST_SAMPLES: "2048"
+          PREDECODER_TRAIN_EPOCHS: "2"
+
+  # ---------------------------------------------------------------------------
   # GPU coverage: captures GPU-specific code paths missed by the CPU coverage job
   # ---------------------------------------------------------------------------
   gpu-coverage:
