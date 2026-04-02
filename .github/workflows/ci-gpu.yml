@@ -46,8 +46,8 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
-        # cu126 = representative CUDA 12.x wheel; cu130 = CUDA 13.0 wheel.
-        torch-cuda: ["cu126", "cu130"]
+        # cu128 = representative CUDA 12.x wheel; cu130 = CUDA 13.0 wheel.
+        torch-cuda: ["cu128", "cu130"]
     name: "gpu / py${{ matrix.python-version }} / ${{ matrix.torch-cuda }}"
     steps:
       - name: Setup proxy cache
