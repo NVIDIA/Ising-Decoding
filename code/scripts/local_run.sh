@@ -24,6 +24,22 @@ set -euo pipefail
 #   GPUS=4 bash code/scripts/local_run.sh
 #   CUDA_VISIBLE_DEVICES=1 bash code/scripts/local_run.sh        # use only GPU 1
 #
+# ONNX / TRT fast inference (requires tensorrt; set ONNX_WORKFLOW before running):
+#   ONNX_WORKFLOW=1 WORKFLOW=inference bash code/scripts/local_run.sh          # export ONNX only (inspect/reuse later)
+#   ONNX_WORKFLOW=2 WORKFLOW=inference bash code/scripts/local_run.sh          # export ONNX + build TRT + run TRT inference
+#   ONNX_WORKFLOW=2 QUANT_FORMAT=int8 WORKFLOW=inference bash code/scripts/local_run.sh   # INT8 quantized TRT
+#   ONNX_WORKFLOW=2 QUANT_FORMAT=fp8  WORKFLOW=inference bash code/scripts/local_run.sh   # FP8 quantized TRT (requires nvidia-modelopt)
+#   ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh          # load pre-built engine, skip export
+#
+# Decoder ablation study with cudaq-qec global decoders (requires cudaq-qec):
+#   WORKFLOW=decoder_ablation bash code/scripts/local_run.sh
+#
+# Decoder ablation with TRT pre-decoder + cudaq-qec global decoders
+# (combines fast TRT inference for the neural pre-decoder with GPU-accelerated
+#  cudaq-qec decoders for the residual syndromes — full GPU pipeline end-to-end):
+#   ONNX_WORKFLOW=2 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh   # export+build TRT, then ablation
+#   ONNX_WORKFLOW=3 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh   # load existing engine, then ablation
+#
 # Notes:
 # - Public config is `conf/config_public.yaml`. Users should edit only that file.
 # - Training knobs are auto-managed in code (epochs, shots/epoch, batch schedule, etc.).
