@@ -770,6 +770,42 @@ class TestDecodeCudaqBatch(unittest.TestCase):
             self._fn(decoder, L_dense, syndromes)
             mock_decode.assert_not_called()
 
+    def test_decode_batch_exception_falls_back_to_loop(self):
+        """If decode_batch raises, per-sample decode is used and a warning is emitted."""
+        import warnings
+        from unittest.mock import patch
+        B = 3
+        decoder = _DummyCudaqDecoderBatch(self.n_bits)
+        L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+        with patch.object(decoder, 'decode_batch', side_effect=RuntimeError("gpu unavailable")):
+            with patch.object(decoder, 'decode', wraps=decoder.decode) as mock_decode:
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    obs, stats = self._fn(decoder, L_dense, syndromes)
+        self.assertEqual(mock_decode.call_count, B)
+        self.assertEqual(obs.shape, (B,))
+        self.assertEqual(len(caught), 1)
+        self.assertIn("gpu unavailable", str(caught[0].message))
+        self.assertIn("falling back", str(caught[0].message))
+
+    def test_no_decode_batch_attribute_uses_loop(self):
+        """Decoder without decode_batch falls back to per-sample loop via AttributeError."""
+        import warnings
+        from unittest.mock import patch
+        B = 3
+        decoder = _DummyCudaqDecoder(self.n_bits)  # no decode_batch
+        L_dense = np.zeros((1, self.n_bits), dtype=np.uint8)
+        syndromes = np.zeros((B, self.n_dets), dtype=np.uint8)
+        with patch.object(decoder, 'decode', wraps=decoder.decode) as mock_decode:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                obs, stats = self._fn(decoder, L_dense, syndromes)
+        self.assertEqual(mock_decode.call_count, B)
+        self.assertEqual(obs.shape, (B,))
+        self.assertEqual(len(caught), 1)
+        self.assertIn("falling back", str(caught[0].message))
+
 
 class TestBuildCudaqDecoders(unittest.TestCase):
     """_build_cudaq_decoders must return correctly keyed entries when cudaq_qec is available"""

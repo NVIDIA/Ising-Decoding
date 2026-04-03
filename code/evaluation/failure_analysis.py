@@ -18,6 +18,7 @@ to the same pre-decoder residual syndromes and compare logical error rates.
 """
 import os
 import random
+import warnings
 
 import numpy as np
 import torch
@@ -202,14 +203,14 @@ def _decode_cudaq_batch(decoder, L_dense, syndromes_np):
         for i in range(B):
             _unpack(i, decoder.decode(syndromes_f64[i].tolist()))
 
-    if hasattr(decoder, 'decode_batch'):
-        try:
-            for i, result in enumerate(decoder.decode_batch(syndromes_f64.tolist())):
-                _unpack(i, result)
-        except Exception:
-            _loop_decode()
-    else:
+    try:
+        results = decoder.decode_batch(syndromes_f64.tolist())
+    except Exception as exc:
+        warnings.warn(f"decode_batch failed ({exc}); falling back to per-sample loop")
         _loop_decode()
+    else:
+        for i, result in enumerate(results):
+            _unpack(i, result)
 
     obs = ((corrections.astype(np.int32) @ L_dense.T.astype(np.int32))[:, 0] % 2).astype(np.uint8)
     return obs, {"converged_flags": converged_flags, "iter_counts": iter_counts}
