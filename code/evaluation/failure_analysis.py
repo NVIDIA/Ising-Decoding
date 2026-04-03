@@ -746,7 +746,7 @@ def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets)
                     onnx_path
                     if not quant_format else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
                 )
-                # stim_dets already has shape (N, 2*T*half) — use it as sample input.
+                # stim_dets shape is (N, num_detectors) = (N, (2*T+1)*half) — use it as sample input.
                 example_dets = torch.from_numpy(stim_dets[:batch_size_onnx]
                                                ).to(device=device, dtype=torch.uint8)
                 torch.onnx.export(
@@ -799,7 +799,11 @@ def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets)
                 onnx_workflow = OnnxWorkflow.TORCH_ONLY
 
         if dist.world_size > 1:
-            torch.distributed.barrier()
+            # Broadcast rank 0's onnx_workflow (may have been set to TORCH_ONLY on
+            # export failure) so non-zero ranks skip the TRT build when rank 0 failed.
+            wf_list = [onnx_workflow]
+            torch.distributed.broadcast_object_list(wf_list, src=0)
+            onnx_workflow = wf_list[0]
         engine_path = onnx_path.replace(".onnx", ".engine")
 
         if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
@@ -1047,7 +1051,7 @@ def decoder_ablation_study(model, device, dist, cfg):
         _timing["collate"] += _time.perf_counter() - _t0
 
         if trt_context is not None:
-            # T derived from flat dets width: baseline_detectors_batch has shape (B, 2*T*half).
+            # T derived from flat dets width: shape is (B, (2*T+1)*half) incl. boundary detectors.
             T = baseline_detectors_batch.shape[1] // (2 * half)
         else:
             _, _, T = x_syn_diff.shape

@@ -1285,5 +1285,81 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
         self.assertLessEqual(self._result_x["agreement_count"], self._N)
 
 
+class TestDecoderAblationStudyExportAndBuildTRT(unittest.TestCase):
+    """
+    ONNX_WORKFLOW=2 (EXPORT_AND_USE_TRT): mock both torch.onnx.export and
+    tensorrt so the full export → engine-build → TRT-inference path runs
+    end-to-end without a GPU or a real ONNX model.
+    """
+
+    _D = 3
+    _T = 3
+    _N = 8
+
+    @classmethod
+    def setUpClass(cls):
+        from evaluation.failure_analysis import DECODER_NAMES
+        cls._decoder_names = DECODER_NAMES
+        cls._result = cls._run_once("X")
+
+    @classmethod
+    def _run_once(cls, basis="X"):
+        from evaluation.failure_analysis import decoder_ablation_study
+        from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
+        real_ds = QCDataPipePreDecoder_Memory_inference(
+            distance=cls._D,
+            n_rounds=cls._T,
+            num_samples=cls._N,
+            error_mode="circuit_level_surface_custom",
+            p_error=0.01,
+            measure_basis=basis,
+            code_rotation="XV",
+        )
+        circuit = real_ds.circ.stim_circuit
+        det_model = circuit.detector_error_model(
+            decompose_errors=True, approximate_disjoint_errors=True
+        )
+        mock_trt = _make_mock_trt_module(det_model.num_detectors)
+        mock_device = _MockCUDADevice()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _make_cfg(tmpdir, distance=cls._D, n_rounds=cls._T, basis=basis, n_samples=cls._N)
+            cfg.test.n_rounds = cls._T
+
+            def _fake_onnx_export(module, *args, **kwargs):
+                # Write an empty placeholder so the TRT parser can open the file.
+                f = kwargs.get("f") or (args[1] if len(args) > 1 else None)
+                if f:
+                    Path(f).touch()
+
+            with patch("data.factory.DatapipeFactory") as mf, \
+                 patch.dict("os.environ", {"ONNX_WORKFLOW": "2"}), \
+                 patch.dict("sys.modules", {"tensorrt": mock_trt}), \
+                 patch("os.getcwd", return_value=tmpdir), \
+                 patch("torch.onnx.export", side_effect=_fake_onnx_export), \
+                 _patch_tensor_to_for_mock_cuda():
+                mf.create_datapipe_inference.return_value = real_ds
+                result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
+        return result
+
+    def test_export_and_build_returns_correct_sample_count(self):
+        self.assertEqual(self._result["total_samples"], self._N)
+
+    def test_export_and_build_result_has_all_required_keys(self):
+        for key in (
+            "baseline_errors", "decoder_errors", "residual_weights", "weight_bucket_stats",
+            "agreement_count", "unavailable_decoders"
+        ):
+            self.assertIn(key, self._result)
+
+    def test_export_and_build_all_decoders_present(self):
+        self.assertTrue(
+            set(self._decoder_names).issubset(set(self._result["decoder_errors"].keys()))
+        )
+
+    def test_export_and_build_residual_weights_length(self):
+        self.assertEqual(len(self._result["residual_weights"]), self._N)
+
+
 if __name__ == "__main__":
     unittest.main()
