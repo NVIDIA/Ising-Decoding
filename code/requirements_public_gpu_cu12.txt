@@ -13,7 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI-only: test coverage reporting.
-# Install after requirements_public_inference.txt (or requirements_public_train-cuXY.txt)
-# when running the coverage job.
-coverage>=7.0
+# GPU environment for CUDA 12.x (cu12x family: cu121, cu128).
+# Adds cupy-cuda12x on top of the training requirements to enable zero-copy
+# DLPack GPU transfers in the cuStabilizer (BitMatrixSampler) path.
+#
+# Install PyTorch from the matching wheel index, e.g. for cu128:
+#   pip install -r requirements_public_gpu_cu12.txt \
+#     --index-url https://download.pytorch.org/whl/cu128 \
+#     --extra-index-url https://pypi.org/simple
+-r requirements_public_train-cu12.txt
+cupy-cuda12x

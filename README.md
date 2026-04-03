@@ -25,7 +25,7 @@ Target Python versions: **3.11, 3.12, 3.13**.
 Two minimal requirements files are provided:
 
 - `code/requirements_public_inference.txt` (Stim + PyTorch path)
-- `code/requirements_public_train.txt` (training path)
+- `code/requirements_public_train-cuXY.txt` (training path, where XY = 12 or 13)
 
 Install examples (virtual environment is optional but recommended):
 
@@ -41,8 +41,8 @@ export TORCH_CUDA=cu130
 # Inference-only (training install is a superset)
 pip install -r code/requirements_public_inference.txt
 
-# Training (includes inference deps)
-pip install -r code/requirements_public_train.txt
+# Training (includes inference deps, adjust to cu13 as appropriate)
+pip install -r code/requirements_public_train-cu12.txt
 
 bash code/scripts/check_python_compat.sh
 ```
@@ -173,6 +173,62 @@ Notes:
 - TensorRT workflows (`ONNX_WORKFLOW=2` or `3`) require `tensorrt` and `modelopt`.
 - FP8 quantization failure is fatal. INT8 failure falls back to the FP32 ONNX model silently.
 - ONNX and engine files are written to the current working directory.
+- `ONNX_WORKFLOW` is also honoured by the `decoder_ablation` workflow — see below.
+
+### Decoder ablation study with cudaq-qec (optional)
+
+The `decoder_ablation` workflow compares multiple global decoders on the residual syndromes left
+by the neural pre-decoder. It supports both PyTorch and TensorRT backends for the pre-decoder
+and GPU-accelerated global decoders from the `cudaq-qec` package (`cudaq_qec`).
+
+**PyTorch pre-decoder + cudaq-qec global decoders:**
+
+```bash
+# Requires: cudaq-qec (cudaq_qec), ldpc, beliefmatching, scipy
+WORKFLOW=decoder_ablation bash code/scripts/local_run.sh
+```
+
+**TRT pre-decoder + cudaq-qec global decoders (full GPU pipeline):**
+
+The same `ONNX_WORKFLOW` variable used for `inference` also applies here. When a TRT engine is
+active, the neural pre-decoder runs via TensorRT (fast, quantised inference) while `cudaq-qec`
+decoders handle the residual syndromes on GPU — combining fast TRT inference with
+GPU-accelerated global decoding end-to-end.
+
+```bash
+# Export ONNX, build TRT engine, run ablation (TRT pre-decoder + cudaq-qec)
+ONNX_WORKFLOW=2 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh
+
+# INT8 quantized TRT pre-decoder + cudaq-qec
+ONNX_WORKFLOW=2 QUANT_FORMAT=int8 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh
+
+# Load a previously built engine, then run ablation
+ONNX_WORKFLOW=3 WORKFLOW=decoder_ablation bash code/scripts/local_run.sh
+```
+
+The ablation study reports per-decoder logical error rates, convergence statistics for
+`cudaq-qec` BP variants, residual syndrome weight distributions, and timing breakdowns.
+Results are written to `outputs/<EXPERIMENT_NAME>/plots/`.
+
+**Decoder variants benchmarked:**
+
+| Decoder | Source | Notes |
+|---|---|---|
+| No-op | — | Pre-decoder output only, no global correction |
+| Union-Find | `ldpc` | Fast, sub-optimal |
+| BP-only | `ldpc` | Belief propagation, no OSD |
+| BP+LSD-0 | `ldpc` | BP with localized statistics decoding |
+| Uncorr-PM | PyMatching | Uncorrelated minimum-weight perfect matching |
+| Corr-PM | PyMatching | Correlated MWPM (best classical baseline) |
+| cudaq-BP | `cudaq-qec` | Sum-product BP on GPU |
+| cudaq-MinSum | `cudaq-qec` | Min-sum BP on GPU |
+| cudaq-BP+OSD-0/7 | `cudaq-qec` | BP + ordered statistics decoding |
+| cudaq-MemBP | `cudaq-qec` | Memory-based min-sum BP |
+| cudaq-MemBP+OSD | `cudaq-qec` | Memory BP + OSD |
+| cudaq-RelayBP | `cudaq-qec` | Sequential relay composition |
+
+`cudaq-qec` decoders are loaded automatically when `cudaq_qec` is importable; the study
+degrades gracefully to the non-cudaq decoders if the package is absent.
 
 ### GPU selection
 

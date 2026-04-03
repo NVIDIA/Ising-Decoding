@@ -13,7 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# CI-only: test coverage reporting.
-# Install after requirements_public_inference.txt (or requirements_public_train-cuXY.txt)
-# when running the coverage job.
-coverage>=7.0
+# GPU environment for CUDA 13.x (cu130+).
+# Adds cupy-cuda13x on top of the training requirements to enable zero-copy
+# DLPack GPU transfers in the cuStabilizer (BitMatrixSampler) path.
+#
+# Install PyTorch from the matching wheel index:
+#   pip install -r requirements_public_gpu_cu13.txt \
+#     --index-url https://download.pytorch.org/whl/cu130 \
+#     --extra-index-url https://pypi.org/simple
+-r requirements_public_train-cu13.txt
+cupy-cuda13x

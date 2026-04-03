@@ -260,7 +260,16 @@ class MemoryCircuitTorch:
             if self.device.type == "cuda":
                 torch.cuda.synchronize(self.device)
             t0 = time.perf_counter()
-        frames_xz = dem_sampling(self.H, self.p, int(batch_size))  # (B, 2*num_detectors)
+        device_id = None
+        if self.device.type == "cuda":
+            device_index = self.device.index
+            device_id = int(torch.cuda.current_device() if device_index is None else device_index)
+        frames_xz = dem_sampling(
+            self.H,
+            self.p,
+            int(batch_size),
+            device_id=device_id,
+        )  # (B, 2*num_detectors)
         meas_old = measure_from_stacked_frames(
             frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq
         )  # (B, R, m)

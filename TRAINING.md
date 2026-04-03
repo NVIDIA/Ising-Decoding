@@ -19,7 +19,7 @@ For local single-machine usage, see `README.md`.
 docker build -t predecoder-train .
 
 # Optionally, for a different CUDA version:
-docker build -t predecoder-train --build-arg TORCH_CUDA=cu124 .
+docker build -t predecoder-train --build-arg TORCH_CUDA=cu128 .
 
 # Train
 docker run --rm --gpus all \
@@ -156,7 +156,7 @@ export CONFIG_NAME=config_qec_decoder_r13_fp8
 |----------|---------|-------------|
 | `INSTALL_DIR` | `$HOME/predecoder_env` | Where `cluster_install_deps.sh` creates the Python environment. |
 | `PREDECODER_PYTHON` | auto-detect | Explicit path to the Python binary. |
-| `TORCH_CUDA` | `cu121` | PyTorch CUDA wheel tag (e.g. `cu121`, `cu124`, `cu130`). |
+| `TORCH_CUDA` | `cu121` | PyTorch CUDA wheel tag (e.g. `cu121`, `cu128`, `cu130`). |
 | `DOCKER_IMAGE` | `predecoder-train` | Pre-built Docker image name. |
 | `DOCKER_BASE_IMAGE` | `nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04` | Fallback CUDA base image. |
 | `SHARED_LOG_DIR` | `$SHARED_OUTPUT_DIR/logs` | Override the logs root directory (advanced). |
@@ -257,7 +257,7 @@ $SHARED_OUTPUT_DIR/
    - `--cpus-per-task=`, `--mem=`, `--time=` as appropriate
 
 2. **CUDA version**: set `TORCH_CUDA=cuXXX` to match your driver
-   (e.g. `cu121` for CUDA 12.1, `cu124` for CUDA 12.4).
+   (e.g. `cu121` for CUDA 12.1, `cu128` for CUDA 12.8).
 
 3. **Docker base image**: set `DOCKER_BASE_IMAGE` if your cluster uses a different CUDA runtime.
 

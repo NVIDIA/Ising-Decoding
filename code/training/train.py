@@ -1295,7 +1295,7 @@ def main(cfg: DictConfig) -> None:
             per_device_batch_size = get_current_per_device_batch_size(epoch, cfg)
             accumulate_steps = cfg.train.accumulate_steps
             effective_batch_size = per_device_batch_size * accumulate_steps * dist.world_size
-            steps_per_epoch = effective_num_samples // effective_batch_size
+            steps_per_epoch = effective_num_samples // (per_device_batch_size * dist.world_size)
 
             if dist.rank == 0:
                 print(
@@ -1425,7 +1425,6 @@ def main(cfg: DictConfig) -> None:
                         cfg=cfg,
                         generator=val_generator,
                         rank=dist.rank,
-                        sdr_as_percent=sdr_as_percent,
                     )
                     sdr_s = time.perf_counter() - t_sdr_start
                 # If multi-pair dict, reduce to a single scalar for logging (average over pairs).

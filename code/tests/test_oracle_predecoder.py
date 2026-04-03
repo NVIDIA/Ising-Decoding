@@ -29,6 +29,7 @@ import torch
 import numpy as np
 import pymatching
 
+import qec.dem_sampling as _dem_mod
 from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
 from qec.surface_code.memory_circuit import MemoryCircuit
 from qec.precompute_dem import precompute_dem_bundle_surface_code
@@ -378,6 +379,7 @@ class TestOraclePreDecoder(unittest.TestCase):
             device=self.device,
         )
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_residuals_zero_with_oracle_X_basis(self):
         """Using trainY as predictions, residual syndromes R_X and R_Z are zero (X basis)."""
         gen = self._make_generator("X")
@@ -393,6 +395,7 @@ class TestOraclePreDecoder(unittest.TestCase):
         )
         _assert_residuals_zero_oracle(R_X, R_Z, "X")
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_residuals_zero_with_oracle_Z_basis(self):
         """Using trainY as predictions, residual syndromes R_X and R_Z are zero (Z basis)."""
         gen = self._make_generator("Z")
@@ -408,6 +411,7 @@ class TestOraclePreDecoder(unittest.TestCase):
         )
         _assert_residuals_zero_oracle(R_X, R_Z, "Z")
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_residuals_zero_multiple_batches(self):
         """Residuals zero over several batches (stability check)."""
         for basis in ("X", "Z"):
@@ -425,6 +429,7 @@ class TestOraclePreDecoder(unittest.TestCase):
                 )
                 _assert_residuals_zero_oracle(R_X, R_Z, basis)
 
+    @unittest.skipUnless(_dem_mod._CUSTAB_AVAILABLE, "cuquantum>=26.3.0 (stabilizer) not available")
     def test_pymatching_no_logical_error_with_oracle(self):
         """
         With oracle predictions (trainY), residual is zero; residual + pre_L passed to

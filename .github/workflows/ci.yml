@@ -76,6 +76,30 @@ jobs:
           SKIP_TESTS: "0"
           PIP_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cpu"
 
+  # ---------------------------------------------------------------------------
+  # Multi-worker DataLoader: verifies the Stim inference datapipe works with
+  # num_workers > 0 (spawn multiprocessing context), matching the production
+  # default of num_workers=4 but never exercised in other CI jobs.
+  # ---------------------------------------------------------------------------
+  multiprocessing-dataloader:
+    runs-on: linux-amd64-cpu4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r code/requirements_public_inference.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+      - name: Run multi-worker DataLoader tests
+        run: >
+          PYTHONPATH=code python -m unittest discover
+          -s code/tests -p "test_dataloader_multiprocessing.py" -v
+
   unit-tests-coverage:
     runs-on: linux-amd64-cpu4
     steps:
