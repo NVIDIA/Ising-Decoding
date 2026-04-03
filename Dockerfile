@@ -5,7 +5,7 @@
 #
 # Build:
 #   docker build -t predecoder-train .
-#   docker build -t predecoder-train --build-arg TORCH_CUDA=cu124 .   # different CUDA
+#   docker build -t predecoder-train --build-arg TORCH_CUDA=cu128 .   # different CUDA
 #
 # Run:
 #   docker run --rm --gpus all \

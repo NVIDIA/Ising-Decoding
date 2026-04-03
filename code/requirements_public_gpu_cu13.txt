@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# GPU environment for CUDA 13.x (cu130+).
+# Adds cupy-cuda13x on top of the training requirements to enable zero-copy
+# DLPack GPU transfers in the cuStabilizer (BitMatrixSampler) path.
+#
+# Install PyTorch from the matching wheel index:
+#   pip install -r requirements_public_gpu_cu13.txt \
+#     --index-url https://download.pytorch.org/whl/cu130 \
+#     --extra-index-url https://pypi.org/simple
+-r requirements_public_train-cu13.txt
+cupy-cuda13x

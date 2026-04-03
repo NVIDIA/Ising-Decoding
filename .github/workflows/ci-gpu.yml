@@ -46,7 +46,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
-    name: "gpu / py${{ matrix.python-version }}"
+        # cu128 = representative CUDA 12.x wheel; cu130 = CUDA 13.0 wheel.
+        torch-cuda: ["cu128", "cu130"]
+    name: "gpu / py${{ matrix.python-version }} / ${{ matrix.torch-cuda }}"
     steps:
       - name: Setup proxy cache
         uses: nv-gha-runners/setup-proxy-cache@main
@@ -80,11 +82,14 @@ jobs:
           MODE: train
           SKIP_TESTS: "0"
           REQUIRE_GPU: "1"
+          TORCH_CUDA: ${{ matrix.torch-cuda }}
+          VENV_DIR: .venv_train_${{ matrix.python-version }}_${{ matrix.torch-cuda }}
+          REQ_FILE: code/requirements_public_gpu_${{ matrix.torch-cuda == 'cu130' && 'cu13' || 'cu12' }}.txt
 
       - name: Training + inference with LER check
         shell: bash
         run: |
-          source .venv_train_${{ matrix.python-version }}/bin/activate
+          source .venv_train_${{ matrix.python-version }}_${{ matrix.torch-cuda }}/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_train.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
           # 0.35: short run (16k samples, 2 epochs for stable LER across py versions)
@@ -99,7 +104,7 @@ jobs:
       - name: Training + inference with multi-worker DataLoader (num_workers=2)
         shell: bash
         run: |
-          source .venv_train_${{ matrix.python-version }}/bin/activate
+          source .venv_train_${{ matrix.python-version }}_${{ matrix.torch-cuda }}/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_multiworker.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
           python code/scripts/check_ler_from_log.py /tmp/ci_multiworker.log --max-ler 0.35
