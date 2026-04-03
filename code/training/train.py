@@ -687,38 +687,39 @@ def main(cfg: DictConfig) -> None:
     if getattr(cfg.train, "epochs", None) is None:
         cfg.train.epochs = 100
 
-    # Optional timing-mode overrides (env-based) for short measurement runs.
-    if os.environ.get("PREDECODER_TIMING_RUN", "0") == "1":
-        train_samples_env = os.environ.get("PREDECODER_TRAIN_SAMPLES")
-        val_samples_env = os.environ.get("PREDECODER_VAL_SAMPLES")
-        test_samples_env = os.environ.get("PREDECODER_TEST_SAMPLES")
-        epochs_env = os.environ.get("PREDECODER_TRAIN_EPOCHS")
-        try:
-            if train_samples_env:
-                cfg.train.num_samples = int(train_samples_env)
-        except Exception:
-            pass
-        try:
-            if val_samples_env:
-                cfg.val.num_samples = int(val_samples_env)
-        except Exception:
-            pass
-        try:
-            if test_samples_env:
-                cfg.test.num_samples = int(test_samples_env)
-        except Exception:
-            pass
-        try:
-            if epochs_env:
-                cfg.train.epochs = int(epochs_env)
-        except Exception:
-            pass
-        milestones_env = os.environ.get("PREDECODER_LR_MILESTONES")
-        try:
-            if milestones_env:
-                cfg.lr_scheduler.milestones = [float(x) for x in milestones_env.split(",")]
-        except Exception:
-            pass
+    # Env-based overrides for samples, epochs, and LR milestones.
+    # These apply unconditionally so that CI jobs and quick local runs can
+    # override config values without needing PREDECODER_TIMING_RUN=1.
+    train_samples_env = os.environ.get("PREDECODER_TRAIN_SAMPLES")
+    val_samples_env = os.environ.get("PREDECODER_VAL_SAMPLES")
+    test_samples_env = os.environ.get("PREDECODER_TEST_SAMPLES")
+    epochs_env = os.environ.get("PREDECODER_TRAIN_EPOCHS")
+    try:
+        if train_samples_env:
+            cfg.train.num_samples = int(train_samples_env)
+    except Exception:
+        pass
+    try:
+        if val_samples_env:
+            cfg.val.num_samples = int(val_samples_env)
+    except Exception:
+        pass
+    try:
+        if test_samples_env:
+            cfg.test.num_samples = int(test_samples_env)
+    except Exception:
+        pass
+    try:
+        if epochs_env:
+            cfg.train.epochs = int(epochs_env)
+    except Exception:
+        pass
+    milestones_env = os.environ.get("PREDECODER_LR_MILESTONES")
+    try:
+        if milestones_env:
+            cfg.lr_scheduler.milestones = [float(x) for x in milestones_env.split(",")]
+    except Exception:
+        pass
 
     if dist.rank == 0:
         print(f"Effective workflow.task: {cfg.workflow.task}")
