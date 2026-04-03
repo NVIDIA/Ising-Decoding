@@ -78,7 +78,7 @@ fi
 cd "$REPO_ROOT"
 
 # Use PyTorch CUDA index so torch is CUDA-built (on aarch64, PyPI serves CPU-only).
-# TORCH_CUDA e.g. cu121 or cu124; default cu121 to match nvidia/cuda:12.1 base image.
+# TORCH_CUDA e.g. cu121 or cu128; default cu121 to match nvidia/cuda:12.1 base image.
 PYTORCH_INDEX="https://download.pytorch.org/whl/${TORCH_CUDA}"
 echo "Installing requirements (torch from CUDA index: ${TORCH_CUDA})..."
 "$PYTHON_BIN" -m pip install -r code/requirements_public_train-cu${CUDA_MAJOR_VERSION}.txt \

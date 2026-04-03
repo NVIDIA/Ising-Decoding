@@ -25,7 +25,7 @@
 #   DOCKER_IMAGE        Pre-built Docker image name. (default: predecoder-train)
 #   DOCKER_BASE_IMAGE   Fallback CUDA base image for install-from-scratch.
 #                       (default: nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04)
-#   TORCH_CUDA          PyTorch CUDA wheel tag, e.g. cu121 or cu124.
+#   TORCH_CUDA          PyTorch CUDA wheel tag, e.g. cu121 or cu128.
 #   INSTALL_DIR         Where to install Python/venv on bare-metal nodes.
 #                       (default: $HOME/predecoder_env)
 #   PREDECODER_DISABLE_SDR  Set to 1 to skip SDR (useful for cluster runs).
