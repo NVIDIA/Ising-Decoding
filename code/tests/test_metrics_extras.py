@@ -14,6 +14,7 @@
 # limitations under the License.
 """Tests for evaluation.metrics (configure_metrics, _extract_reduction_factor)."""
 
+import inspect
 import sys
 import unittest
 from pathlib import Path
@@ -22,7 +23,7 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-from evaluation.metrics import configure_metrics, _extract_reduction_factor
+from evaluation.metrics import configure_metrics, _extract_reduction_factor, compute_syndrome_density
 
 
 class TestConfigureMetrics(unittest.TestCase):
@@ -63,3 +64,22 @@ class TestExtractReductionFactor(unittest.TestCase):
     def test_extract_from_nested_stim(self):
         result = {"other": 1, "stim": {"reduction factor (X/Z)": 2.5}}
         self.assertEqual(_extract_reduction_factor(result), 2.5)
+
+
+class TestComputeSyndromeDensitySignature(unittest.TestCase):
+    """Regression guard: sdr_as_percent must not appear in compute_syndrome_density().
+
+    This kwarg is a display-only flag owned by train.py (controls "%" vs "x" in log
+    output).  It has been accidentally passed to compute_syndrome_density() twice,
+    causing a TypeError that is only caught by long-running GPU tests.  This test
+    keeps the contract cheap to verify on every short CI run.
+    """
+
+    def test_sdr_as_percent_not_a_parameter(self):
+        sig = inspect.signature(compute_syndrome_density)
+        self.assertNotIn(
+            "sdr_as_percent",
+            sig.parameters,
+            "sdr_as_percent is a display-only flag in train.py and must not be added "
+            "to compute_syndrome_density(); passing it causes TypeError at runtime.",
+        )

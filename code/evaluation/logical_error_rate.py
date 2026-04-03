@@ -1055,6 +1055,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         pass
     except Exception:
         pass
+    # torch.compile + spawn workers causes a segfault (CUDA context conflict in
+    # spawned subprocesses after the model is compiled). Fall back to in-process
+    # loading when torch.compile has been applied.
+    if _applied_compile and int(test_loader_kwargs.get("num_workers", 0)) > 0:
+        test_loader_kwargs["num_workers"] = 0
     # Handle prefetch_factor when num_workers=0
     if test_loader_kwargs.get('num_workers', 0) == 0:
         test_loader_kwargs.pop('prefetch_factor', None)

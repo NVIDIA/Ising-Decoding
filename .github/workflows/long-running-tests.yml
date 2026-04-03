@@ -189,7 +189,8 @@ jobs:
           PREDECODER_TRAIN_SAMPLES: "32768"
           PREDECODER_VAL_SAMPLES: "4096"
           PREDECODER_TEST_SAMPLES: "4096"
-          PREDECODER_TRAIN_EPOCHS: "1"
+          PREDECODER_TRAIN_EPOCHS: "30"
+          PREDECODER_DISABLE_SDR: "1"
 
       - name: Multi-orientation inference (O1–O4) with LER output check
         shell: bash
