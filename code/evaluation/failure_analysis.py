@@ -23,8 +23,11 @@ import numpy as np
 import torch
 
 from evaluation.logical_error_rate import (
+    OnnxWorkflow,
+    PreDecoderMemoryEvalModule,
     _build_stab_maps,
     _decode_batch,
+    _parse_quant_format,
     map_grid_to_stabilizer_tensor,
     sample_predictions,
 )
@@ -676,6 +679,191 @@ def _print_ablation_results(
     _plot_conditional_ler(weight_bucket_stats, decoder_names, basis, cfg)
 
 
+def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets):
+    """
+    Parse ONNX_WORKFLOW and, when requested, build or load a TensorRT engine
+    for the pre-decoder.
+
+    Returns ``(trt_context, onnx_workflow)`` where *trt_context* is either a
+    ``(execution_context, engine)`` pair or ``None`` (PyTorch fallback).
+    """
+    trt_context = None
+    onnx_workflow = OnnxWorkflow.TORCH_ONLY
+    try:
+        onnx_workflow = OnnxWorkflow(int(os.environ.get("ONNX_WORKFLOW", "0").strip()))
+    except ValueError:
+        pass
+
+    if onnx_workflow == OnnxWorkflow.TORCH_ONLY:
+        return trt_context, onnx_workflow
+
+    code_rotation = getattr(cfg.data, "code_rotation", "XV")
+    maps_dict = _build_stab_maps(D, code_rotation)
+    pipeline_module = PreDecoderMemoryEvalModule(model, cfg, maps_dict, device).to(device)
+    pipeline_module.eval()
+
+    quant_format = _parse_quant_format(rank=dist.rank)
+    quant_suffix = f"_{quant_format}" if quant_format else ""
+    T_test = int(getattr(cfg.test, "n_rounds", cfg.n_rounds))
+    onnx_path = os.path.join(
+        os.getcwd(), f"predecoder_memory_d{D}_T{T_test}_{basis}{quant_suffix}.onnx"
+    )
+    engine_path = onnx_path.replace(".onnx", ".engine")
+    batch_size_onnx = int(getattr(cfg.test.dataloader, "batch_size", 2048))
+
+    if onnx_workflow == OnnxWorkflow.USE_ENGINE_ONLY and device.type == "cuda":
+        if os.path.isfile(engine_path):
+            try:
+                import tensorrt as trt
+                logger = trt.Logger(trt.Logger.WARNING)
+                runtime = trt.Runtime(logger)
+                t0 = _time.perf_counter()
+                with open(engine_path, "rb") as _f:
+                    serialized = _f.read()
+                engine = runtime.deserialize_cuda_engine(serialized)
+                if engine is None:
+                    raise RuntimeError("TensorRT engine deserialize failed")
+                trt_context = (engine.create_execution_context(), engine)
+                if dist.rank == 0:
+                    print(
+                        f"[Ablation] TensorRT engine loaded from {engine_path}"
+                        f" in {_time.perf_counter() - t0:.2f}s"
+                    )
+            except Exception as e:
+                if dist.rank == 0:
+                    print(f"[Ablation] TRT load failed: {e}; using PyTorch.")
+        else:
+            if dist.rank == 0:
+                print(
+                    f"[Ablation] ONNX_WORKFLOW=3 but engine not found: {engine_path};"
+                    " using PyTorch."
+                )
+
+    elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
+        if dist.rank == 0:
+            try:
+                fp32_onnx_path = (
+                    onnx_path
+                    if not quant_format else onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                )
+                # stim_dets shape is (N, num_detectors) = (N, (2*T+1)*half) — use it as sample input.
+                example_dets = torch.from_numpy(stim_dets[:batch_size_onnx]
+                                               ).to(device=device, dtype=torch.uint8)
+                torch.onnx.export(
+                    pipeline_module,
+                    example_dets,
+                    fp32_onnx_path,
+                    opset_version=18,
+                    external_data=False,
+                    input_names=["dets"],
+                    output_names=["L_and_residual_dets"],
+                    dynamic_axes={
+                        "dets": {
+                            0: "batch"
+                        },
+                        "L_and_residual_dets": {
+                            0: "batch"
+                        }
+                    },
+                    do_constant_folding=True,
+                    dynamo=False,
+                )
+                print(f"[Ablation] Exported FP32 ONNX: {fp32_onnx_path}")
+
+                if quant_format:
+                    calib_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
+                    calib_dets = stim_dets[:calib_samples].astype(np.uint8)
+                    try:
+                        import modelopt.onnx.quantization as mq
+                        quant_kwargs = {}
+                        if quant_format == "fp8":
+                            quant_kwargs["op_types_to_quantize"] = ["Conv"]
+                            quant_kwargs["high_precision_dtype"] = "fp16"
+                        mq.quantize(
+                            onnx_path=fp32_onnx_path,
+                            quantize_mode=quant_format,
+                            calibration_data={"dets": calib_dets.astype("float32")},
+                            output_path=onnx_path,
+                            **quant_kwargs,
+                        )
+                    except ImportError:
+                        if quant_format == "fp8":
+                            raise RuntimeError(
+                                "[Ablation] FP8 quantization requires nvidia-modelopt."
+                            )
+                        from evaluation.logical_error_rate import _ort_quantize_int8
+                        _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
+                    print(f"[Ablation] Exported quantized ONNX: {onnx_path}")
+            except Exception as e:
+                print(f"[Ablation] ONNX export failed: {e}; using PyTorch.")
+                onnx_workflow = OnnxWorkflow.TORCH_ONLY
+
+        if dist.world_size > 1:
+            # Broadcast rank 0's onnx_workflow (may have been set to TORCH_ONLY on
+            # export failure) so non-zero ranks skip the TRT build when rank 0 failed.
+            wf_list = [onnx_workflow]
+            torch.distributed.broadcast_object_list(wf_list, src=0)
+            onnx_workflow = wf_list[0]
+        engine_path = onnx_path.replace(".onnx", ".engine")
+
+        if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":
+            try:
+                import tensorrt as trt
+                logger = trt.Logger(trt.Logger.WARNING)
+                runtime = trt.Runtime(logger)
+                builder = trt.Builder(logger)
+                net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+                if quant_format in ("fp8", "int8"):
+                    net_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+                network = builder.create_network(net_flags)
+                parser = trt.OnnxParser(network, logger)
+                _onnx_to_parse = (
+                    onnx_path if os.path.isfile(onnx_path) else
+                    onnx_path.replace(f"_{quant_format}.onnx", ".onnx")
+                )
+                with open(_onnx_to_parse, "rb") as _f:
+                    if not parser.parse(_f.read()):
+                        raise RuntimeError("TensorRT ONNX parse failed")
+                config = builder.create_builder_config()
+                if not quant_format:
+                    config.set_flag(trt.BuilderFlag.FP16)
+                in_cols_trt = 2 * T_test * half
+                profile = builder.create_optimization_profile()
+                profile.set_shape(
+                    "dets",
+                    (1, in_cols_trt),
+                    (batch_size_onnx, in_cols_trt),
+                    (batch_size_onnx, in_cols_trt),
+                )
+                config.add_optimization_profile(profile)
+                t0_build = _time.perf_counter()
+                serialized = builder.build_serialized_network(network, config)
+                if serialized is None:
+                    raise RuntimeError("TensorRT build failed")
+                if dist.rank == 0:
+                    print(
+                        f"[Ablation] TRT engine built in"
+                        f" {_time.perf_counter() - t0_build:.1f}s"
+                    )
+                engine = runtime.deserialize_cuda_engine(serialized)
+                if dist.rank == 0:
+                    with open(engine_path, "wb") as _f:
+                        _f.write(engine.serialize())
+                    print(f"[Ablation] TRT engine saved to {engine_path}")
+                trt_context = (engine.create_execution_context(), engine)
+            except ImportError as e:
+                raise RuntimeError(
+                    "[Ablation] EXPORT_AND_USE_TRT requires tensorrt."
+                    " Install with: pip install tensorrt"
+                ) from e
+            except Exception as e:
+                if dist.rank == 0:
+                    print(f"[Ablation] TRT build failed: {e}; using PyTorch.")
+                trt_context = None
+
+    return trt_context, onnx_workflow
+
+
 @torch.inference_mode()
 def decoder_ablation_study(model, device, dist, cfg):
     """
@@ -760,6 +948,18 @@ def decoder_ablation_study(model, device, dist, cfg):
     Hx_idx, Hz_idx, Hx_mask, Hz_mask, stab_indices_x, stab_indices_z, Kx, Kz, Lx, Lz = \
         _build_logical_operators(D, code_rotation, device)
     D2 = D * D
+    half = (D * D - 1) // 2
+
+    # --- TRT/ONNX setup ---
+    # Honours the same ONNX_WORKFLOW env-var as the inference workflow:
+    #   0 = PyTorch only  1 = export ONNX (then use PyTorch)
+    #   2 = export ONNX + build TRT engine  3 = load pre-built engine
+    # When a TRT engine is active the pre-decoder runs at TRT speed while
+    # cudaq-qec decoders handle the residual syndromes on GPU — combining
+    # fast TRT inference with GPU-accelerated global decoding end-to-end.
+    trt_context, onnx_workflow = _setup_trt_for_ablation(
+        model, cfg, dist, device, basis, D, half, stim_dets
+    )
 
     if dist.rank == 0:
         print(
@@ -779,6 +979,11 @@ def decoder_ablation_study(model, device, dist, cfg):
             f"[Decoder Ablation] Decoders: No-op, Union-Find, BP+LSD-0,"
             f" Uncorr PM, Corr PM, {cudaq_names_str}, + Baseline PM"
         )
+        _backend = (
+            f"TRT (ONNX_WORKFLOW={onnx_workflow.value})"
+            if trt_context is not None else f"PyTorch (ONNX_WORKFLOW={onnx_workflow.value})"
+        )
+        print(f"[Decoder Ablation] Pre-decoder backend: {_backend}")
 
     # --- Batch loop ---
     batch_size = int(getattr(cfg.test.dataloader, "batch_size", 2048))
@@ -817,27 +1022,44 @@ def decoder_ablation_study(model, device, dist, cfg):
         } for cn in cudaq_decoder_names
     }
 
+    # Cache the fixed output column count (1 + num_detectors) so we avoid a
+    # per-batch engine query inside the hot loop.  The batch dimension is
+    # dynamic; index [1] always returns the constant column count.
+    _trt_out_ncols = None
+    if trt_context is not None:
+        _trt_ctx_pre, _ = trt_context
+        _trt_out_ncols = int(_trt_ctx_pre.get_tensor_shape("L_and_residual_dets")[1])
+
     for batch_idx in range(num_batches):
         start = batch_idx * batch_size
         end = min(start + batch_size, N)
         B = end - start
 
+        # Baseline detectors/obs are needed for both TRT and PyTorch paths.
+        baseline_detectors_batch = stim_dets[start:end]
+        gt_obs_batch = stim_obs[start:end]
+
         _t0 = _time.perf_counter()
-        items = [test_dataset[i] for i in range(start, end)]
-        x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]
-                                ).to(device=device, dtype=torch.int32)
-        z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]
-                                ).to(device=device, dtype=torch.int32)
-        trainX = torch.stack([it["trainX"] for it in items]).to(device=device)
+        if trt_context is None:
+            # PyTorch path: need preprocessed grid tensors from dataset items.
+            items = [test_dataset[i] for i in range(start, end)]
+            x_syn_diff = torch.stack([it["x_syn_diff"] for it in items]
+                                    ).to(device=device, dtype=torch.int32)
+            z_syn_diff = torch.stack([it["z_syn_diff"] for it in items]
+                                    ).to(device=device, dtype=torch.int32)
+            trainX = torch.stack([it["trainX"] for it in items]).to(device=device)
         _timing["collate"] += _time.perf_counter() - _t0
 
-        _, _, T = x_syn_diff.shape
+        if trt_context is not None:
+            # T derived from flat dets width: shape is (B, (2*T+1)*half) incl. boundary detectors.
+            T = baseline_detectors_batch.shape[1] // (2 * half)
+        else:
+            _, _, T = x_syn_diff.shape
         if T < 2:
             continue
 
-        # Baseline: raw Stim syndromes + ground truth
-        baseline_detectors_batch = stim_dets[start:end]
-        gt_obs_batch = stim_obs[start:end]
+        # Weight accumulation must happen after the T < 2 guard so that skipped
+        # batches do not inflate baseline weight counts.
         all_baseline_weights.extend(baseline_detectors_batch.sum(axis=1).tolist())
 
         _t0 = _time.perf_counter()
@@ -848,41 +1070,68 @@ def decoder_ablation_study(model, device, dist, cfg):
 
         gt_obs_np = gt_obs_batch.reshape(-1).astype(np.int64)
 
-        # Pre-decoder forward pass + residual syndrome construction
+        # Pre-decoder forward pass + residual syndrome construction.
+        # TRT path: feed raw dets directly to the TRT engine, which runs the full
+        # PreDecoderMemoryEvalModule pipeline (preprocessing → Conv3D → residual
+        # assembly) in a single optimised kernel graph.  The output L_and_residual_dets
+        # has the same layout as the PyTorch path: col 0 = pre_L, cols 1: = residual
+        # dets ready for cudaq-qec and other global decoders.
         _t0 = _time.perf_counter()
-        residual_np, pre_L_np = _model_forward_and_residual(
-            model,
-            trainX,
-            x_syn_diff,
-            z_syn_diff,
-            basis,
-            B,
-            D2,
-            T,
-            Hx_idx,
-            Hz_idx,
-            Hx_mask,
-            Hz_mask,
-            Kx,
-            Kz,
-            stab_indices_x,
-            stab_indices_z,
-            Lx,
-            Lz,
-            th_data,
-            th_syn,
-            sampling_mode,
-            temperature_data,
-            temperature_syn,
-            cfg,
-            device,
-            num_boundary_dets,
-            baseline_detectors_batch,
-            det_model,
-        )
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        _timing["residual_build"] += _time.perf_counter() - _t0
+        if trt_context is not None:
+            # Pinned-memory transfer avoids an intermediate CPU allocation and
+            # lets the H2D copy overlap with CPU work (non_blocking=True).
+            dets_batch = torch.as_tensor(baseline_detectors_batch, dtype=torch.uint8
+                                        ).pin_memory().to(device, non_blocking=True)
+            context, _engine = trt_context
+            context.set_input_shape("dets", dets_batch.shape)
+            L_and_residual_out = torch.empty((B, _trt_out_ncols), device=device, dtype=torch.uint8)
+            # Note: execute_v2 (binding-list API) is deprecated in TRT >= 10;
+            # migrate to set_tensor_address + execute_async_v3 when upgrading.
+            context.execute_v2(
+                bindings=[int(dets_batch.data_ptr()),
+                          int(L_and_residual_out.data_ptr())]
+            )
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            # Single D2H transfer then slice on CPU to avoid two round trips.
+            out_cpu = L_and_residual_out.cpu().numpy()
+            pre_L_np = out_cpu[:, 0].astype(np.int64)
+            residual_np = out_cpu[:, 1:]
+            _timing["model_fwd"] += _time.perf_counter() - _t0
+        else:
+            residual_np, pre_L_np = _model_forward_and_residual(
+                model,
+                trainX,
+                x_syn_diff,
+                z_syn_diff,
+                basis,
+                B,
+                D2,
+                T,
+                Hx_idx,
+                Hz_idx,
+                Hx_mask,
+                Hz_mask,
+                Kx,
+                Kz,
+                stab_indices_x,
+                stab_indices_z,
+                Lx,
+                Lz,
+                th_data,
+                th_syn,
+                sampling_mode,
+                temperature_data,
+                temperature_syn,
+                cfg,
+                device,
+                num_boundary_dets,
+                baseline_detectors_batch,
+                det_model,
+            )
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            _timing["residual_build"] += _time.perf_counter() - _t0
 
         weights = residual_np.sum(axis=1)
         all_residual_weights.extend(weights.tolist())
