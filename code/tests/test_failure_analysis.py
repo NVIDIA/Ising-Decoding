@@ -645,8 +645,8 @@ class _DummyCudaqDecoderBatch:
         return _DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64))
 
     def decode_batch(self, syndromes):
-        """Accept (B, n_dets) float64 array, return list of DecoderResults"""
-        B = syndromes.shape[0]
+        """Accept list-of-lists of float64, return list of DecoderResults"""
+        B = len(syndromes)
         return [_DummyCudaqResult(np.zeros(self._n_bits, dtype=np.float64)) for _ in range(B)]
 
 

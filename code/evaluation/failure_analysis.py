@@ -204,7 +204,7 @@ def _decode_cudaq_batch(decoder, L_dense, syndromes_np):
 
     if hasattr(decoder, 'decode_batch'):
         try:
-            for i, result in enumerate(decoder.decode_batch(syndromes_f64)):
+            for i, result in enumerate(decoder.decode_batch(syndromes_f64.tolist())):
                 _unpack(i, result)
         except Exception:
             _loop_decode()
