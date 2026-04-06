@@ -142,8 +142,8 @@ def dem_sampling(
     # BitMatrixSampler's internal RNG is reset to that seed, giving bit-for-bit
     # reproducibility across repeated calls with the same seed value.
     need_new = (
-        _cached_sampler is None or batch_size > _cached_max_shots
-        or _cached_device_id != device_id or seed is not None
+        _cached_sampler is None or batch_size > _cached_max_shots or
+        _cached_device_id != device_id or seed is not None
     )
 
     if need_new:
