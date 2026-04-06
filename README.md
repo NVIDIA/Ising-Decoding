@@ -61,6 +61,7 @@ WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
 Inference note:
+
 - On bare metal, keep the default DataLoader workers.
 - In containers, set a larger shared-memory size (e.g., `docker run --shm-size=1g ...`).
 - If you cannot change `--shm-size`, set `PREDECODER_INFERENCE_NUM_WORKERS=0` to avoid shared-memory worker crashes.
@@ -83,6 +84,7 @@ Inference note:
 If you are not training locally, you can run inference using pre-trained models.
 
 1. **(Optional) create a venv and install inference deps**:
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -90,18 +92,20 @@ python -m pip install --upgrade pip
 pip install -r code/requirements_public_inference.txt
 ```
 
-2. **Get the pre-trained models**  
+1. **Get the pre-trained models**
    This repo ships two pre-trained model files (tracked with Git LFS):
    - `models/PreDecoderModelMemory_r9_v1.0.77.pt` (receptive field R=9, checkpoint 77)
    - `models/PreDecoderModelMemory_r13_v1.0.86.pt` (receptive field R=13, checkpoint 86)
 
    Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
-3. Set:
+2. Set:
+
 - `EXPERIMENT_NAME=predecoder_model_1`
 - `model_id: 1` in `conf/config_public.yaml`
 
-4. **Run inference**:
+1. **Run inference**:
+
 ```bash
 WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
 ```
@@ -387,8 +391,6 @@ LOGICAL Z (lz):
  ●  ·  ·
 ```
 
-
-
 #### Noise model (public default)
 
 - `data.noise_model`: a **25-parameter circuit-level** noise model (SPAM, idles, and CNOT Pauli channels).
@@ -441,7 +443,6 @@ Either method causes the training pipeline to use the user-specified noise model
 [Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or PREDECODER_SKIP_NOISE_UPSCALING=1).
 ```
 
-
 ### Precomputed frames (recommended)
 
 Training/validation data generation can load precomputed frames from:
@@ -456,10 +457,8 @@ python3 code/data/precompute_frames.py --distance 13 --n_rounds 13 --basis X Z -
 
 ### Resuming training & running inference on a trained model
 
-
 - **Inference uses the trained model from `outputs/<experiment_name>/models/`**, so keep the same `EXPERIMENT_NAME` when you switch from training to inference.
 - **Training auto-resumes**: if a run is interrupted, launching the same training command again (same `EXPERIMENT_NAME`) will automatically load the latest checkpoint it finds and continue training (up to the fixed 100 epochs). To force a clean restart, set `FRESH_START=1`, although we recommend changing `EXPERIMENT_NAME` instead.
-
 
 ### What gets written where
 
@@ -520,6 +519,7 @@ PYTHONPATH=code python -m unittest discover -s code/tests -p "test_*.py"
 ```
 
 Useful env vars for noise model tests:
+
 - `RUN_SLOW=1` enables >=100k-shot statistical tests
 - `NOISEMODEL_FAST_SHOTS` controls fast-tier shots (default 10000)
 - `NOISEMODEL_SLOW_SHOTS` controls slow-tier shots (default 100000)
