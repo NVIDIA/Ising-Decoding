@@ -129,7 +129,7 @@ def find_best_model(path, *, rank: int = 0):
             print(f"  [{marker}] {filename} (epoch {epoch})")
 
     if best_file is None:
-        raise FileNotFoundError(f"No valid PreDecoderModelMemory files found in {path}")
+        raise FileNotFoundError(f"No valid model checkpoint files found in {path}")
 
     best_model_path = os.path.join(path, best_file)
     if rank == 0:
@@ -209,6 +209,24 @@ def _load_model(cfg, dist):
 
         if metadata.get("quant_format") == "fp16":
             cfg.enable_fp16 = True
+        return model
+
+    # Direct file path override (for named pretrained models without epoch numbers)
+    model_checkpoint_file = getattr(cfg, 'model_checkpoint_file', None)
+    if model_checkpoint_file:
+        model_checkpoint_file = _resolve_dir(str(model_checkpoint_file))
+        if not os.path.exists(model_checkpoint_file):
+            raise FileNotFoundError(f"Checkpoint not found: {model_checkpoint_file}")
+        if dist.rank == 0:
+            print(f"Loading model from: {model_checkpoint_file}")
+        model = ModelFactory.create_model(cfg).to(dist.device)
+        if cfg.enable_fp16:
+            model = model.half()
+        state_dict = _load_state_dict_from_pt(model_checkpoint_file, dist.device)
+        model.load_state_dict(state_dict)
+        if dist.rank == 0:
+            param_count = sum(p.numel() for p in model.parameters())
+            print(f"Model loaded ({param_count:,} parameters)")
         return model
 
     model = ModelFactory.create_model(cfg).to(dist.device)
