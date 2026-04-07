@@ -7,7 +7,7 @@ For local single-machine usage, see `README.md`.
 ## Prerequisites
 
 - Docker with NVIDIA GPU support (`nvidia-docker` / `--gpus`)
-- One or more NVIDIA GPUs (H100, A100, or similar)
+- One or more NVIDIA GPUs (B200, H200 or similar)
 - A persistent directory for checkpoints and logs
 
 ## Quick start (Docker — recommended)
