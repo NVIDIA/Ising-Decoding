@@ -92,8 +92,8 @@ pip install -r code/requirements_public_inference.txt
 
 2. **Get the pre-trained models**  
    This repo ships two pre-trained model files (tracked with Git LFS):
-   - `models/PreDecoderModelMemory_r9_v1.0.77.pt` (receptive field R=9, checkpoint 77)
-   - `models/PreDecoderModelMemory_r13_v1.0.86.pt` (receptive field R=13, checkpoint 86)
+   - `models/Ising-Decoder-SurfaceCode-1-Fast.pt` (receptive field R=9)
+   - `models/Ising-Decoder-SurfaceCode-1-Accurate.pt` (receptive field R=13)
 
    Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 

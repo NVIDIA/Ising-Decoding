@@ -39,13 +39,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_DIR = REPO_ROOT / "models"
 
 MODEL_R9 = {
-    "filename": "PreDecoderModelMemory_r9_v1.0.77.pt",
-    "checkpoint": 77,
+    "filename": "Ising-Decoder-SurfaceCode-1-Fast.pt",
     "model_id": 1,
 }
 MODEL_R13 = {
-    "filename": "PreDecoderModelMemory_r13_v1.0.86.pt",
-    "checkpoint": 86,
+    "filename": "Ising-Decoder-SurfaceCode-1-Accurate.pt",
     "model_id": 4,
 }
 
@@ -74,8 +72,7 @@ def _run_inference_rtest(distance: int, n_rounds: int, model_info: dict):
             f"Missing model file: {model_file}. It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file."
         )
 
-    merged.model_checkpoint_dir = str(model_file.parent)
-    merged.test.use_model_checkpoint = model_info["checkpoint"]
+    merged.model_checkpoint_file = str(model_file)
     merged.test.latency_num_samples = 0
     merged.test.verbose_inference = False
     if "dataloader" in merged.test:
