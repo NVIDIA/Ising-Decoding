@@ -1,6 +1,6 @@
-# AI pre-decoder for surface-code memory circuits
+# Ising Decoding
 
-This repo implements a **pre-decoder** for surface-code memory experiments:
+This repo offers AI training frameworks and recipes to build, customize and deploy scalable quantum error correction **decoders**:
 
 - A neural network consumes detector syndromes across space **and** time
 - It predicts corrections that reduce syndrome density / improve decoding
