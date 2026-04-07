@@ -20,11 +20,11 @@ when you need to provide them in SafeTensors format (e.g. for inference or downs
 
 Usage:
     PYTHONPATH=code python code/export/checkpoint_to_safetensors.py \\
-        --checkpoint models/PreDecoderModelMemory_r9_v1.0.77.pt \\
+        --checkpoint models/Ising-Decoder-SurfaceCode-1-Fast.pt \\
         --model-id 1 [--fp16]
 
 Then run inference with:
-    PREDECODER_SAFETENSORS_CHECKPOINT=models/PreDecoderModelMemory_r9_v1.0.77_fp16.safetensors \\
+    PREDECODER_SAFETENSORS_CHECKPOINT=models/Ising-Decoder-SurfaceCode-1-Fast_fp16.safetensors \\
     WORKFLOW=inference DISTANCE=9 N_ROUNDS=9 EXPERIMENT_NAME=predecoder_model_1 \\
     bash code/scripts/local_run.sh
 """
