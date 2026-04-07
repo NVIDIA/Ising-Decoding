@@ -18,6 +18,7 @@ to the same pre-decoder residual syndromes and compare logical error rates.
 """
 import os
 import random
+import warnings
 
 import numpy as np
 import torch
@@ -179,27 +180,39 @@ def _build_cudaq_decoders(det_model):
 
 def _decode_cudaq_batch(decoder, L_dense, syndromes_np):
     """
-    Decode a batch of syndromes with a cudaq-qec nv-qldpc-decoder (single-shot loop).
+    Decode a batch of syndromes with a cudaq-qec nv-qldpc-decoder.
     Returns (obs, stats) where:
       - obs: observable predictions as np.ndarray of shape (B,)
       - stats: dict with per-sample convergence flags, iteration counts
-    The decoder.decode() takes list[float] and returns DecoderResult with .result (list[float]).
     """
     B = syndromes_np.shape[0]
-    obs = np.zeros(B, dtype=np.uint8)
+    n_bits = L_dense.shape[1]
     converged_flags = np.zeros(B, dtype=bool)
     iter_counts = np.zeros(B, dtype=np.int32)
-    for i in range(B):
-        syndrome_list = syndromes_np[i].astype(np.float64).tolist()
-        result = decoder.decode(syndrome_list)
-        correction = np.array(result.result, dtype=np.uint8)
-        obs[i] = int((L_dense @ correction).item() %
-                     2) if L_dense.shape[0] == 1 else int((L_dense @ correction)[0] % 2)
+    corrections = np.empty((B, n_bits), dtype=np.uint8)
+    syndromes_f64 = np.ascontiguousarray(syndromes_np, dtype=np.float64)
+
+    def _unpack(i, result):
+        corrections[i] = np.array(result.result, dtype=np.uint8)
         converged_flags[i] = result.converged
-        # Collect iteration count if available via opt_results
         opt = getattr(result, 'opt_results', None)
         if opt and isinstance(opt, dict) and 'num_iter' in opt:
             iter_counts[i] = opt['num_iter']
+
+    def _loop_decode():
+        for i in range(B):
+            _unpack(i, decoder.decode(syndromes_f64[i].tolist()))
+
+    try:
+        results = decoder.decode_batch(syndromes_f64.tolist())
+    except Exception as exc:
+        warnings.warn(f"decode_batch failed ({exc}); falling back to per-sample loop")
+        _loop_decode()
+    else:
+        for i, result in enumerate(results):
+            _unpack(i, result)
+
+    obs = ((corrections.astype(np.int32) @ L_dense.T.astype(np.int32))[:, 0] % 2).astype(np.uint8)
     return obs, {"converged_flags": converged_flags, "iter_counts": iter_counts}
 
 
@@ -249,20 +262,17 @@ def _build_ldpc_decoders(det_model):
 
 def _decode_ldpc_batch(decoder, L_dense, syndromes_np):
     """
-    Decode a batch of syndromes with an ldpc decoder (single-shot loop).
+    Decode a batch of syndromes with an ldpc decoder.
     Returns observable predictions as np.ndarray of shape (B,).
     """
     B = syndromes_np.shape[0]
-    obs = np.zeros(B, dtype=np.uint8)
+    n_bits = L_dense.shape[1]
+    syndromes_c = np.ascontiguousarray(syndromes_np, dtype=np.uint8)
+    corrections = np.empty((B, n_bits), dtype=np.uint8)
     for i in range(B):
-        # Get the most-likely error configuration from the decoder for this syndrome.
-        correction = decoder.decode(syndromes_np[i])
-        # Project the correction onto the logical observable via L_dense (mod 2).
-        # L_dense has shape (num_obs, num_errors); the first observable row is used.
-        obs[i] = (
-            int((L_dense @ correction).item() %
-                2) if L_dense.shape[0] == 1 else int((L_dense @ correction)[0] % 2)
-        )
+        corrections[i] = decoder.decode(syndromes_c[i])
+
+    obs = ((corrections.astype(np.int32) @ L_dense.T.astype(np.int32))[:, 0] % 2).astype(np.uint8)
     return obs
 
 
