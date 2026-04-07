@@ -59,6 +59,7 @@ _cached_H: "torch.Tensor | None" = None
 _cached_HT: "torch.Tensor | None" = None
 _cached_max_shots: int = 0
 _cached_device_id: int | None = None
+_cached_seed: "int | None" = None
 
 _DEM_TIMINGS_S: deque[float] = deque(maxlen=200)
 _custab_path_logged: bool = False
@@ -75,19 +76,21 @@ def get_dem_sampling_avg_ms() -> float:
 
 def _reset_sampler_cache() -> None:
     """Reset the module-level sampler cache."""
-    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _cached_device_id
+    global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots, _cached_device_id, _cached_seed
     _cached_sampler = None
     _cached_H = None
     _cached_HT = None
     _cached_max_shots = 0
     _cached_device_id = None
+    _cached_seed = None
 
 
 def dem_sampling(
     H: torch.Tensor,
     p: torch.Tensor,
     batch_size: int,
-    device_id: int | None = None
+    device_id: int | None = None,
+    seed: int | None = None,
 ) -> torch.Tensor:
     """
     Sample errors from a detector error model (DEM) via cuST BitMatrixSampler.
@@ -98,6 +101,10 @@ def dem_sampling(
         batch_size: int - Number of samples to generate
         device_id: Optional int - Device ID for cuST. If omitted, infer from
             H.device when H is on CUDA.
+        seed: Optional int - RNG seed passed directly to BitMatrixSampler.
+            When provided, a fresh sampler is created with that seed so repeated
+            calls with the same seed produce identical outputs.
+            When None (default), the cached sampler is reused across calls.
 
     Returns:
         frames_xz: (batch_size, 2*num_detectors) uint8 - Detector outcomes
@@ -106,7 +113,7 @@ def dem_sampling(
     from cuquantum.stabilizer.simulator import Options
 
     global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
-    global _cached_device_id, _custab_path_logged
+    global _cached_device_id, _cached_seed, _custab_path_logged
 
     if H.ndim != 2:
         raise ValueError(f"H must be 2-D, got ndim={H.ndim}")
@@ -129,9 +136,14 @@ def dem_sampling(
         _cached_H = H
         _cached_sampler = None
         _cached_device_id = None
+        _cached_seed = None
 
+    # When a seed is given always create a fresh sampler so its internal RNG is
+    # reset to that seed, giving identical outputs on repeated calls with the
+    # same seed value (per the BitMatrixSampler constructor contract).
     need_new = (
-        _cached_sampler is None or batch_size > _cached_max_shots or _cached_device_id != device_id
+        _cached_sampler is None or batch_size > _cached_max_shots or
+        _cached_device_id != device_id or seed is not None
     )
 
     if need_new:
@@ -146,15 +158,13 @@ def dem_sampling(
             H_in = _cached_HT.detach().cpu().numpy().astype(np.uint8)
             p_in = p.detach().cpu().numpy().astype(np.float64)
             pkg = "numpy"
-        _cached_sampler = BitMatrixSampler(
-            H_in,
-            p_in,
-            max_shots,
-            package=pkg,
-            options=Options(device_id=device_id),
-        )
+        bms_kwargs: dict = {"package": pkg, "options": Options(device_id=device_id)}
+        if seed is not None:
+            bms_kwargs["seed"] = seed
+        _cached_sampler = BitMatrixSampler(H_in, p_in, max_shots, **bms_kwargs)
         _cached_max_shots = max_shots
         _cached_device_id = device_id
+        _cached_seed = seed
 
     t0 = time.perf_counter()
     if gpu_native:
