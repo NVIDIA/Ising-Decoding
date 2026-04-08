@@ -335,6 +335,97 @@ class TestNoiseModel(unittest.TestCase):
             "Expected NO CNOT noise instructions in logical-measurement section"
         )
 
+    def test_no_double_measurement_noise_in_final_data_qubit_readout(self):
+        """
+        Regression test for double measurement-noise injection on data qubits at the end of
+        MemoryCircuit.__init__ when using the 25-parameter NoiseModel.
+
+        _add_stabilizer_round(logical_measurement=True) injects a single "fake SPAM" error on
+        data qubits (time-reversed p_meas) and then restores self.noise_model before returning.
+        Without the fix the subsequent add_measure(data_qubits) call at the __init__ call site
+        would see a non-None noise_model and inject the same p_meas channel a *second* time,
+        creating phantom DEM error entries that bias LER/threshold estimates.
+
+        The fix suppresses noise_model around that add_measure call.  This test verifies that
+        the post-REPEAT circuit section contains exactly ONE measurement-error injection on data
+        qubits (the legitimate fake-SPAM line), not two.
+        """
+        D = 3
+        T = 3  # n_rounds must be >= 3 for the circuit to use a REPEAT block
+        nm = NoiseModel(
+            p_prep_X=0.01,
+            p_prep_Z=0.02,
+            p_meas_X=0.03,  # non-zero: triggers double-injection if bug is present
+            p_meas_Z=0.04,
+            p_idle_cnot_X=0.002,
+            p_idle_cnot_Y=0.001,
+            p_idle_cnot_Z=0.003,
+            p_idle_spam_X=0.002,
+            p_idle_spam_Y=0.001,
+            p_idle_spam_Z=0.003,
+            **{f"p_cnot_{k}": 0.0005 for k in CNOT_ERROR_TYPES}
+        )
+
+        for basis in ("X", "Z"):
+            circ = MemoryCircuit(
+                distance=D,
+                idle_error=nm.get_max_probability(),
+                sqgate_error=nm.get_max_probability(),
+                tqgate_error=nm.get_max_probability(),
+                spam_error=nm.get_max_probability(),
+                n_rounds=T,
+                basis=basis,
+                noise_model=nm,
+                code_rotation="XV",
+            )
+            circ.set_error_rates()
+
+            # Isolate the circuit section that appears after the REPEAT block.
+            lines = circ.circuit.split("\n")
+            in_repeat = False
+            after_repeat = False
+            post_repeat_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("REPEAT"):
+                    in_repeat = True
+                    continue
+                if in_repeat and stripped == "}":
+                    in_repeat = False
+                    after_repeat = True
+                    continue
+                if after_repeat:
+                    post_repeat_lines.append(stripped)
+
+            # Basis-labelled semantics for data-qubit readout failure:
+            #   X-basis measurement error -> Z_ERROR(p_meas_X)
+            #   Z-basis measurement error -> X_ERROR(p_meas_Z)
+            # The only legitimate occurrence in the post-REPEAT section is the single fake-SPAM
+            # injection inside _add_stabilizer_round(logical_measurement=True).  A second line
+            # with the same instruction is the regression.
+            if basis == "X":
+                error_instr = "Z_ERROR"
+                p_meas = float(nm.p_meas_X)
+            else:
+                error_instr = "X_ERROR"
+                p_meas = float(nm.p_meas_Z)
+
+            meas_error_lines = [l for l in post_repeat_lines if l.startswith(error_instr)]
+            self.assertEqual(
+                len(meas_error_lines), 1,
+                f"basis={basis}: expected exactly 1 {error_instr} line in post-REPEAT section "
+                f"(fake-SPAM only), got {len(meas_error_lines)}. "
+                f"Double injection would indicate the noise_model suppression fix is missing. "
+                f"Lines: {meas_error_lines}"
+            )
+            # Confirm the single line carries the correct probability.
+            expected_prefix = f"{error_instr}({p_meas:.10f})"
+            self.assertTrue(
+                meas_error_lines[0].startswith(expected_prefix),
+                f"basis={basis}: expected {error_instr} with p={p_meas:.10f}, "
+                f"got: {meas_error_lines[0]}"
+            )
+
 
 class TestNoiseModelUpscaling(unittest.TestCase):
     """Tests for surface-code training noise model upscaling (get_training_upscaled_noise_model)."""
