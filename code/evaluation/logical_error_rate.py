@@ -1232,15 +1232,26 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 runtime = trt.Runtime(logger)
                 builder = trt.Builder(logger)
                 net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-                if quant_format in ("fp8", "int8"):
-                    net_flags |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+                # NOTE: STRONGLY_TYPED is intentionally NOT set for fp8/int8.
+                # With Conv-only QDQ nodes, STRONGLY_TYPED forces TRT to insert explicit
+                # FP16↔FP8 casts at every Conv boundary, preventing Conv+BN+ReLU fusion
+                # and adding per-layer cast kernels that regress throughput ~25-35%.
+                # Instead, use BuilderFlag.FP8/INT8 to enable quantized kernels while
+                # allowing TRT to optimize precision boundaries freely (QDQ nodes serve
+                # as calibration hints rather than hard type constraints).
                 network = builder.create_network(net_flags)
                 parser = trt.OnnxParser(network, logger)
                 with open(onnx_path, "rb") as f:
                     if not parser.parse(f.read()):
                         raise RuntimeError("TensorRT ONNX parse failed")
                 config = builder.create_builder_config()
-                if not quant_format:
+                if quant_format == "fp8":
+                    config.set_flag(trt.BuilderFlag.FP8)
+                    config.set_flag(trt.BuilderFlag.FP16)
+                elif quant_format == "int8":
+                    config.set_flag(trt.BuilderFlag.INT8)
+                    config.set_flag(trt.BuilderFlag.FP16)
+                else:
                     config.set_flag(trt.BuilderFlag.FP16)
                 # Uncomment to speedup engine build time:
                 # config.builder_optimization_level = 0
