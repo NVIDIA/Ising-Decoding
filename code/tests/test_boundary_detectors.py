@@ -347,8 +347,7 @@ class TestLERComparison(unittest.TestCase):
         # reliably detectable (~3σ) at these sample sizes and noise levels, so a genuine
         # regression in BD logic would be caught here.
         self.assertLessEqual(
-            ler_with_bd,
-            ler_no_bd * 1.5,
+            ler_with_bd, ler_no_bd * 1.5,
             f"BD degraded LER by more than 1.5x: no_bd={ler_no_bd:.4e}, with_bd={ler_with_bd:.4e}"
         )
 
@@ -412,8 +411,7 @@ class TestLERComparison(unittest.TestCase):
                 pred_with_bd = matcher_with_bd.decode_batch(samples_with_bd)
                 ler_with_bd = np.sum(pred_with_bd != obs_with_bd) / num_samples
                 self.assertLessEqual(
-                    ler_with_bd,
-                    ler_no_bd * 1.5,
+                    ler_with_bd, ler_no_bd * 1.5,
                     f"rotation={rotation}: BD degraded LER by more than 1.5x: "
                     f"no_bd={ler_no_bd:.4e}, with_bd={ler_with_bd:.4e}"
                 )
