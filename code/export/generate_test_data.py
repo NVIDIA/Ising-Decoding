@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """
 Generate test data for the pre-decoder evaluation pipeline.
 
@@ -89,6 +88,7 @@ from beliefmatching.belief_matching import detector_error_model_to_check_matrice
 # which pulls in data_mapping → torch.  We only need memory_circuit.py
 # (numpy + stim) and noise_model.py, so we bypass the package __init__.
 import importlib, types
+
 _sc_pkg = types.ModuleType("qec.surface_code")
 _sc_pkg.__path__ = [str(Path(__file__).resolve().parent.parent / "qec" / "surface_code")]
 _sc_pkg.__package__ = "qec.surface_code"
@@ -99,23 +99,39 @@ from qec.noise_model import NoiseModel
 
 # Default 25-parameter noise model matching config_public.yaml at p=0.003
 DEFAULT_NOISE_PARAMS = {
-    "p_prep_X": 0.002, "p_prep_Z": 0.002,
-    "p_meas_X": 0.002, "p_meas_Z": 0.002,
-    "p_idle_cnot_X": 0.001, "p_idle_cnot_Y": 0.001, "p_idle_cnot_Z": 0.001,
-    "p_idle_spam_X": 0.001998, "p_idle_spam_Y": 0.001998, "p_idle_spam_Z": 0.001998,
-    "p_cnot_IX": 0.0002, "p_cnot_IY": 0.0002, "p_cnot_IZ": 0.0002,
-    "p_cnot_XI": 0.0002, "p_cnot_XX": 0.0002, "p_cnot_XY": 0.0002,
-    "p_cnot_XZ": 0.0002, "p_cnot_YI": 0.0002, "p_cnot_YX": 0.0002,
-    "p_cnot_YY": 0.0002, "p_cnot_YZ": 0.0002, "p_cnot_ZI": 0.0002,
-    "p_cnot_ZX": 0.0002, "p_cnot_ZY": 0.0002, "p_cnot_ZZ": 0.0002,
+    "p_prep_X": 0.002,
+    "p_prep_Z": 0.002,
+    "p_meas_X": 0.002,
+    "p_meas_Z": 0.002,
+    "p_idle_cnot_X": 0.001,
+    "p_idle_cnot_Y": 0.001,
+    "p_idle_cnot_Z": 0.001,
+    "p_idle_spam_X": 0.001998,
+    "p_idle_spam_Y": 0.001998,
+    "p_idle_spam_Z": 0.001998,
+    "p_cnot_IX": 0.0002,
+    "p_cnot_IY": 0.0002,
+    "p_cnot_IZ": 0.0002,
+    "p_cnot_XI": 0.0002,
+    "p_cnot_XX": 0.0002,
+    "p_cnot_XY": 0.0002,
+    "p_cnot_XZ": 0.0002,
+    "p_cnot_YI": 0.0002,
+    "p_cnot_YX": 0.0002,
+    "p_cnot_YY": 0.0002,
+    "p_cnot_YZ": 0.0002,
+    "p_cnot_ZI": 0.0002,
+    "p_cnot_ZX": 0.0002,
+    "p_cnot_ZY": 0.0002,
+    "p_cnot_ZZ": 0.0002,
 }
 
 _ROTATION_ALIASES = {"O1": "XV", "O2": "XH", "O3": "ZV", "O4": "ZH"}
 
-
 # ---------------------------------------------------------------------------
 # Binary I/O helpers
 # ---------------------------------------------------------------------------
+
 
 def save_dense_bin(path: str, arr: np.ndarray) -> None:
     """Save a 2-D array with an 8-byte header: (rows: u32, cols: u32)."""
@@ -158,6 +174,7 @@ def save_metadata(path: str, **kwargs) -> None:
 # Main generation logic
 # ---------------------------------------------------------------------------
 
+
 def generate_test_data(
     distance: int = 13,
     n_rounds: int = 104,
@@ -181,8 +198,10 @@ def generate_test_data(
     p_placeholder = float(noise_model.get_max_probability()) if noise_model else float(p_error)
 
     # ---- Build Stim circuit ----
-    print(f"Building circuit: D={distance}, T={n_rounds}, basis={basis}, "
-          f"rotation={code_rotation}, p={p_error}")
+    print(
+        f"Building circuit: D={distance}, T={n_rounds}, basis={basis}, "
+        f"rotation={code_rotation}, p={p_error}"
+    )
     t0 = time.perf_counter()
     circ = MemoryCircuit(
         distance=distance,
@@ -230,12 +249,8 @@ def generate_test_data(
     converter = stim_circuit.compile_m2d_converter()
     dets_and_obs = converter.convert(measurements=meas, append_observables=True)
 
-    stim_dets = np.asarray(
-        dets_and_obs[:, :-stim_circuit.num_observables], dtype=np.int32
-    )
-    stim_obs = np.asarray(
-        dets_and_obs[:, -stim_circuit.num_observables:], dtype=np.int32
-    )
+    stim_dets = np.asarray(dets_and_obs[:, :-stim_circuit.num_observables], dtype=np.int32)
+    stim_obs = np.asarray(dets_and_obs[:, -stim_circuit.num_observables:], dtype=np.int32)
     print(f"  Sampled in {time.perf_counter() - t0:.3f}s")
     assert stim_dets.shape[1] == det_model.num_detectors, (
         f"Detector width {stim_dets.shape[1]} != DEM {det_model.num_detectors}"
@@ -244,13 +259,9 @@ def generate_test_data(
     # ---- PyMatching baseline decode ----
     print("Decoding with PyMatching (baseline)...")
     t0 = time.perf_counter()
-    predictions = matcher.decode_batch(
-        np.asarray(stim_dets, dtype=np.uint8)
-    )
+    predictions = matcher.decode_batch(np.asarray(stim_dets, dtype=np.uint8))
     decode_time = time.perf_counter() - t0
-    predictions = np.asarray(predictions, dtype=np.int32).reshape(
-        -1, stim_circuit.num_observables
-    )
+    predictions = np.asarray(predictions, dtype=np.int32).reshape(-1, stim_circuit.num_observables)
     num_errors = int((predictions != stim_obs).sum())
     ler = num_errors / num_samples
     print(f"  Errors: {num_errors}/{num_samples}, LER: {ler:.4f}")
@@ -270,8 +281,10 @@ def generate_test_data(
             dets_uint8 = np.asarray(stim_dets, dtype=np.uint8)
             result = sess.run(None, {"dets": dets_uint8})
             predecoder_outputs = np.asarray(result[0], dtype=np.uint8)
-            print(f"  Pre-decoder ran in {time.perf_counter() - t0:.3f}s, "
-                  f"output shape: {predecoder_outputs.shape}")
+            print(
+                f"  Pre-decoder ran in {time.perf_counter() - t0:.3f}s, "
+                f"output shape: {predecoder_outputs.shape}"
+            )
         except Exception as e:
             print(f"  ONNX inference failed: {e}")
 
@@ -301,7 +314,9 @@ def generate_test_data(
         num_observables=det_model.num_observables,
         H_shape=H.shape,
         noise_model=noise_label,
-        **({"onnx_model": onnx_model} if onnx_model else {}),
+        **({
+            "onnx_model": onnx_model
+        } if onnx_model else {}),
     )
 
     print("Done.")
@@ -316,16 +331,25 @@ if __name__ == "__main__":
     parser.add_argument("--distance", type=int, default=13)
     parser.add_argument("--n-rounds", type=int, default=104)
     parser.add_argument("--basis", type=str, default="X", choices=["X", "Z"])
-    parser.add_argument("--code-rotation", type=str, default="XV",
-                        help="XV, XH, ZV, ZH or public aliases O1-O4")
+    parser.add_argument(
+        "--code-rotation", type=str, default="XV", help="XV, XH, ZV, ZH or public aliases O1-O4"
+    )
     parser.add_argument("--p-error", type=float, default=0.003)
     parser.add_argument("--num-samples", type=int, default=1000)
-    parser.add_argument("--onnx-model", type=str, default=None,
-                        help="Path to ONNX pre-decoder model (optional)")
-    parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (default: test_data/d{D}_T{T}_{basis})")
-    parser.add_argument("--simple-noise", action="store_true",
-                        help="Use simple p_error instead of 25-parameter noise model")
+    parser.add_argument(
+        "--onnx-model", type=str, default=None, help="Path to ONNX pre-decoder model (optional)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory (default: test_data/d{D}_T{T}_{basis})"
+    )
+    parser.add_argument(
+        "--simple-noise",
+        action="store_true",
+        help="Use simple p_error instead of 25-parameter noise model"
+    )
     args = parser.parse_args()
 
     if args.output_dir is None:
