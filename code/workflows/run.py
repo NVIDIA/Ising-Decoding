@@ -108,7 +108,8 @@ def find_best_model(path, *, rank: int = 0):
     max_value = -1  # Start with -1 to include epoch 0
     best_file = None
     model_files = []
-    named_pt_files = []  # Named .pt files without epoch numbers (e.g. Ising-Decoder-SurfaceCode-1-Fast.pt)
+    # Named .pt files without epoch numbers (e.g. Ising-Decoder-SurfaceCode-1-Fast.pt)
+    named_pt_files = []
 
     for filename in os.listdir(path):
         if not filename.endswith(".pt"):
