@@ -1233,12 +1233,24 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 builder = trt.Builder(logger)
                 net_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
                 # NOTE: STRONGLY_TYPED is intentionally NOT set for fp8/int8.
-                # With Conv-only QDQ nodes, STRONGLY_TYPED forces TRT to insert explicit
-                # FP16↔FP8 casts at every Conv boundary, preventing Conv+BN+ReLU fusion
-                # and adding per-layer cast kernels that regress throughput ~25-35%.
-                # Instead, use BuilderFlag.FP8/INT8 to enable quantized kernels while
-                # allowing TRT to optimize precision boundaries freely (QDQ nodes serve
-                # as calibration hints rather than hard type constraints).
+                #
+                # Background: STRONGLY_TYPED + Conv-only FP8 QDQ nodes (introduced in
+                # d7b8217) caused a ~25-35% throughput regression (66 µs → 90 µs at
+                # d=13, T=104). Under STRONGLY_TYPED, TRT must respect every explicit
+                # FP16↔FP8 cast boundary inserted by modelopt around Conv layers,
+                # preventing Conv+BN+ReLU fusion and adding ~7-11 extra cast kernels
+                # per forward pass, each touching the full activation tensor.
+                #
+                # Fix: use BuilderFlag.FP8/INT8 to enable quantized kernels while
+                # letting TRT optimise precision boundaries freely. QDQ nodes serve as
+                # calibration hints rather than hard type constraints, so Conv+BN+ReLU
+                # fusion is preserved.
+                #
+                # Tradeoff: without STRONGLY_TYPED, FP8 kernel selection is
+                # heuristic-driven (TRT may fall back to FP16 for a Conv layer if no
+                # efficient FP8 kernel exists for that shape). Check the
+                # "[LER] TensorRT engine layer precisions:" log after rebuilding the
+                # engine to confirm expected FP8 coverage.
                 network = builder.create_network(net_flags)
                 parser = trt.OnnxParser(network, logger)
                 with open(onnx_path, "rb") as f:
