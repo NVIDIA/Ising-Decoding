@@ -1006,7 +1006,10 @@ class MemoryCircuit(Circuit):
         self.set_error_rates_simple(0, 0, 0, 0)
         self.set_error_rates()
 
+        orig_noise_model = self.noise_model
+        self.noise_model = None
         self.add_measure(self.code.data_qubits, basis=self.basis)
+        self.noise_model = orig_noise_model
 
         # Restore original error rates
         self.set_error_rates_simple(*orig)
