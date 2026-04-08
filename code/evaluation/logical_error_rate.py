@@ -200,7 +200,7 @@ def _ort_quantize_int8(fp32_onnx_path: str, output_path: str, calib_dets: "np.nd
     class _DetCalibReader(CalibrationDataReader):
 
         def __init__(self, data):
-            self._rows = [{"dets": data[i:i + 1].astype("float32")} for i in range(len(data))]
+            self._rows = [{"dets": data[i:i + 1]} for i in range(len(data))]
             self._iter = iter(self._rows)
 
         def get_next(self):
@@ -1202,7 +1202,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                             mq.quantize(
                                 onnx_path=fp32_onnx_path,
                                 quantize_mode=quant_format,
-                                calibration_data={"dets": calib_dets.astype("float32")},
+                                calibration_data={"dets": calib_dets},
                                 output_path=onnx_path,
                                 **quant_kwargs,
                             )
