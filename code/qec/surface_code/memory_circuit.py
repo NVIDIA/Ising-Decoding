@@ -1006,6 +1006,11 @@ class MemoryCircuit(Circuit):
         self.set_error_rates_simple(0, 0, 0, 0)
         self.set_error_rates()
 
+        # Suppress noise_model so add_measure does not inject a second measurement-error
+        # channel on data qubits.  _add_stabilizer_round(logical_measurement=True) already
+        # injected the time-reversed "fake SPAM" error and restored self.noise_model before
+        # returning; without this guard the non-None noise_model would cause add_measure to
+        # inject the same p_meas noise a second time, producing phantom DEM error channels.
         orig_noise_model = self.noise_model
         self.noise_model = None
         self.add_measure(self.code.data_qubits, basis=self.basis)
