@@ -289,7 +289,7 @@ class TestLERComparison(unittest.TestCase):
         boundary-detector implementation.
         """
         noise_model = NoiseModel.from_single_p(0.002)
-        num_samples = _ler_test_samples(50000, 20000)
+        num_samples = _ler_test_samples(100000, 100000)
 
         # Circuit WITHOUT boundary detectors
         mc_no_bd = MemoryCircuit(
