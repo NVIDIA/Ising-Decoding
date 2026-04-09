@@ -284,7 +284,7 @@ class TestLERComparison(unittest.TestCase):
         Before the double-measurement-noise fix the no-BD LER was *artificially* inflated by
         phantom DEM entries, which made the strict-less assertion pass coincidentally.  With the
         corrected DEM the true improvement is small and we instead verify the weaker property:
-        boundary detectors must not increase LER by more than a factor of 2.0 — a signal that
+        boundary detectors must not increase LER by more than a factor of 1.5 — a signal that
         IS reliably detectable at these sample sizes and would catch any real regression in the
         boundary-detector implementation.
         """
@@ -343,12 +343,12 @@ class TestLERComparison(unittest.TestCase):
         ratio = (ler_with_bd / ler_no_bd) if ler_no_bd > 0 else float("inf")
         print(f"  BD/no-BD ratio: {ratio:.2f}x")
 
-        # Boundary detectors must not substantially degrade LER.  The 2.0× tolerance gives
-        # ~5.9σ of headroom at N=20000-50000 samples with LER ~1.5e-3, making false failures
-        # negligible (<0.001% per run) while still catching real regressions in BD logic.
+        # Boundary detectors must not substantially degrade LER.  The 1.5× tolerance is
+        # reliably detectable (~4.3σ) at N=100000 samples with LER ~1.5e-3, making false
+        # failures negligible (<0.001% per run) while still catching real regressions in BD logic.
         self.assertLessEqual(
-            ler_with_bd, ler_no_bd * 2.0,
-            f"BD degraded LER by more than 2.0x: no_bd={ler_no_bd:.4e}, with_bd={ler_with_bd:.4e}"
+            ler_with_bd, ler_no_bd * 1.5,
+            f"BD degraded LER by more than 1.5x: no_bd={ler_no_bd:.4e}, with_bd={ler_with_bd:.4e}"
         )
 
     def test_ler_improves_with_bd_all_orientations(self):
