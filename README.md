@@ -1,6 +1,6 @@
-# AI pre-decoder for surface-code memory circuits
+# Ising Decoding
 
-This repo implements a **pre-decoder** for surface-code memory experiments:
+This repo offers AI training frameworks and recipes to build, customize and deploy scalable quantum error correction **decoders**:
 
 - A neural network consumes detector syndromes across space **and** time
 - It predicts corrections that reduce syndrome density / improve decoding
@@ -92,8 +92,8 @@ pip install -r code/requirements_public_inference.txt
 
 2. **Get the pre-trained models**  
    This repo ships two pre-trained model files (tracked with Git LFS):
-   - `models/PreDecoderModelMemory_r9_v1.0.77.pt` (receptive field R=9, checkpoint 77)
-   - `models/PreDecoderModelMemory_r13_v1.0.86.pt` (receptive field R=13, checkpoint 86)
+   - `models/Ising-Decoder-SurfaceCode-1-Fast.pt` (receptive field R=9)
+   - `models/Ising-Decoder-SurfaceCode-1-Accurate.pt` (receptive field R=13)
 
    Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
@@ -138,8 +138,16 @@ The pre-trained public models use `--model-id 1` (R=9) and `--model-id 4` (R=13)
 After training (or starting from the shipped `.safetensors` files), you can export the model to
 ONNX and optionally apply INT8 or FP8 post-training quantization for deployment.
 
-Set the `ONNX_WORKFLOW` and (optionally) `QUANT_FORMAT` environment variables before running
-inference with `local_run.sh`:
+You may also change the surface code distance and number of rounds at inference
+time. That is - you are not required retrain a new model when changing either
+one of these parameters; since the model is a 3D convolutional neural network,
+the model will simply be run over a new decoding volume.
+
+- To run with a new distance, simply add `DISTANCE=<your distance>` to the commands below.
+- To run with a new number of rounds, simply add `N_ROUNDS=<your number of rounds>` to the commands below.
+
+Set the `ONNX_WORKFLOW` and (optionally) (`QUANT_FORMAT`, `DISTANCE`,
+`N_ROUNDS`) environment variables before running inference with `local_run.sh`:
 
 | `ONNX_WORKFLOW` | Behavior |
 |---|---|
@@ -169,7 +177,16 @@ ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh
 | `QUANT_FORMAT` | unset | `int8` or `fp8`. Unset means no quantization (FP32 ONNX). |
 | `QUANT_CALIB_SAMPLES` | `256` | Calibration samples for INT8/FP8 post-training quantization. |
 
+**Circuit variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `CONFIG_NAME` | `config_public` | Use the defaults from the `conf/$CONFIG_NAME.yaml` file |
+| `DISTANCE` | Use the distance specified in the `conf/$CONFIG_NAME.yaml` file | surface code distance |
+| `N_ROUNDS` | Calibration samples for INT8/FP8 post-training quantization. | number of rounds in memory experiment |
+
 Notes:
+
 - TensorRT workflows (`ONNX_WORKFLOW=2` or `3`) require `tensorrt` and `modelopt`.
 - FP8 quantization failure is fatal. INT8 failure falls back to the FP32 ONNX model silently.
 - ONNX and engine files are written to the current working directory.
@@ -215,7 +232,7 @@ Results are written to `outputs/<EXPERIMENT_NAME>/plots/`.
 | Decoder | Source | Notes |
 |---|---|---|
 | No-op | — | Pre-decoder output only, no global correction |
-| Union-Find | `ldpc` | Fast, sub-optimal |
+| Union-Find | `ldpc` | Fast, sub-optimal LER (Logical Error Rate) |
 | BP-only | `ldpc` | Belief propagation, no OSD |
 | BP+LSD-0 | `ldpc` | BP with localized statistics decoding |
 | Uncorr-PM | PyMatching | Uncorrelated minimum-weight perfect matching |

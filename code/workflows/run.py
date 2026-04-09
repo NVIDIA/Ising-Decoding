@@ -108,32 +108,44 @@ def find_best_model(path, *, rank: int = 0):
     max_value = -1  # Start with -1 to include epoch 0
     best_file = None
     model_files = []
+    # Named .pt files without epoch numbers (e.g. Ising-Decoder-SurfaceCode-1-Fast.pt)
+    named_pt_files = []
 
     for filename in os.listdir(path):
-        if not filename.startswith("PreDecoderModelMemory_"):
+        if not filename.endswith(".pt"):
             continue
-        try:
-            value = float(filename.split(".")[2])  # Gets epoch number
-            model_files.append((filename, value))
-            if value > max_value:
-                max_value = value
-                best_file = filename
-        except (IndexError, ValueError) as e:
-            print(f"Warning: could not parse epoch from filename {filename}: {e}")
-            continue
+        if filename.startswith("PreDecoderModelMemory_"):
+            try:
+                value = float(filename.split(".")[2])  # Gets epoch number
+                model_files.append((filename, value))
+                if value > max_value:
+                    max_value = value
+                    best_file = filename
+            except (IndexError, ValueError) as e:
+                print(f"Warning: could not parse epoch from filename {filename}: {e}")
+        else:
+            named_pt_files.append(filename)
+
+    # Fall back to named .pt files when no epoch-numbered checkpoints are present
+    if best_file is None and named_pt_files:
+        named_pt_files.sort()
+        best_file = named_pt_files[-1]
+        model_files = [(f, None) for f in named_pt_files]
 
     if rank == 0:
-        print(f"Found {len(model_files)} model files:")
-        for filename, epoch in sorted(model_files, key=lambda x: x[1]):
+        print(f"Found {len(model_files)} model file(s):")
+        for filename, epoch in sorted(model_files, key=lambda x: (x[1] is None, x[1] or 0)):
             marker = "*" if filename == best_file else " "
-            print(f"  [{marker}] {filename} (epoch {epoch})")
+            epoch_str = str(epoch) if epoch is not None else "n/a"
+            print(f"  [{marker}] {filename} (epoch {epoch_str})")
 
     if best_file is None:
-        raise FileNotFoundError(f"No valid PreDecoderModelMemory files found in {path}")
+        raise FileNotFoundError(f"No valid model checkpoint files found in {path}")
 
     best_model_path = os.path.join(path, best_file)
     if rank == 0:
-        print(f"Selected best model: {best_file} (epoch {max_value})")
+        epoch_str = str(max_value) if max_value >= 0 else "n/a"
+        print(f"Selected best model: {best_file} (epoch {epoch_str})")
 
     return best_model_path
 
@@ -209,6 +221,24 @@ def _load_model(cfg, dist):
 
         if metadata.get("quant_format") == "fp16":
             cfg.enable_fp16 = True
+        return model
+
+    # Direct file path override (for named pretrained models without epoch numbers)
+    model_checkpoint_file = getattr(cfg, 'model_checkpoint_file', None)
+    if model_checkpoint_file:
+        model_checkpoint_file = _resolve_dir(str(model_checkpoint_file))
+        if not os.path.exists(model_checkpoint_file):
+            raise FileNotFoundError(f"Checkpoint not found: {model_checkpoint_file}")
+        if dist.rank == 0:
+            print(f"Loading model from: {model_checkpoint_file}")
+        model = ModelFactory.create_model(cfg).to(dist.device)
+        if cfg.enable_fp16:
+            model = model.half()
+        state_dict = _load_state_dict_from_pt(model_checkpoint_file, dist.device)
+        model.load_state_dict(state_dict)
+        if dist.rank == 0:
+            param_count = sum(p.numel() for p in model.parameters())
+            print(f"Model loaded ({param_count:,} parameters)")
         return model
 
     model = ModelFactory.create_model(cfg).to(dist.device)

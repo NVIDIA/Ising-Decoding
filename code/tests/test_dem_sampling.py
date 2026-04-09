@@ -711,5 +711,78 @@ class TestCustVsTorchStatistical(unittest.TestCase):
         )
 
 
+# ============================================================================
+# Seeded reproducibility
+# ============================================================================
+
+
+class TestDEMSamplingReproducibility(unittest.TestCase):
+    """
+    Verify that dem_sampling(seed=N) produces identical outputs on repeated
+    calls with the same seed, using stochastic (non-trivial) probabilities.
+
+    This is the regression test for the bug where torch.manual_seed() was
+    assumed to control BitMatrixSampler's internal RNG (it does not).
+    The fix exposes an explicit seed= parameter that re-creates the sampler,
+    resetting cuST's RNG to a known state.
+    """
+
+    H = torch.tensor(
+        [[1, 0, 1, 0, 0], [0, 1, 1, 0, 0], [0, 0, 0, 1, 1]],
+        dtype=torch.uint8,
+    )
+    p = torch.tensor([0.1, 0.3, 0.5, 0.7, 0.9], dtype=torch.float32)
+
+    def setUp(self):
+        _reset_sampler_cache()
+
+    def test_same_seed_cpu_reproducible(self) -> None:
+        """Two calls with the same seed on CPU must produce identical frames."""
+        out_a = dem_sampling(self.H, self.p, 64, seed=42)
+        _reset_sampler_cache()
+        out_b = dem_sampling(self.H, self.p, 64, seed=42)
+        self.assertTrue(
+            torch.equal(out_a, out_b),
+            "dem_sampling with the same seed must be bit-exact reproducible",
+        )
+
+    def test_different_seeds_cpu_differ(self) -> None:
+        """Two calls with different seeds should (with overwhelming probability) differ."""
+        out_a = dem_sampling(self.H, self.p, 256, seed=1)
+        _reset_sampler_cache()
+        out_b = dem_sampling(self.H, self.p, 256, seed=2)
+        self.assertFalse(
+            torch.equal(out_a, out_b),
+            "dem_sampling with different seeds should produce different frames",
+        )
+
+    def test_no_seed_does_not_break_cache(self) -> None:
+        """Unseeded calls still reuse the cached sampler (no regression to perf path)."""
+        import qec.dem_sampling as _mod
+        _reset_sampler_cache()
+        dem_sampling(self.H, self.p, 64)
+        sampler_after_first = _mod._cached_sampler
+        dem_sampling(self.H, self.p, 64)
+        sampler_after_second = _mod._cached_sampler
+        self.assertIs(
+            sampler_after_first,
+            sampler_after_second,
+            "Unseeded calls must reuse the cached BitMatrixSampler",
+        )
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA GPU")
+    def test_same_seed_gpu_reproducible(self) -> None:
+        """Two calls with the same seed on GPU must produce identical frames."""
+        H = self.H.cuda()
+        p = self.p.cuda()
+        out_a = dem_sampling(H, p, 64, seed=42)
+        _reset_sampler_cache()
+        out_b = dem_sampling(H, p, 64, seed=42)
+        self.assertTrue(
+            torch.equal(out_a, out_b),
+            "GPU: dem_sampling with the same seed must be bit-exact reproducible",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

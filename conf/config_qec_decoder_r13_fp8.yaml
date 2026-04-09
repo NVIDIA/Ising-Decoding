@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 #
-# Config for: Model 4 (R=13), depolarizing p=0.006, experiment qec-decoder-depolarizing-r13-fp8.
+# Config for: Ising-Decoder-SurfaceCode-1-Accurate (R=13), aka Model 4 from the corresponding paper, depolarizing p=0.006, experiment qec-decoder-depolarizing-r13-fp8.
 # Training uses receptive field 13; evaluation targets distance/n_rounds 13.
 # fp8 in the name is for the intended export target; training runs in fp32.
 #

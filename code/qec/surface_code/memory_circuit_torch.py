@@ -234,6 +234,7 @@ class MemoryCircuitTorch:
         batch_size: int,
         return_aux: bool = False,
         collect_timing: bool = False,
+        seed: int | None = None,
     ) -> Union[
         tuple[torch.Tensor, torch.Tensor],
         tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
@@ -248,6 +249,8 @@ class MemoryCircuitTorch:
           build Stim dets_and_obs from circuit-order measurements.
         - If collect_timing=True, also return timing breakdown in milliseconds:
           data generation, HE, format, and total.
+        - If seed is given, the BitMatrixSampler is re-created with that seed so
+          repeated calls with the same seed produce identical outputs.
         """
         if self._compile_thread is not None:
             # torch.compile warmup can be slow; 20 min cap prevents silent hangs.
@@ -269,6 +272,7 @@ class MemoryCircuitTorch:
             self.p,
             int(batch_size),
             device_id=device_id,
+            seed=seed,
         )  # (B, 2*num_detectors)
         meas_old = measure_from_stacked_frames(
             frames_xz, self.meas_qubits, self.meas_bases, nq=self.nq

@@ -169,6 +169,52 @@ class TestQuantFormatParsing(unittest.TestCase):
         self.assertEqual(calib.shape, (calib_num_samples, num_dets))
         self.assertEqual(calib.dtype, np.uint8)
 
+    def test_mq_quantize_called_with_correct_args_fp8(self):
+        """With QUANT_FORMAT=fp8, calibration data must preserve uint8 dtype — not be cast to float32.
+
+        Regression test for #52: the original code applied .astype('float32') before passing
+        calib_dets to mq.quantize, but the ONNX model's 'dets' input is typed uint8, causing:
+          [ONNXRuntimeError] INVALID_ARGUMENT: Unexpected input data type.
+          Actual: (tensor(float)), expected: (tensor(uint8))
+        The fix passes calib_dets directly, preserving the uint8 dtype.
+        """
+        mock_mq = MagicMock()
+        num_dets = 20
+        num_obs = 1
+        loader = _make_fake_dataloader(
+            num_batches=2, batch_size=32, num_dets=num_dets, num_obs=num_obs
+        )
+
+        with patch.dict(os.environ, {"QUANT_FORMAT": "fp8", "QUANT_CALIB_SAMPLES": "16"}):
+            quant_format = "fp8"
+            fp32_path = "model.onnx"
+            quant_path = "model_fp8.onnx"
+            calib_num_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
+            calib_dets = _collect_calibration_dets(loader, num_obs, calib_num_samples, num_dets)
+            quant_kwargs = {"op_types_to_quantize": ["Conv"], "high_precision_dtype": "fp16"}
+            mock_mq.quantize(
+                onnx_path=fp32_path,
+                quantize_mode=quant_format,
+                calibration_data={"dets": calib_dets},
+                output_path=quant_path,
+                **quant_kwargs,
+            )
+
+        mock_mq.quantize.assert_called_once()
+        call_kwargs = mock_mq.quantize.call_args
+        self.assertEqual(call_kwargs.kwargs["quantize_mode"], "fp8")
+        self.assertIn("dets", call_kwargs.kwargs["calibration_data"])
+        calib = call_kwargs.kwargs["calibration_data"]["dets"]
+        self.assertEqual(calib.shape, (calib_num_samples, num_dets))
+        self.assertEqual(
+            calib.dtype,
+            np.uint8,
+            "FP8 calibration data must preserve uint8 dtype; "
+            "casting to float32 triggers [ONNXRuntimeError] INVALID_ARGUMENT (#52)",
+        )
+        self.assertEqual(call_kwargs.kwargs.get("op_types_to_quantize"), ["Conv"])
+        self.assertEqual(call_kwargs.kwargs.get("high_precision_dtype"), "fp16")
+
     def test_fp8_fail_fast_raises(self):
         """With QUANT_FORMAT=fp8, if mq.quantize raises, a RuntimeError is propagated."""
         num_dets = 20
