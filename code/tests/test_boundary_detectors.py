@@ -289,7 +289,7 @@ class TestLERComparison(unittest.TestCase):
         boundary-detector implementation.
         """
         noise_model = NoiseModel.from_single_p(0.002)
-        num_samples = _ler_test_samples(50000, 20000)
+        num_samples = _ler_test_samples(100000, 100000)
 
         # Circuit WITHOUT boundary detectors
         mc_no_bd = MemoryCircuit(
@@ -344,8 +344,8 @@ class TestLERComparison(unittest.TestCase):
         print(f"  BD/no-BD ratio: {ratio:.2f}x")
 
         # Boundary detectors must not substantially degrade LER.  The 1.5× tolerance is
-        # reliably detectable (~3σ) at these sample sizes and noise levels, so a genuine
-        # regression in BD logic would be caught here.
+        # reliably detectable (~4.3σ) at N=100000 samples with LER ~1.5e-3, making false
+        # failures negligible (<0.001% per run) while still catching real regressions in BD logic.
         self.assertLessEqual(
             ler_with_bd, ler_no_bd * 1.5,
             f"BD degraded LER by more than 1.5x: no_bd={ler_no_bd:.4e}, with_bd={ler_with_bd:.4e}"
