@@ -37,8 +37,13 @@ jobs:
         run: |
           MAX_SIZE_BYTES=102400  # 100KB
           MAX_SIZE_HUMAN="100KB"
+          # Image formats are exempt: they are documentation/notebook assets
+          IMAGE_EXTENSIONS="(png|jpg|jpeg|gif|svg|ico|webp)"
           LARGE_FILES=""
           while IFS= read -r file; do
+            if [[ "$file" =~ \.($IMAGE_EXTENSIONS)$ ]]; then
+              continue
+            fi
             if [[ -f "$file" ]]; then
               size=$(stat --format='%s' "$file")
               if (( size > MAX_SIZE_BYTES )); then
