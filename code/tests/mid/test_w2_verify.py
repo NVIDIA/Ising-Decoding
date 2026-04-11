@@ -88,9 +88,7 @@ class TestW2Verify(unittest.TestCase):
             A=None,
         )
         B = 128
-        torch.manual_seed(100)
-        tX_a, tY_a = gen_w2.generate_batch(batch_size=B)
-        torch.manual_seed(100)
-        tX_b, tY_b = gen_w2.generate_batch(batch_size=B)
+        tX_a, tY_a = gen_w2.generate_batch(batch_size=B, seed=100)
+        tX_b, tY_b = gen_w2.generate_batch(batch_size=B, seed=100)
         self.assertTrue(torch.allclose(tX_a, tX_b), "trainX should match for same seed")
         self.assertTrue(torch.allclose(tY_a, tY_b), "trainY should match for same seed")

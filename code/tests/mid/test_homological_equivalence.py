@@ -1250,10 +1250,8 @@ class TestHETorchIntegration(unittest.TestCase):
         gen0 = self._make_generator(num_he_cycles=0)
         gen1 = self._make_generator(num_he_cycles=2)
 
-        torch.manual_seed(123)
-        trainX0, trainY0 = gen0.generate_batch(batch_size=self.batch_size)
-        torch.manual_seed(123)
-        trainX1, trainY1 = gen1.generate_batch(batch_size=self.batch_size)
+        trainX0, trainY0 = gen0.generate_batch(batch_size=self.batch_size, seed=123)
+        trainX1, trainY1 = gen1.generate_batch(batch_size=self.batch_size, seed=123)
 
         # trainX is derived from meas_old and should be identical for same sample.
         self.assertTrue(torch.equal(trainX0, trainX1))

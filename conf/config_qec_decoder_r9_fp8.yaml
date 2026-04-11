@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-NvidiaProprietary
 #
-# Config for: Model 1 (R=9), depolarizing p=0.006, experiment qec-decoder-depolarizing-r9-fp8.
+# Config for: Ising-Decoder-SurfaceCode-1-Fast (R=9), aka Model 1 from the corresponding paper, depolarizing p=0.006, experiment qec-decoder-depolarizing-r9-fp8.
 # Training uses receptive field 9; evaluation targets distance/n_rounds 9.
 # fp8 in the name is for the intended export target; training runs in fp32.
 #
