@@ -8,6 +8,8 @@ This repo implements a **pre-decoder** for surface-code memory experiments:
 
 The public release exposes a **single user-facing config** and a **single runner script**.
 
+![Pre-decoder pipeline](images/predecoder_pipeline.png)
+
 ### Quick start (train + inference)
 
 From the repo root:
@@ -539,6 +541,15 @@ dispatch:
 | `python-compat` | CPU | Import/install check across Python 3.11 / 3.12 / 3.13 |
 | `gpu-tests` | GPU | Full test suite on a self-hosted GPU runner |
 | `gpu-tests` (train+inference) | GPU | Short train + inference with LER check |
+
+## Results
+
+Logical error rate (LER) vs. time for X-basis decoding at physical error rates p = 0.003 and 0.006:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/ler_vs_time_model_card_p0.003_0.006_X_dark.svg">
+  <img src="images/ler_vs_time_model_card_p0.003_0.006_X_light.svg" alt="LER vs time (X basis, p=0.003–0.006)">
+</picture>
 
 ## License
 
