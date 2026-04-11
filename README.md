@@ -1,5 +1,11 @@
 # AI pre-decoder for surface-code memory circuits
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue)](./LICENSE)
+[![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen)](https://github.com/NVIDIA/Ising-Decoding/tree/releases/v0.1.0)
+[![Paper](https://img.shields.io/badge/Paper-NVIDIA%20Research-76b900)](https://research.nvidia.com/publication/2026-04_fast-ai-based-pre-decoders-surface-codes)
+[![Model: Fast](https://img.shields.io/badge/🤗%20HuggingFace-Fast%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast)
+[![Model: Accurate](https://img.shields.io/badge/🤗%20HuggingFace-Accurate%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate)
+
 This repo implements a **pre-decoder** for surface-code memory experiments:
 
 - A neural network consumes detector syndromes across space **and** time
