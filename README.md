@@ -146,6 +146,34 @@ Inference note:
   - Some environments crash during `torch.compile`.
   - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
   - Or try a safer mode: `TORCH_COMPILE=1 TORCH_COMPILE_MODE=reduce-overhead bash code/scripts/local_run.sh`.
+- **Blackwell GPUs (RTX 5080/5090, GB200/GB300)**:
+  - Stable PyTorch wheels (`cu124`) do not ship SM 12.0 kernels yet.
+    Install the nightly build with the `cu128` index:
+    ```bash
+    pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+    ```
+- **Windows (Git Bash / WSL)**:
+  - Triton is not supported on native Windows, which causes `torch.compile` to
+    fail. Disable it before running:
+    ```bash
+    export TORCH_COMPILE_DISABLE=1   # PyTorch-level flag
+    # or, equivalently for the repo scripts:
+    export PREDECODER_TORCH_COMPILE=0
+    ```
+  - When running scripts directly (outside the notebook or `local_run.sh`),
+    set the Python path so that repo modules are importable:
+    ```bash
+    export PYTHONPATH="code"
+    ```
+- **Pre-trained model not found during inference**:
+  - `find_best_model` searches inside `{output}/models/best_model/` first,
+    then falls back to `{output}/models/`. If you placed the downloaded
+    `.pt` file elsewhere, either move it into one of those directories or
+    point to it directly:
+    ```bash
+    PREDECODER_MODEL_CHECKPOINT_FILE=path/to/Ising-Decoder-SurfaceCode-1-Accurate.pt \
+      WORKFLOW=inference bash code/scripts/local_run.sh
+    ```
 
 ## Inference (pre-trained models)
 

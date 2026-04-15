@@ -140,7 +140,13 @@ def find_best_model(path, *, rank: int = 0):
             print(f"  [{marker}] {filename} (epoch {epoch_str})")
 
     if best_file is None:
-        raise FileNotFoundError(f"No valid model checkpoint files found in {path}")
+        raise FileNotFoundError(
+            f"No valid model checkpoint files found in {path}\n"
+            f"Expected .pt files (e.g. Ising-Decoder-SurfaceCode-1-Fast.pt or "
+            f"PreDecoderModelMemory_*.pt).\n"
+            f"Hint: download the pretrained weights and place them in this directory, "
+            f"or set model_checkpoint_file in your config to an explicit path."
+        )
 
     best_model_path = os.path.join(path, best_file)
     if rank == 0:
