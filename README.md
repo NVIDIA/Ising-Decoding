@@ -147,7 +147,7 @@ Inference note:
   - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
   - Or try a safer mode: `TORCH_COMPILE=1 TORCH_COMPILE_MODE=reduce-overhead bash code/scripts/local_run.sh`.
 - **Blackwell GPUs (RTX 5080/5090, GB200/GB300)**:
-  - Stable PyTorch wheels (`cu124`) do not ship SM 12.0 kernels yet.
+  - Stable PyTorch wheels (`cu124`) do not ship SM 12.0 kernels.
     Install the nightly build with the `cu128` index:
     ```bash
     pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
