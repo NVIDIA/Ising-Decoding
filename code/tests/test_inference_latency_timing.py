@@ -15,11 +15,12 @@
 
 import math
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
+import torch
 
-from evaluation.logical_error_rate import _time_single_shot_latency_stim
+from evaluation.logical_error_rate import _maybe_warmup_compile, _time_single_shot_latency_stim
 
 
 class _FakeMatcher:
@@ -82,6 +83,50 @@ class TestInferenceLatencyTiming(unittest.TestCase):
         self.assertTrue(math.isnan(baseline_us))
         self.assertTrue(math.isnan(predecoder_us))
         self.assertEqual(len(matcher.calls), 0)
+
+
+class TestMaybeWarmupCompile(unittest.TestCase):
+
+    def _cpu_device(self):
+        return torch.device("cpu")
+
+    def test_calls_pipeline_module_when_compile_active(self):
+        pipeline = MagicMock(return_value=torch.zeros(1))
+        dets = np.zeros((4, 8), dtype=np.uint8)
+        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True)
+        self.assertEqual(pipeline.call_count, 1)
+        tensor_arg = pipeline.call_args[0][0]
+        self.assertEqual(tensor_arg.shape[0], 1)
+        self.assertEqual(tensor_arg.dtype, torch.float32)
+
+    def test_skipped_when_compile_not_applied(self):
+        pipeline = MagicMock()
+        dets = np.zeros((4, 8), dtype=np.uint8)
+        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=False)
+        pipeline.assert_not_called()
+
+    def test_skipped_when_trt_context_present(self):
+        pipeline = MagicMock()
+        dets = np.zeros((4, 8), dtype=np.uint8)
+        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=object(), applied_compile=True)
+        pipeline.assert_not_called()
+
+    def test_cuda_sync_called_on_gpu_device(self):
+        pipeline = MagicMock(return_value=torch.zeros(1))
+        dets = np.zeros((4, 8), dtype=np.uint8)
+        gpu_device = MagicMock(spec=torch.device)
+        gpu_device.type = "cuda"
+        with patch("evaluation.logical_error_rate.torch.as_tensor", return_value=torch.zeros(1)) as _mock_tensor, \
+             patch("evaluation.logical_error_rate.torch.cuda.synchronize") as mock_sync:
+            _maybe_warmup_compile(pipeline, dets, gpu_device, trt_context=None, applied_compile=True)
+        mock_sync.assert_called_once()
+
+    def test_cuda_sync_not_called_on_cpu_device(self):
+        pipeline = MagicMock(return_value=torch.zeros(1))
+        dets = np.zeros((4, 8), dtype=np.uint8)
+        with patch("evaluation.logical_error_rate.torch.cuda.synchronize") as mock_sync:
+            _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True)
+        mock_sync.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -501,6 +501,17 @@ def map_grid_to_stabilizer_tensor(grid_btdd, stab_indices_1d):
     return flat_bdt.index_select(dim=1, index=stab_indices_1d)
 
 
+def _maybe_warmup_compile(pipeline_module, stim_dets, device, trt_context, applied_compile):
+    """Fire one forward pass to trigger torch.compile JIT before the timing loop."""
+    if trt_context is not None or not applied_compile:
+        return
+    with torch.no_grad():
+        _warmup_tensor = torch.as_tensor(stim_dets[:1], dtype=torch.float32, device=device)
+        pipeline_module(_warmup_tensor)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+
 class PreDecoderMemoryEvalModule(nn.Module):
     """
     nn.Module that encapsulates the full pre-decoder eval path: batch input -> trainX,
@@ -1316,16 +1327,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     else:
         data_iter = test_dataloader
 
-    # Warmup: trigger torch.compile lazy compilation before the timing loop.
-    if trt_context is None and _applied_compile:
-        with torch.no_grad():
-            _warmup_tensor = torch.as_tensor(
-                stim_dets[:1], dtype=torch.float32, device=device
-            )
-            _ = pipeline_module(_warmup_tensor)
-            del _warmup_tensor
-            if device.type == "cuda":
-                torch.cuda.synchronize()
+    _maybe_warmup_compile(pipeline_module, stim_dets, device, trt_context, _applied_compile)
 
     # Timing instrumentation accumulators (used when timing_rank0 is True)
     residual_syndrome_density_sum = 0.0
