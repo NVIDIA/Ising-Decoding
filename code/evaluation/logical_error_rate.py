@@ -1316,6 +1316,17 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     else:
         data_iter = test_dataloader
 
+    # Warmup: trigger torch.compile lazy compilation before the timing loop.
+    if trt_context is None and _applied_compile:
+        with torch.no_grad():
+            _warmup_tensor = torch.as_tensor(
+                stim_dets[:1], dtype=torch.float32, device=device
+            )
+            _ = pipeline_module(_warmup_tensor)
+            del _warmup_tensor
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+
     # Timing instrumentation accumulators (used when timing_rank0 is True)
     residual_syndrome_density_sum = 0.0
     predecoder_batch_times = [] if timing_rank0 else None
