@@ -93,7 +93,9 @@ class TestMaybeWarmupCompile(unittest.TestCase):
     def test_calls_pipeline_module_when_compile_active(self):
         pipeline = MagicMock(return_value=torch.zeros(1))
         dets = np.zeros((4, 8), dtype=np.uint8)
-        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True)
+        _maybe_warmup_compile(
+            pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True
+        )
         self.assertEqual(pipeline.call_count, 1)
         tensor_arg = pipeline.call_args[0][0]
         self.assertEqual(tensor_arg.shape[0], 1)
@@ -102,13 +104,17 @@ class TestMaybeWarmupCompile(unittest.TestCase):
     def test_skipped_when_compile_not_applied(self):
         pipeline = MagicMock()
         dets = np.zeros((4, 8), dtype=np.uint8)
-        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=False)
+        _maybe_warmup_compile(
+            pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=False
+        )
         pipeline.assert_not_called()
 
     def test_skipped_when_trt_context_present(self):
         pipeline = MagicMock()
         dets = np.zeros((4, 8), dtype=np.uint8)
-        _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=object(), applied_compile=True)
+        _maybe_warmup_compile(
+            pipeline, dets, self._cpu_device(), trt_context=object(), applied_compile=True
+        )
         pipeline.assert_not_called()
 
     def test_cuda_sync_called_on_gpu_device(self):
@@ -118,14 +124,18 @@ class TestMaybeWarmupCompile(unittest.TestCase):
         gpu_device.type = "cuda"
         with patch("evaluation.logical_error_rate.torch.as_tensor", return_value=torch.zeros(1)) as _mock_tensor, \
              patch("evaluation.logical_error_rate.torch.cuda.synchronize") as mock_sync:
-            _maybe_warmup_compile(pipeline, dets, gpu_device, trt_context=None, applied_compile=True)
+            _maybe_warmup_compile(
+                pipeline, dets, gpu_device, trt_context=None, applied_compile=True
+            )
         mock_sync.assert_called_once()
 
     def test_cuda_sync_not_called_on_cpu_device(self):
         pipeline = MagicMock(return_value=torch.zeros(1))
         dets = np.zeros((4, 8), dtype=np.uint8)
         with patch("evaluation.logical_error_rate.torch.cuda.synchronize") as mock_sync:
-            _maybe_warmup_compile(pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True)
+            _maybe_warmup_compile(
+                pipeline, dets, self._cpu_device(), trt_context=None, applied_compile=True
+            )
         mock_sync.assert_not_called()
 
 
