@@ -438,6 +438,11 @@ Each `model_id` has a fixed receptive field \(R\):
 - **model 4**: \(R=13\)
 - **model 5**: \(R=13\)
 
+#### Training recommendations
+
+- **Models 1, 4, 5 (uncorrelated matching):** Train for at least **100 epochs**. Fewer epochs will yield under-trained models.
+- **Shots per epoch:** Use **67 million** shots per epoch when training with 8 GPUs (`PREDECODER_TRAIN_SAMPLES=67108864`). Using fewer shots per epoch produces worse results.
+
 #### Distance / rounds semantics
 
 - Top-level `distance` / `n_rounds` are the **evaluation targets** (what you care about in inference).
@@ -562,6 +567,8 @@ The five grouped totals are:
 - If `max_group < 6e-3`: all 25 p's are multiplied by `6e-3 / max_group` for training data generation only. Evaluation always uses the original user-specified noise model as-is.
 - If `max_group >= 6e-3`: parameters are **not** modified (the training log emits a warning in case this indicates a configuration error).
 - Non-surface-code types (`code_type != "surface_code"`) are never upscaled.
+
+**Algorithm in brief:** The pipeline stores `p_max = max(P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot)` from the full 25-parameter noise vector and rescales the entire vector by `0.006 / p_max` so that `p_max` is raised to **0.6%** (6 × 10⁻³). The original noise model is preserved unchanged for evaluation.
 
 We have found that training on denser syndromes and then evaluating on sparser data produces better results than training directly on sparse data.
 

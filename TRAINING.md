@@ -141,8 +141,8 @@ export CONFIG_NAME=config_qec_decoder_r13_fp8
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PREDECODER_TRAIN_EPOCHS` | `100` | Total number of training epochs. |
-| `PREDECODER_TRAIN_SAMPLES` | config-defined | Samples per epoch. Bypasses auto-scaling when set explicitly. |
+| `PREDECODER_TRAIN_EPOCHS` | `100` | Total number of training epochs. For models 1, 4, 5 (uncorrelated matching), use at least **100** epochs; fewer epochs will yield under-trained models. |
+| `PREDECODER_TRAIN_SAMPLES` | config-defined | Samples per epoch. Bypasses auto-scaling when set explicitly. For best results with 8 GPUs, use **67 million** shots per epoch (`67108864`); fewer shots per epoch will produce worse results. |
 | `PREDECODER_LR_MILESTONES` | config-defined | Comma-separated LR schedule milestone fractions (e.g. `0.25,0.5,1.0`). |
 | `PREDECODER_TIMING_RUN` | unset | Set `1` for timing/benchmarking mode (disables some overhead). |
 | `PREDECODER_TORCH_COMPILE` | `0` when run via `sbatch_train.sh`, otherwise unset | `0` to disable `torch.compile`, `1` to enable. |
