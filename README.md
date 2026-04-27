@@ -8,6 +8,17 @@ This repo implements a **pre-decoder** for surface-code memory experiments:
 
 The public release exposes a **single user-facing config** and a **single runner script**.
 
+## Publication
+
+This implementation accompanies the paper:
+
+Christopher Chamberland, Jan Olle, Muyuan Li, Scott Thornton, and Igor Baratta,
+"Fast and accurate AI-based pre-decoders for surface codes,"
+[arXiv:2604.12841](https://arxiv.org/abs/2604.12841), 2026.
+[doi:10.48550/arXiv.2604.12841](https://doi.org/10.48550/arXiv.2604.12841)
+
+Please cite the paper if you use this repository in research or published work.
+
 ### Quick start (train + inference)
 
 From the repo root:
