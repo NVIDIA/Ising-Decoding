@@ -90,11 +90,6 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
     timeout-minutes: 30
     steps:
-      - name: Setup proxy cache
-        uses: nv-gha-runners/setup-proxy-cache@main
-        with:
-          enable-apt: false
-
       - name: Install system dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -148,11 +143,6 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
     timeout-minutes: 90
     steps:
-      - name: Setup proxy cache
-        uses: nv-gha-runners/setup-proxy-cache@main
-        with:
-          enable-apt: false
-
       - name: Install system dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -231,11 +221,6 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
     timeout-minutes: 60
     steps:
-      - name: Setup proxy cache
-        uses: nv-gha-runners/setup-proxy-cache@main
-        with:
-          enable-apt: false
-
       - name: Install system dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -288,11 +273,6 @@ jobs:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
     timeout-minutes: 90
     steps:
-      - name: Setup proxy cache
-        uses: nv-gha-runners/setup-proxy-cache@main
-        with:
-          enable-apt: false
-
       - name: Install system dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
