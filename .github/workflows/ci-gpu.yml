@@ -59,14 +59,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y \
-            python${{ matrix.python-version }} \
-            python${{ matrix.python-version }}-venv \
-            python${{ matrix.python-version }}-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - uses: actions/checkout@v4
         with:
@@ -78,7 +76,7 @@ jobs:
       - name: Install dependencies and run tests
         run: bash code/scripts/check_python_compat.sh
         env:
-          PYTHON_BIN: python${{ matrix.python-version }}
+          PYTHON_BIN: python
           MODE: train
           SKIP_TESTS: "0"
           REQUIRE_GPU: "1"
@@ -141,11 +139,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y python3.13 python3.13-venv python3.13-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
 
       - uses: actions/checkout@v4
         with:
@@ -156,7 +155,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python3.13 -m venv .venv_mid
+          python -m venv .venv_mid
           . .venv_mid/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           # TODO: matrix by CUDA major version [cu12, cu13]

@@ -99,11 +99,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
         with:
@@ -111,7 +112,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python${{ env.PYTHON_VERSION }} -m venv .venv
+          python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_inference.txt
@@ -156,11 +157,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
         with:
@@ -168,7 +170,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python${{ env.PYTHON_VERSION }} -m venv .venv
+          python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           # TODO: matrix by CUDA major version [cu12, cu13]
@@ -238,11 +240,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
         with:
@@ -250,7 +253,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python${{ env.PYTHON_VERSION }} -m venv .venv
+          python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           pip install -r code/requirements_public_inference.txt
@@ -294,11 +297,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc software-properties-common
-          add-apt-repository -y ppa:deadsnakes/ppa
-          apt-get update
-          apt-get install -y python${{ env.PYTHON_VERSION }} python${{ env.PYTHON_VERSION }}-venv python${{ env.PYTHON_VERSION }}-dev
+          apt-get install -y git git-lfs gcc
           git lfs install
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
         with:
@@ -306,7 +310,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python${{ env.PYTHON_VERSION }} -m venv .venv
+          python -m venv .venv
           . .venv/bin/activate
           python -m pip install --upgrade pip setuptools wheel
           # TODO: matrix by CUDA major version [cu12, cu13]
