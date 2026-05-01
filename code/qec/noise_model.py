@@ -43,6 +43,9 @@ Usage:
 
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple, Any
+import hashlib
+import json
+import math
 import numpy as np
 
 # Surface-code training upscale target (below threshold ~7.5e-3). Used when sampling training data.
@@ -193,6 +196,23 @@ class NoiseModel:
             Dictionary with all public parameters (25)
         """
         return {k: v for k, v in asdict(self).items() if not k.startswith("_")}
+
+    def canonical_parameters(self) -> Dict[str, float]:
+        """Stable public 25p parameter mapping for metadata and hashing."""
+        return {k: float(v) for k, v in sorted(self.to_config_dict().items())}
+
+    def canonical_json(self) -> str:
+        """Stable JSON representation of public parameters only."""
+        return json.dumps(
+            self.canonical_parameters(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    def sha256(self) -> str:
+        """SHA-256 of the canonical public 25p parameter JSON."""
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
     def copy(self) -> "NoiseModel":
         """Deep-ish copy preserving reference parameters."""
@@ -400,22 +420,44 @@ class NoiseModel:
 
 def get_grouped_totals(nm: NoiseModel) -> Dict[str, float]:
     """
-    Compute the sum of p's per fault channel (capital P's) for the 25-p noise model.
+    Compute effective fault-channel totals (capital P's) for 25-p training scaling.
 
     Returns:
-        Dict with keys: p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot, max_group.
+        Dict with separate prep/meas channels, idle/cnot totals, and max_group.
+
+    Notes:
+        - X/Z prep and measurement are separate one-Pauli fault channels; summing
+          them would double-count the effective channel probability.
+        - p_idle_spam_* models a two-step SPAM window, so the scaling decision uses
+          half the raw total while still reporting the raw configured total.
     """
-    p_prep = float(nm.p_prep_X + nm.p_prep_Z)
-    p_meas = float(nm.p_meas_X + nm.p_meas_Z)
-    p_idle_cnot = float(nm.get_total_idle_cnot_probability())
-    p_idle_spam = float(nm.get_total_idle_spam_probability())
-    p_cnot = float(nm.get_total_cnot_probability())
-    max_group = max(p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot)
+    p_prep_X = float(nm.p_prep_X)
+    p_prep_Z = float(nm.p_prep_Z)
+    p_meas_X = float(nm.p_meas_X)
+    p_meas_Z = float(nm.p_meas_Z)
+    p_idle_cnot = math.fsum(float(p) for p in nm.get_idle_cnot_probabilities())
+    p_idle_spam_raw = math.fsum(float(p) for p in nm.get_idle_spam_probabilities())
+    p_idle_spam_effective = 0.5 * p_idle_spam_raw
+    p_cnot = math.fsum(float(p) for p in nm.get_cnot_probabilities())
+    max_group = max(
+        p_prep_X,
+        p_prep_Z,
+        p_meas_X,
+        p_meas_Z,
+        p_idle_cnot,
+        p_idle_spam_effective,
+        p_cnot,
+    )
     return {
-        "p_prep": p_prep,
-        "p_meas": p_meas,
+        "p_prep_X": p_prep_X,
+        "p_prep_Z": p_prep_Z,
+        "p_meas_X": p_meas_X,
+        "p_meas_Z": p_meas_Z,
+        "p_prep_total": p_prep_X + p_prep_Z,
+        "p_meas_total": p_meas_X + p_meas_Z,
         "p_idle_cnot": p_idle_cnot,
-        "p_idle_spam": p_idle_spam,
+        "p_idle_spam_raw": p_idle_spam_raw,
+        "p_idle_spam_effective": p_idle_spam_effective,
         "p_cnot": p_cnot,
         "max_group": max_group,
     }
@@ -448,7 +490,7 @@ def get_training_upscaled_noise_model(
         - applied_upscale: bool
         - scale_factor: float (only if upscaling applied)
         - max_group: float
-        - group_totals: dict (p_prep, p_meas, ...)
+        - group_totals: dict (p_prep_X, p_prep_Z, p_meas_X, p_meas_Z, ...)
         - above_target_warning: bool (max_group > UPSCALE_TARGET)
         - downscale_skipped: bool (max_group > target, params not modified)
         - skipped_by_user: bool (skip_upscale was True)
@@ -481,8 +523,11 @@ def get_training_upscaled_noise_model(
     if max_group <= 0.0:
         raise ValueError(
             "Invalid noise_model: all grouped totals are <= 0 "
-            f"(prep={totals['p_prep']}, meas={totals['p_meas']}, "
-            f"idle_cnot={totals['p_idle_cnot']}, idle_spam={totals['p_idle_spam']}, cnot={totals['p_cnot']})."
+            f"(prep_X={totals['p_prep_X']}, prep_Z={totals['p_prep_Z']}, "
+            f"meas_X={totals['p_meas_X']}, meas_Z={totals['p_meas_Z']}, "
+            f"idle_cnot={totals['p_idle_cnot']}, "
+            f"idle_spam_effective={totals['p_idle_spam_effective']}, "
+            f"cnot={totals['p_cnot']})."
         )
 
     scale_factor = target / max_group

@@ -781,26 +781,25 @@ def main(cfg: DictConfig) -> None:
         if nm_dict is not None:
             noise_model_user_obj = NoiseModel.from_config_dict(dict(nm_dict))
 
-            # Compute grouped noise totals for logging and scaling decisions.
-            p_prep = float(noise_model_user_obj.p_prep_X + noise_model_user_obj.p_prep_Z)
-            p_meas = float(noise_model_user_obj.p_meas_X + noise_model_user_obj.p_meas_Z)
-            p_idle_cnot = float(noise_model_user_obj.get_total_idle_cnot_probability())
-            p_idle_spam = float(noise_model_user_obj.get_total_idle_spam_probability())
-            p_cnot = float(noise_model_user_obj.get_total_cnot_probability())
-            max_group = max(p_prep, p_meas, p_idle_cnot, p_idle_spam, p_cnot)
-            if max_group <= 0.0:
-                raise ValueError(
-                    "Invalid noise_model: all grouped totals are <= 0 "
-                    f"(prep={p_prep}, meas={p_meas}, idle_cnot={p_idle_cnot}, idle_spam={p_idle_spam}, cnot={p_cnot})."
-                )
-
             # Surface-code training upscaling: bring max(P's) to target for training
             # data only. Evaluation uses the user-specified noise model as-is.
             from qec.noise_model import (
+                get_grouped_totals,
                 get_training_upscaled_noise_model,
                 SURFACE_CODE_TRAINING_UPSCALE_TARGET,
                 SURFACE_CODE_THRESHOLD_APPROX,
             )
+            group_totals = get_grouped_totals(noise_model_user_obj)
+            max_group = float(group_totals["max_group"])
+            if max_group <= 0.0:
+                raise ValueError(
+                    "Invalid noise_model: all grouped totals are <= 0 "
+                    f"(prep_X={group_totals['p_prep_X']}, prep_Z={group_totals['p_prep_Z']}, "
+                    f"meas_X={group_totals['p_meas_X']}, meas_Z={group_totals['p_meas_Z']}, "
+                    f"idle_cnot={group_totals['p_idle_cnot']}, "
+                    f"idle_spam_effective={group_totals['p_idle_spam_effective']}, "
+                    f"cnot={group_totals['p_cnot']})."
+                )
             code_type = getattr(cfg.data, "code_type", "surface_code")
             skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
             if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
@@ -818,11 +817,19 @@ def main(cfg: DictConfig) -> None:
             p_min_value = p_error_value
             p_max_value = p_error_value
             if dist.rank == 0:
+                group_totals = upscale_info["group_totals"]
+                max_group = float(upscale_info["max_group"])
                 # Always print the grouped totals + decision to make verification easy from logs.
                 print(
                     "[Train] noise_model grouped totals: "
-                    f"prep={p_prep:.6g}, meas={p_meas:.6g}, "
-                    f"idle_cnot={p_idle_cnot:.6g}, idle_spam={p_idle_spam:.6g}, cnot={p_cnot:.6g}; "
+                    f"prep_X={group_totals['p_prep_X']:.6g}, "
+                    f"prep_Z={group_totals['p_prep_Z']:.6g}, "
+                    f"meas_X={group_totals['p_meas_X']:.6g}, "
+                    f"meas_Z={group_totals['p_meas_Z']:.6g}, "
+                    f"idle_cnot={group_totals['p_idle_cnot']:.6g}, "
+                    f"idle_spam_raw={group_totals['p_idle_spam_raw']:.6g}, "
+                    f"idle_spam_effective={group_totals['p_idle_spam_effective']:.6g}, "
+                    f"cnot={group_totals['p_cnot']:.6g}; "
                     f"max_group={max_group:.6g}"
                 )
                 print(f"[Train] {upscale_info['message']}")
@@ -876,10 +883,12 @@ def main(cfg: DictConfig) -> None:
                 )
                 print(
                     "[Train] noise_model totals: "
-                    f"prep_total={p_prep:.6g}, meas_total={p_meas:.6g}, "
-                    f"idle_cnot_total={noise_model_user_obj.get_total_idle_cnot_probability():.6g}, "
-                    f"idle_spam_total={noise_model_user_obj.get_total_idle_spam_probability():.6g}, "
-                    f"cnot_total={noise_model_user_obj.get_total_cnot_probability():.6g}"
+                    f"prep_total={group_totals['p_prep_total']:.6g}, "
+                    f"meas_total={group_totals['p_meas_total']:.6g}, "
+                    f"idle_cnot_total={group_totals['p_idle_cnot']:.6g}, "
+                    f"idle_spam_total={group_totals['p_idle_spam_raw']:.6g}, "
+                    f"idle_spam_effective={group_totals['p_idle_spam_effective']:.6g}, "
+                    f"cnot_total={group_totals['p_cnot']:.6g}"
                 )
         elif dist.rank == 0:
             print("[Train] noise_model: null (using legacy single-p / p-range sampling)")
@@ -909,6 +918,16 @@ def main(cfg: DictConfig) -> None:
     precomputed_frames_dir = resolve_precomputed_frames_dir(
         precomputed_frames_dir, cfg.distance, cfg.n_rounds, cfg.meas_basis, dist.rank
     )
+    if dist.rank == 0:
+        if noise_model_train_obj is not None:
+            print(f"[Train] active noise_model_sha256={noise_model_train_obj.sha256()}")
+        if precomputed_frames_dir is None:
+            print("[Train] DEM artifacts: building in memory")
+        else:
+            print(
+                "[Train] DEM artifacts: using disk request "
+                f"{precomputed_frames_dir} with noise metadata validation"
+            )
 
     _compute_dtype_raw = getattr(cfg.data, 'compute_dtype', None)
     _compute_dtype = None
@@ -958,6 +977,7 @@ def main(cfg: DictConfig) -> None:
             decompose_y=False,
             precomputed_frames_dir=precomputed_frames_dir,
             code_rotation=code_rotation,
+            noise_model=noise_model_train_obj,
             **_he_accel_kwargs,
         )
         val_generator = QCDataGeneratorTorch(
@@ -978,6 +998,7 @@ def main(cfg: DictConfig) -> None:
             decompose_y=False,
             precomputed_frames_dir=precomputed_frames_dir,
             code_rotation=code_rotation,
+            noise_model=noise_model_train_obj,
             **_he_accel_kwargs,
         )
 

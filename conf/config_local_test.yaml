@@ -37,9 +37,9 @@ data:
     p_idle_cnot_X: 0.001
     p_idle_cnot_Y: 0.001
     p_idle_cnot_Z: 0.001
-    p_idle_spam_X: 0.001998
-    p_idle_spam_Y: 0.001998
-    p_idle_spam_Z: 0.001998
+    p_idle_spam_X: 0.001996
+    p_idle_spam_Y: 0.001996
+    p_idle_spam_Z: 0.001996
     p_cnot_IX: 0.0002
     p_cnot_IY: 0.0002
     p_cnot_IZ: 0.0002

@@ -205,6 +205,11 @@ If you are not training locally, you can run inference using pre-trained models.
    - `models/Ising-Decoder-SurfaceCode-1-Fast.pt` (receptive field R=9)
    - `models/Ising-Decoder-SurfaceCode-1-Accurate.pt` (receptive field R=13)
 
+   These checkpoints target the uniform circuit-level depolarizing setting
+   encoded by the public configs. Custom, non-uniform 25-parameter noise models
+   are supported for training by the pipeline below; they are a training-time
+   customization rather than a property of the shipped checkpoints.
+
    Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
 
 3. Set:
@@ -559,20 +564,31 @@ LOGICAL Z (lz):
 #### Noise model (public default)
 
 - `data.noise_model`: a **25-parameter circuit-level** noise model (SPAM, idles, and CNOT Pauli channels).
+- The shipped configs use a **uniform circuit-level depolarizing** mapping, where all 25 values are derived from a single physical error rate `p` (for example `p_prep_{X,Z}=2*p/3`, `p_idle_cnot_{X,Y,Z}=p/3`, and `p_cnot_*=p/15`).
+- You may edit `data.noise_model` to train on a non-uniform/custom 25-parameter model. In that case the Torch training generator refreshes the sampling probability vector from the active 25p model instead of collapsing back to the scalar uniform-depolarizing path.
 
 #### Training noise upscaling (surface code)
 
-When training a surface-code pre-decoder the noise parameters you specify may be very small (e.g. `p = 1e-4`), which produces extremely sparse syndromes and slow convergence. To address this, the training pipeline **automatically upscales** all 25 noise-model parameters so that the largest grouped total `max(P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot)` equals a fixed target of **6 × 10⁻³** (just below the surface-code threshold of ~7.5 × 10⁻³).
+When training a surface-code pre-decoder the noise parameters you specify may be very small (e.g. `p = 1e-4`), which produces extremely sparse syndromes and slow convergence. To address this, the training pipeline **automatically upscales** all 25 noise-model parameters so that the largest *effective* fault-channel probability equals a fixed target of **6 × 10⁻³** (just below the surface-code threshold of ~7.5 × 10⁻³).
 
-The five grouped totals are:
+The seven channels considered (the "capital P's") are:
 
-| Group | Sum of |
-|-------|--------|
-| P_prep | `p_prep_X + p_prep_Z` |
-| P_meas | `p_meas_X + p_meas_Z` |
+| Channel | Value |
+|---------|-------|
+| P_prep_X | `p_prep_X` |
+| P_prep_Z | `p_prep_Z` |
+| P_meas_X | `p_meas_X` |
+| P_meas_Z | `p_meas_Z` |
 | P_idle_cnot | `p_idle_cnot_X + p_idle_cnot_Y + p_idle_cnot_Z` |
-| P_idle_spam | `p_idle_spam_X + p_idle_spam_Y + p_idle_spam_Z` |
+| P_idle_spam (effective) | `0.5 × (p_idle_spam_X + p_idle_spam_Y + p_idle_spam_Z)` |
 | P_cnot | sum of all 15 `p_cnot_*` |
+
+`max_group = max(P_prep_X, P_prep_Z, P_meas_X, P_meas_Z, P_idle_cnot, P_idle_spam_effective, P_cnot)`.
+
+Two design notes:
+
+- **X / Z prep and measurement are kept separate.** They are independent one-Pauli fault channels — summing `p_prep_X + p_prep_Z` (or `p_meas_X + p_meas_Z`) double-counts the effective channel probability and would inflate `max_group` for an otherwise on-target depolarising noise model.
+- **`p_idle_spam_*` is halved before the comparison.** The SPAM-window idle is built from a two-step model (one per state-prep and one per ancilla-reset half), so the raw configured total represents two depolarising steps. The scaling decision uses the per-step effective value `0.5 × p_idle_spam_raw`; the raw value is still reported in logs as `idle_spam_raw`.
 
 **Upscaling rules:**
 
@@ -580,7 +596,7 @@ The five grouped totals are:
 - If `max_group >= 6e-3`: parameters are **not** modified (the training log emits a warning in case this indicates a configuration error).
 - Non-surface-code types (`code_type != "surface_code"`) are never upscaled.
 
-**Algorithm in brief:** The pipeline stores `p_max = max(P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot)` from the full 25-parameter noise vector and rescales the entire vector by `0.006 / p_max` so that `p_max` is raised to **0.6%** (6 × 10⁻³). The original noise model is preserved unchanged for evaluation.
+**Algorithm in brief:** The pipeline computes the seven channels above, takes `p_max = max(...)`, and rescales the entire 25-parameter vector by `0.006 / p_max` so that `p_max` is raised to **0.6%** (6 × 10⁻³). The original noise model is preserved unchanged for evaluation.
 
 We have found that training on denser syndromes and then evaluating on sparser data produces better results than training directly on sparse data.
 
@@ -621,6 +637,14 @@ If frames are missing, the code can fall back to on-the-fly generation, but it i
 ```bash
 python3 code/data/precompute_frames.py --distance 13 --n_rounds 13 --basis X Z --rotation O1
 ```
+
+Precomputed DEM/frame artifacts are structural: they encode which detector
+responses each possible error column can produce for a given distance, number of
+rounds, basis, and rotation. The active scalar or 25-parameter noise model
+controls the per-column sampling probabilities. Therefore cached structural
+artifacts can be reused when only the probabilities change; the training
+generator refreshes the probability vector from the active noise model at load
+time.
 
 ### Resuming training and running inference on a trained model
 

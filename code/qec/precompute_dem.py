@@ -30,8 +30,9 @@ Outputs (in --dem_output_dir):
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Any, Iterable, List, Tuple
 
 import sys
 
@@ -46,6 +47,99 @@ if str(_CODE_ROOT) not in sys.path:
 # =============================================================================
 # Stim parsing helpers (pure python)
 # =============================================================================
+
+DEM_ARTIFACT_METADATA_VERSION = 1
+DEM_ARTIFACT_METADATA_KEY = "metadata_json"
+
+
+def build_dem_artifact_metadata(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    code_rotation: str,
+    p_scalar: float,
+    noise_model=None,
+) -> dict[str, Any]:
+    """Build metadata for a DEM artifact.
+
+    The structural keys identify whether cached H/A frame artifacts can be
+    reused. The probability keys record provenance for the stored p vector, but
+    probability changes alone do not invalidate the structural DEM.
+    """
+    metadata: dict[str, Any] = {
+        "schema_version": DEM_ARTIFACT_METADATA_VERSION,
+        "distance": int(distance),
+        "n_rounds": int(n_rounds),
+        "basis": str(basis).upper(),
+        "code_rotation": str(code_rotation).upper(),
+    }
+    if noise_model is None:
+        metadata.update({
+            "noise_mode": "scalar",
+            "p_scalar": float(p_scalar),
+        })
+    else:
+        metadata.update(
+            {
+                "noise_mode": "noise_model",
+                "p_scalar_placeholder": float(p_scalar),
+                "noise_model_sha256": noise_model.sha256(),
+                "noise_model": noise_model.canonical_parameters(),
+            }
+        )
+    return metadata
+
+
+def encode_dem_artifact_metadata(metadata: dict[str, Any]) -> str:
+    """Serialize metadata in a deterministic JSON form."""
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def decode_dem_artifact_metadata(value) -> dict[str, Any]:
+    """Decode metadata loaded from an npz scalar/string array."""
+    if isinstance(value, np.ndarray):
+        value = value.item() if value.shape == () else value.reshape(-1)[0]
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    return json.loads(str(value))
+
+
+def load_dem_artifact_metadata(p_path: Path) -> dict[str, Any] | None:
+    """Return metadata from a .p.npz file, or None for legacy artifacts."""
+    with np.load(p_path, allow_pickle=False) as z:
+        if DEM_ARTIFACT_METADATA_KEY not in z.files:
+            return None
+        return decode_dem_artifact_metadata(z[DEM_ARTIFACT_METADATA_KEY])
+
+
+def dem_artifact_metadata_matches(
+    metadata: dict[str, Any] | None,
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    code_rotation: str,
+    p_scalar: float,
+    noise_model=None,
+) -> tuple[bool, str]:
+    """Check whether on-disk DEM metadata matches the requested structure."""
+    if metadata is None:
+        return True, "legacy artifact without structural metadata"
+
+    expected = build_dem_artifact_metadata(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        code_rotation=code_rotation,
+        p_scalar=p_scalar,
+        noise_model=noise_model,
+    )
+    for key in ("schema_version", "distance", "n_rounds", "basis", "code_rotation"):
+        if metadata.get(key) != expected.get(key):
+            return False, f"metadata {key}={metadata.get(key)!r} != expected {expected.get(key)!r}"
+
+    return True, "structural metadata matches"
 
 
 def extract_cnot_structure_from_stim_text(circuit_string: str) -> tuple[np.ndarray, np.ndarray]:
@@ -542,7 +636,20 @@ def build_single_p_marginal(
                     p_err[eidx] = float(_nm_cnot.get(et, 0.0))
             elif len(et) == 1:
                 if is_ancilla_prep:
-                    p_err[eidx] = 0.0
+                    # Stim emits Z_ERROR(p_prep_X) on X-basis-reset ancillas and
+                    # X_ERROR(p_prep_Z) on Z-basis-reset ancillas (see MemoryCircuit.
+                    # add_reset / add_single_error). Treat prep as its own one-Pauli
+                    # fault channel, consistent with get_grouped_totals' "X/Z prep
+                    # and measurement are separate one-Pauli fault channels" rule
+                    # and with linear behaviour under uniform noise upscaling.
+                    prep_basis = int(prep_basis_map[(r, q)])
+                    if prep_basis == 0:
+                        allowed = (et == "Z")
+                    else:
+                        allowed = (et == "X")
+                    p_err[eidx] = float(
+                        p_prep_X if prep_basis == 0 else p_prep_Z
+                    ) if allowed else 0.0
                 elif is_ancilla_meas:
                     meas_basis = int(meas_basis_map[(r, q)])
                     if meas_basis == 0:
@@ -614,6 +721,75 @@ def build_single_p_marginal(
                 p_err[eidx] = float(p_adjusted) / 15.0
 
     return p_err
+
+
+def build_probability_vector_surface_code(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    code_rotation: str,
+    p_scalar: float,
+    noise_model=None,
+) -> np.ndarray:
+    """Build only the per-error probability vector for a surface-code DEM.
+
+    Cached DEM frame artifacts encode the possible detector responses. The
+    active scalar/noise model only determines how likely each error column is,
+    so callers can reuse cached H/A artifacts and refresh p with this helper.
+    """
+    from qec.surface_code.memory_circuit import MemoryCircuit
+
+    distance = int(distance)
+    n_rounds = int(n_rounds)
+    basis = str(basis).upper()
+    code_rotation = str(code_rotation).upper()
+    p_scalar = float(p_scalar)
+
+    circ = MemoryCircuit(
+        distance=distance,
+        idle_error=p_scalar,
+        sqgate_error=p_scalar,
+        tqgate_error=p_scalar,
+        spam_error=2.0 / 3.0 * p_scalar,
+        n_rounds=n_rounds,
+        basis=basis,
+        code_rotation=code_rotation,
+        noise_model=noise_model,
+    )
+    circ.set_error_rates()
+    cnot_circuit, cx_times = extract_cnot_structure_from_stim_text(circ.circuit)
+    t_total = int(len(cx_times) + 2)
+    nq = int(2 * distance * distance - 1)
+
+    data_qubits = np.array(circ.code.data_qubits, dtype=np.int32)
+    xcheck_qubits = np.array(circ.code.xcheck_qubits, dtype=np.int32)
+    zcheck_qubits = np.array(circ.code.zcheck_qubits, dtype=np.int32)
+    meas_qubits = np.concatenate([xcheck_qubits, zcheck_qubits]).astype(np.int32)
+    meas_bases = np.concatenate(
+        [np.zeros(len(xcheck_qubits), np.int32),
+         np.ones(len(zcheck_qubits), np.int32)]
+    ).astype(np.int32)
+
+    _, metadata_local = generate_all_errors_local(
+        t_total=t_total, nq=nq, controls_by_layer=cnot_circuit, cx_times=cx_times
+    )
+    metadata_global = replicate_metadata_across_rounds(
+        metadata_local=metadata_local, n_rounds=n_rounds
+    )
+    return build_single_p_marginal(
+        error_metadata_global=metadata_global,
+        t_total=t_total,
+        n_rounds=n_rounds,
+        data_qubits=data_qubits,
+        xcheck_qubits=xcheck_qubits,
+        zcheck_qubits=zcheck_qubits,
+        meas_qubits=meas_qubits,
+        meas_bases=meas_bases,
+        basis=basis,
+        p_scalar=p_scalar,
+        noise_model=noise_model,
+    ).astype(np.float32)
 
 
 # =============================================================================
@@ -784,8 +960,19 @@ def precompute_dem_bundle_surface_code(
 
         np.savez_compressed(dem_dir / f"{prefix}.X.npz", HX=HX.cpu().numpy().astype(np.uint8))
         np.savez_compressed(dem_dir / f"{prefix}.Z.npz", HZ=HZ.cpu().numpy().astype(np.uint8))
+        metadata = build_dem_artifact_metadata(
+            distance=distance,
+            n_rounds=n_rounds,
+            basis=basis,
+            code_rotation=code_rotation,
+            p_scalar=p_scalar,
+            noise_model=noise_model,
+        )
         np.savez_compressed(
-            dem_dir / f"{prefix}.p.npz", p=p_err, p_nominal=np.array(p_scalar, dtype=np.float32)
+            dem_dir / f"{prefix}.p.npz",
+            p=p_err,
+            p_nominal=np.array(p_scalar, dtype=np.float32),
+            **{DEM_ARTIFACT_METADATA_KEY: np.array(encode_dem_artifact_metadata(metadata))},
         )
         np.savez_compressed(dem_dir / f"{prefix}.A.npz", A=A.astype(np.uint8))
         return dem_dir
@@ -803,6 +990,18 @@ def main() -> None:
     ap.add_argument(
         "--p", type=float, default=0.01, help="Scalar p for exporting single-p marginals"
     )
+    ap.add_argument(
+        "--noise_model_config",
+        type=str,
+        default=None,
+        help="YAML/JSON config containing data.noise_model, noise_model, or a direct 25p mapping",
+    )
+    ap.add_argument(
+        "--noise_model_json",
+        type=str,
+        default=None,
+        help="JSON file containing data.noise_model, noise_model, or a direct 25p mapping",
+    )
     ap.add_argument("--dem_output_dir", type=str, default=None)
     ap.add_argument(
         "--no_save", action="store_true", help="Run precompute but do not write any files"
@@ -811,6 +1010,16 @@ def main() -> None:
         "--device", type=str, default=None, help="e.g. cuda, cuda:0, cpu (default: auto)"
     )
     args = ap.parse_args()
+
+    if args.noise_model_config is not None and args.noise_model_json is not None:
+        ap.error("Use only one of --noise_model_config or --noise_model_json")
+    noise_model = None
+    noise_model_path = args.noise_model_config or args.noise_model_json
+    if noise_model_path is not None:
+        # Defer the import to avoid a circular dependency with data.precompute_frames
+        # at module-import time (precompute_frames.py imports from this module).
+        from data.precompute_frames import _load_noise_model
+        noise_model = _load_noise_model(noise_model_path)
 
     d = int(args.distance)
     r = int(args.n_rounds) if args.n_rounds is not None else d
@@ -827,6 +1036,7 @@ def main() -> None:
         dem_output_dir=(str(args.dem_output_dir) if args.dem_output_dir is not None else None),
         device=dev,
         export=(not bool(args.no_save)),
+        noise_model=noise_model,
     )
 
 

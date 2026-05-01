@@ -88,6 +88,7 @@ class MemoryCircuitTorch:
         H: torch.Tensor | None = None,  # (2*num_detectors, num_errors) uint8
         p: torch.Tensor | None = None,  # (num_errors,) float32
         A: torch.Tensor | None = None,  # (n_rounds*num_meas, 2*num_detectors) uint8
+        p_override: torch.Tensor | np.ndarray | None = None,
     ):
         self.distance = int(distance)
         self.n_rounds = int(n_rounds)
@@ -184,6 +185,17 @@ class MemoryCircuitTorch:
             hx = np.asarray(hx, dtype=np.uint8)
             hz = np.asarray(hz, dtype=np.uint8)
             p_arr = np.asarray(p_arr).reshape(-1)
+            if p_override is not None:
+                if isinstance(p_override, torch.Tensor):
+                    override_src = p_override.detach().cpu().numpy()
+                else:
+                    override_src = p_override
+                override = np.asarray(override_src).reshape(-1)
+                if int(override.shape[0]) != errors:
+                    raise ValueError(
+                        f"p_override length {override.shape[0]} != DEM artifact error count {errors}"
+                    )
+                p_arr = override
             hx = hx if hx.shape[1] == errors else hx.T
             hz = hz if hz.shape[1] == errors else hz.T
             self.H = torch.from_numpy(np.concatenate([hx, hz],

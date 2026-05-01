@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import torch
+from pathlib import Path
 
 
 class QCDataGeneratorTorch:
@@ -76,17 +77,15 @@ class QCDataGeneratorTorch:
             raise ValueError(
                 "decompose_y is not supported in the Torch-only generator (set decompose_y=false)."
             )
-        if noise_model is not None:
-            # TODO: wire noise_model through to precompute_dem_bundle_surface_code()
-            # so train/eval use the same 25-parameter noise distribution.
-            # build_single_p_marginal() already supports noise_model; only this
-            # generator-level plumbing is missing.
-            raise ValueError(
-                "noise_model is not supported in the Torch-only generator (simple single-p only)."
-            )
+        self.noise_model = noise_model
 
         from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
-        from qec.precompute_dem import precompute_dem_bundle_surface_code
+        from qec.precompute_dem import (
+            build_probability_vector_surface_code,
+            dem_artifact_metadata_matches,
+            load_dem_artifact_metadata,
+            precompute_dem_bundle_surface_code,
+        )
 
         import threading
         self._early_compile_threads: list[threading.Thread] = []
@@ -110,17 +109,73 @@ class QCDataGeneratorTorch:
                 self._early_compile_threads.append(t)
 
         dem_cache = {}
-        if precomputed_frames_dir is None:
-            # Pick a nominal p for building the single-p marginal vector.
-            # (This matches existing behavior when using a precomputed directory.)
-            p_nom = float(
-                p_error if p_error is not None else (p_max if p_max is not None else 0.004)
-            )
-            if self.verbose:
-                print(
-                    f"[QCDataGeneratorTorch] precomputed_frames_dir=None -> building in-memory DEM bundle at p={p_nom}"
+        p_overrides = {}
+        bases_needed = ["X", "Z"] if self._mixed else [self._single_basis]
+        p_nom = float(p_error if p_error is not None else (p_max if p_max is not None else 0.004))
+        effective_precomputed_frames_dir = precomputed_frames_dir
+        metadata_reason = None
+        if precomputed_frames_dir is not None:
+            precomputed_dir = Path(precomputed_frames_dir)
+            for b in bases_needed:
+                p_path = (
+                    precomputed_dir /
+                    f"surface_d{self.distance}_r{self.n_rounds}_{b}_frame_predecoder.p.npz"
                 )
-            bases_needed = ["X", "Z"] if self._mixed else [self._single_basis]
+                if not p_path.exists():
+                    # Asymmetric handling on purpose:
+                    # - Scalar mode preserves the legacy behaviour of letting
+                    #   MemoryCircuitTorch raise its own clear FileNotFoundError
+                    #   downstream (so `continue` here keeps the dir intact).
+                    # - 25p mode self-heals by falling back to an in-memory
+                    #   build, since the p artifact is needed to determine the
+                    #   cached error-column count.
+                    if noise_model is None:
+                        continue
+                    effective_precomputed_frames_dir = None
+                    metadata_reason = f"missing p artifact for basis {b}"
+                    break
+                metadata = load_dem_artifact_metadata(p_path)
+                ok, reason = dem_artifact_metadata_matches(
+                    metadata,
+                    distance=self.distance,
+                    n_rounds=self.n_rounds,
+                    basis=b,
+                    code_rotation=self.code_rotation,
+                    p_scalar=p_nom,
+                    noise_model=noise_model,
+                )
+                if not ok:
+                    effective_precomputed_frames_dir = None
+                    metadata_reason = f"basis {b}: {reason}"
+                    break
+                p_overrides[b] = torch.from_numpy(
+                    build_probability_vector_surface_code(
+                        distance=self.distance,
+                        n_rounds=self.n_rounds,
+                        basis=b,
+                        code_rotation=self.code_rotation,
+                        p_scalar=p_nom,
+                        noise_model=noise_model,
+                    )
+                )
+
+        if effective_precomputed_frames_dir is None:
+            nm_tag = ", noise_model=25p" if noise_model is not None else ""
+            if precomputed_frames_dir is None:
+                source = "precomputed_frames_dir=None"
+            else:
+                source = f"precomputed DEM metadata mismatch ({metadata_reason})"
+            # Always announce a metadata-driven rebuild on rank 0 so silent
+            # rebuilds are visible in non-verbose distributed runs. The
+            # precomputed_frames_dir=None path is only logged when verbose.
+            should_log = self.verbose or (
+                precomputed_frames_dir is not None and int(self.rank) == 0
+            )
+            if should_log:
+                print(
+                    f"[QCDataGeneratorTorch] {source} -> building in-memory DEM bundle "
+                    f"at p={p_nom}{nm_tag}"
+                )
             for b in bases_needed:
                 dem_cache[b] = precompute_dem_bundle_surface_code(
                     distance=self.distance,
@@ -132,8 +187,17 @@ class QCDataGeneratorTorch:
                     device=self.device,
                     export=False,
                     return_artifacts=True,
-                    # TODO: pass noise_model=noise_model here for circuit-level noise support
+                    noise_model=noise_model,
                 )
+        elif self.verbose:
+            nm_tag = (
+                f", refreshed_p_from_noise_model={noise_model.sha256()}"
+                if noise_model is not None else f", refreshed_p_from_scalar={p_nom:g}"
+            )
+            print(
+                f"[QCDataGeneratorTorch] using disk DEM structure from "
+                f"{effective_precomputed_frames_dir}{nm_tag}"
+            )
 
         _he_kwargs = dict(
             timelike_he=timelike_he,
@@ -154,24 +218,26 @@ class QCDataGeneratorTorch:
                 distance=self.distance,
                 n_rounds=self.n_rounds,
                 basis="X",
-                precomputed_frames_dir=precomputed_frames_dir,
+                precomputed_frames_dir=effective_precomputed_frames_dir,
                 code_rotation=self.code_rotation,
                 device=self.device,
                 H=(dem_cache.get("X", {}).get("H") if dem_cache else None),
                 p=(dem_cache.get("X", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("X", {}).get("A") if dem_cache else None),
+                p_override=p_overrides.get("X"),
                 **_he_kwargs,
             )
             self.sim_Z = MemoryCircuitTorch(
                 distance=self.distance,
                 n_rounds=self.n_rounds,
                 basis="Z",
-                precomputed_frames_dir=precomputed_frames_dir,
+                precomputed_frames_dir=effective_precomputed_frames_dir,
                 code_rotation=self.code_rotation,
                 device=self.device,
                 H=(dem_cache.get("Z", {}).get("H") if dem_cache else None),
                 p=(dem_cache.get("Z", {}).get("p") if dem_cache else None),
                 A=(dem_cache.get("Z", {}).get("A") if dem_cache else None),
+                p_override=p_overrides.get("Z"),
                 **_he_kwargs,
             )
         else:
@@ -179,12 +245,13 @@ class QCDataGeneratorTorch:
                 distance=self.distance,
                 n_rounds=self.n_rounds,
                 basis=self._single_basis,
-                precomputed_frames_dir=precomputed_frames_dir,
+                precomputed_frames_dir=effective_precomputed_frames_dir,
                 code_rotation=self.code_rotation,
                 device=self.device,
                 H=(dem_cache.get(self._single_basis, {}).get("H") if dem_cache else None),
                 p=(dem_cache.get(self._single_basis, {}).get("p") if dem_cache else None),
                 A=(dem_cache.get(self._single_basis, {}).get("A") if dem_cache else None),
+                p_override=p_overrides.get(self._single_basis),
                 **_he_kwargs,
             )
 

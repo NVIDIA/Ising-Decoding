@@ -34,6 +34,7 @@ Outputs (in --dem_output_dir / --output_dir):
 """
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import time
@@ -44,6 +45,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from qec.precompute_dem import precompute_dem_bundle_surface_code
+from qec.noise_model import NoiseModel
 
 
 def _normalize_rotation(rotation: str) -> str:
@@ -54,6 +56,42 @@ def _normalize_rotation(rotation: str) -> str:
     if internal_rot not in internal_to_public:
         raise ValueError(f"Invalid rotation={rotation!r}. Use O1..O4 (preferred) or XV/XH/ZV/ZH.")
     return internal_rot
+
+
+def _load_config_mapping(path: str) -> dict:
+    path_obj = Path(path)
+    if path_obj.suffix.lower() == ".json":
+        with path_obj.open("r", encoding="utf-8") as f:
+            return json.load(f)
+
+    try:
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.load(path_obj)
+        return OmegaConf.to_container(cfg, resolve=True)
+    except Exception:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError(
+                "YAML noise model configs require omegaconf or PyYAML to be installed"
+            ) from exc
+        with path_obj.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+
+
+def _load_noise_model(path: str) -> NoiseModel:
+    cfg = _load_config_mapping(path)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Noise model config must be a mapping, got {type(cfg).__name__}")
+
+    if isinstance(cfg.get("data"), dict) and isinstance(cfg["data"].get("noise_model"), dict):
+        noise_model_cfg = cfg["data"]["noise_model"]
+    elif isinstance(cfg.get("noise_model"), dict):
+        noise_model_cfg = cfg["noise_model"]
+    else:
+        noise_model_cfg = cfg
+
+    return NoiseModel.from_config_dict(noise_model_cfg)
 
 
 def main() -> None:
@@ -102,6 +140,18 @@ def main() -> None:
         help="Scalar p for exporting single-p marginals",
     )
     parser.add_argument(
+        "--noise_model_config",
+        type=str,
+        default=None,
+        help="YAML/JSON config containing data.noise_model, noise_model, or a direct 25p mapping",
+    )
+    parser.add_argument(
+        "--noise_model_json",
+        type=str,
+        default=None,
+        help="JSON file containing data.noise_model, noise_model, or a direct 25p mapping",
+    )
+    parser.add_argument(
         "--dem_output_dir",
         type=str,
         default=None,
@@ -132,6 +182,13 @@ def main() -> None:
         args.dem_output_dir = args.output_dir
     if args.dem_output_dir is None:
         args.dem_output_dir = str(Path(__file__).parent.parent / "frames_data")
+    if args.noise_model_config is not None and args.noise_model_json is not None:
+        print("Error: Use only one of --noise_model_config or --noise_model_json")
+        sys.exit(1)
+    noise_model = None
+    noise_model_path = args.noise_model_config or args.noise_model_json
+    if noise_model_path is not None:
+        noise_model = _load_noise_model(noise_model_path)
 
     if args.n_rounds is None:
         args.n_rounds = args.distance
@@ -158,6 +215,10 @@ def main() -> None:
         print(f"# Bases: {args.basis}")
         print(f"# Rotation: {args.rotation} (internal={internal_rot})")
         print(f"# Output: {args.dem_output_dir}")
+        if noise_model is None:
+            print(f"# Noise: scalar p={float(args.p)}")
+        else:
+            print(f"# Noise: 25p noise_model sha256={noise_model.sha256()}")
         print(f"{'#' * 60}")
 
     total_t0 = time.time()
@@ -175,6 +236,7 @@ def main() -> None:
                     dem_output_dir=str(args.dem_output_dir),
                     device=device,
                     export=True,
+                    noise_model=noise_model,
                 )
                 output_dirs.add(str(dem_dir))
             except Exception as e:

@@ -27,6 +27,7 @@ Key conventions enforced by this test module:
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -280,6 +281,19 @@ class TestNoiseModel(unittest.TestCase):
         with self.assertRaises(ValueError):
             NoiseModel(p_prep_X=1.5)
 
+    def test_canonical_noise_model_hash_uses_public_parameters_only(self):
+        nm = _noise_model_from_p(0.006)
+        nm_copy = nm.copy()
+        self.assertEqual(nm.sha256(), nm_copy.sha256())
+        self.assertNotIn("_reference", nm.canonical_parameters())
+
+        nm_copy._reference = {k: float(v) * 1.7 for k, v in nm_copy._reference.items()}
+        self.assertEqual(nm.sha256(), nm_copy.sha256())
+
+        changed = nm.copy()
+        changed.p_prep_X += 1e-9
+        self.assertNotEqual(nm.sha256(), changed.sha256())
+
     def test_stim_circuit_audit_no_cnot_noise_in_logical_measurement_section(self):
         # Non-trivial noise model: ensure PAULI_CHANNEL_2 appears in repeat block but NOT after it.
         D = 5
@@ -431,23 +445,179 @@ class TestNoiseModelUpscaling(unittest.TestCase):
     """Tests for surface-code training noise model upscaling (get_training_upscaled_noise_model)."""
 
     def test_get_grouped_totals(self):
-        """get_grouped_totals returns correct P_prep, P_meas, P_idle_cnot, P_idle_spam, P_cnot and max_group."""
+        """get_grouped_totals returns effective channels used for training scaling."""
         nm = _noise_model_from_p(0.01)
         tot = get_grouped_totals(nm)
-        self.assertAlmostEqual(
-            tot["p_prep"], 2.0 * 0.01 / 3.0 * 2, places=12
-        )  # p_prep_X + p_prep_Z
-        self.assertAlmostEqual(tot["p_meas"], 2.0 * 0.01 / 3.0 * 2, places=12)
+        self.assertAlmostEqual(tot["p_prep_X"], 2.0 * 0.01 / 3.0, places=12)
+        self.assertAlmostEqual(tot["p_prep_Z"], 2.0 * 0.01 / 3.0, places=12)
+        self.assertAlmostEqual(tot["p_meas_X"], 2.0 * 0.01 / 3.0, places=12)
+        self.assertAlmostEqual(tot["p_meas_Z"], 2.0 * 0.01 / 3.0, places=12)
+        self.assertAlmostEqual(tot["p_prep_total"], 2.0 * 0.01 / 3.0 * 2, places=12)
+        self.assertAlmostEqual(tot["p_meas_total"], 2.0 * 0.01 / 3.0 * 2, places=12)
         self.assertAlmostEqual(tot["p_idle_cnot"], 0.01, places=12)
-        self.assertAlmostEqual(tot["p_idle_spam"], nm.get_total_idle_spam_probability(), places=12)
+        self.assertAlmostEqual(
+            tot["p_idle_spam_raw"], nm.get_total_idle_spam_probability(), places=12
+        )
+        self.assertAlmostEqual(
+            tot["p_idle_spam_effective"], nm.get_total_idle_spam_probability() / 2.0, places=12
+        )
         self.assertAlmostEqual(tot["p_cnot"], 0.01, places=12)
         self.assertGreater(tot["max_group"], 0)
         self.assertEqual(
             tot["max_group"],
             max(
-                tot["p_prep"], tot["p_meas"], tot["p_idle_cnot"], tot["p_idle_spam"], tot["p_cnot"]
+                tot["p_prep_X"],
+                tot["p_prep_Z"],
+                tot["p_meas_X"],
+                tot["p_meas_Z"],
+                tot["p_idle_cnot"],
+                tot["p_idle_spam_effective"],
+                tot["p_cnot"],
             )
         )
+
+    def test_depolarizing_p006_has_target_effective_max_group(self):
+        """The p=6e-3 config should not look above target due to channel double-counting."""
+        nm = NoiseModel(
+            p_prep_X=0.004,
+            p_prep_Z=0.004,
+            p_meas_X=0.004,
+            p_meas_Z=0.004,
+            p_idle_cnot_X=0.002,
+            p_idle_cnot_Y=0.002,
+            p_idle_cnot_Z=0.002,
+            p_idle_spam_X=0.003984,
+            p_idle_spam_Y=0.003984,
+            p_idle_spam_Z=0.003984,
+            **{f"p_cnot_{k}": 0.0004 for k in CNOT_ERROR_TYPES}
+        )
+        tot = get_grouped_totals(nm)
+        self.assertAlmostEqual(tot["p_prep_X"], 0.004, places=12)
+        self.assertAlmostEqual(tot["p_prep_Z"], 0.004, places=12)
+        self.assertAlmostEqual(tot["p_meas_X"], 0.004, places=12)
+        self.assertAlmostEqual(tot["p_meas_Z"], 0.004, places=12)
+        self.assertAlmostEqual(tot["p_idle_cnot"], 0.006, places=12)
+        self.assertAlmostEqual(tot["p_idle_spam_raw"], 0.011952, places=12)
+        self.assertAlmostEqual(tot["p_idle_spam_effective"], 0.005976, places=12)
+        self.assertAlmostEqual(tot["p_cnot"], 0.006, places=12)
+        self.assertAlmostEqual(tot["max_group"], SURFACE_CODE_TRAINING_UPSCALE_TARGET, places=12)
+
+        training_nm, info = get_training_upscaled_noise_model(nm, code_type="surface_code")
+        self.assertTrue(info["applied_upscale"])
+        self.assertFalse(info["downscale_skipped"])
+        self.assertFalse(info["above_target_warning"])
+        self.assertAlmostEqual(info["scale_factor"], 1.0, places=12)
+        self.assertEqual(training_nm.to_config_dict(), nm.to_config_dict())
+
+    def test_precomputed_dem_probability_vector_uses_25p_values(self):
+        """DEM precompute should build p from the explicit 25p model, not scalar p/3 or p/15."""
+        import torch
+        from qec.precompute_dem import precompute_dem_bundle_surface_code
+
+        cnot_probs = {f"p_cnot_{k}": 0.00011 + i * 0.00001 for i, k in enumerate(CNOT_ERROR_TYPES)}
+        nm = NoiseModel(
+            p_prep_X=0.0011,
+            p_prep_Z=0.0022,
+            p_meas_X=0.0033,
+            p_meas_Z=0.0044,
+            p_idle_cnot_X=0.0051,
+            p_idle_cnot_Y=0.0052,
+            p_idle_cnot_Z=0.0053,
+            p_idle_spam_X=0.0061,
+            p_idle_spam_Y=0.0062,
+            p_idle_spam_Z=0.0063,
+            **cnot_probs
+        )
+
+        observed = []
+        for basis in ("X", "Z"):
+            artifacts = precompute_dem_bundle_surface_code(
+                distance=3,
+                n_rounds=3,
+                basis=basis,
+                code_rotation="XV",
+                p_scalar=0.1234,
+                dem_output_dir=None,
+                device=torch.device("cpu"),
+                export=False,
+                return_artifacts=True,
+                noise_model=nm,
+            )
+            observed.append(artifacts["p"].cpu().numpy())
+        p_values = np.concatenate(observed)
+
+        expected_values = [
+            nm.p_prep_X,
+            nm.p_prep_Z,
+            nm.p_meas_X,
+            nm.p_meas_Z,
+            nm.p_idle_cnot_X,
+            nm.p_idle_cnot_Y,
+            nm.p_idle_cnot_Z,
+            nm.p_idle_spam_X,
+            nm.p_idle_spam_Y,
+            nm.p_idle_spam_Z,
+            nm.p_cnot_IX,
+            nm.p_cnot_ZZ,
+        ]
+        for expected in expected_values:
+            self.assertTrue(
+                np.any(np.isclose(p_values, expected, rtol=0.0, atol=1e-9)),
+                f"Expected 25p probability {expected} in DEM p vector",
+            )
+
+        scalar_derived_values = [0.1234 / 3.0, 0.1234 / 15.0, 2.0 * 0.1234 / 3.0]
+        for scalar_value in scalar_derived_values:
+            self.assertFalse(
+                np.any(np.isclose(p_values, scalar_value, rtol=0.0, atol=1e-9)),
+                f"Unexpected scalar-derived probability {scalar_value} in 25p DEM p vector",
+            )
+
+    def test_precompute_dem_export_writes_noise_metadata(self):
+        import torch
+        from qec.precompute_dem import (
+            load_dem_artifact_metadata,
+            precompute_dem_bundle_surface_code,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            precompute_dem_bundle_surface_code(
+                distance=3,
+                n_rounds=3,
+                basis="X",
+                code_rotation="XV",
+                p_scalar=0.004,
+                dem_output_dir=tmp,
+                device=torch.device("cpu"),
+                export=True,
+            )
+            scalar_meta = load_dem_artifact_metadata(
+                Path(tmp) / "surface_d3_r3_X_frame_predecoder.p.npz"
+            )
+        self.assertEqual(scalar_meta["noise_mode"], "scalar")
+        self.assertEqual(scalar_meta["distance"], 3)
+        self.assertEqual(scalar_meta["basis"], "X")
+        self.assertAlmostEqual(float(scalar_meta["p_scalar"]), 0.004, places=12)
+
+        nm = _noise_model_from_p(0.005)
+        with tempfile.TemporaryDirectory() as tmp:
+            precompute_dem_bundle_surface_code(
+                distance=3,
+                n_rounds=3,
+                basis="Z",
+                code_rotation="XV",
+                p_scalar=0.123,
+                dem_output_dir=tmp,
+                device=torch.device("cpu"),
+                export=True,
+                noise_model=nm,
+            )
+            nm_meta = load_dem_artifact_metadata(
+                Path(tmp) / "surface_d3_r3_Z_frame_predecoder.p.npz"
+            )
+        self.assertEqual(nm_meta["noise_mode"], "noise_model")
+        self.assertEqual(nm_meta["noise_model_sha256"], nm.sha256())
+        self.assertEqual(nm_meta["noise_model"], nm.canonical_parameters())
 
     def test_upscale_small_noise(self):
         """When max_group < target, all 25 p's are scaled so that new max_group = target."""

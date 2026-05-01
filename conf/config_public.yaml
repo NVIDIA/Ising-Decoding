@@ -49,9 +49,10 @@ data:
     p_idle_cnot_Y: 0.001 # p/3
     p_idle_cnot_Z: 0.001 # p/3
     # Idle during SPAM window (ancilla prep+reset) on data qubits only (3)
-    p_idle_spam_X: 0.001998 # 2*p/3 - 2*p^2/9
-    p_idle_spam_Y: 0.001998 # 2*p/3 - 2*p^2/9
-    p_idle_spam_Z: 0.001998 # 2*p/3 - 2*p^2/9
+    # Two-step depolarising composition (XOR of two p/3-per-axis steps): 2*p/3 - 4*p^2/9.
+    p_idle_spam_X: 0.001996 # 2*p/3 - 4*p^2/9
+    p_idle_spam_Y: 0.001996 # 2*p/3 - 4*p^2/9
+    p_idle_spam_Z: 0.001996 # 2*p/3 - 4*p^2/9
     # CNOT two-qubit errors (15) - keys are p_cnot_{Pauli}{Pauli} excluding II, p/15
     p_cnot_IX: 0.0002
     p_cnot_IY: 0.0002
