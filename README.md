@@ -15,6 +15,8 @@ This repo offers AI training frameworks and recipes to build, customize and depl
 
 The public release exposes a **single user-facing config** and a **single runner script**.
 
+Test, don't merge
+
 ![Pre-decoder pipeline](images/predecoder_pipeline.png)
 
 ## Table of Contents
