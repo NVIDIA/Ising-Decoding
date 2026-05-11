@@ -651,6 +651,60 @@ time.
 - **Inference uses the trained model from `outputs/<experiment_name>/models/`**, so keep the same `EXPERIMENT_NAME` when you switch from training to inference.
 - **Training auto-resumes**: if a run is interrupted, launching the same training command again (same `EXPERIMENT_NAME`) will automatically load the latest checkpoint it finds and continue training (up to the fixed 100 epochs). To force a clean restart, set `FRESH_START=1`, although we recommend changing `EXPERIMENT_NAME` instead.
 
+### HE acceleration (advanced): parallel spacelike
+
+The spacelike homological-equivalence (HE) pass canonicalises each
+`(batch, round)` diff frame independently. By default the canonicalisation
+processes stabilisers sequentially. With `data.use_parallel_spacelike: True`,
+the cache build computes a 2-partition of the stabiliser-overlap graph so the
+two colour classes are reduced in parallel inside a `torch.compile`-friendly
+inner loop. This cuts Python <-> compiled-graph crossings per HE pass and
+exposes more parallelism to the GPU.
+
+#### How to enable
+
+In any config:
+
+```yaml
+data:
+  use_compile: True            # required to see the speedup
+  use_parallel_spacelike: True
+```
+
+Or on the CLI:
+
+```bash
+EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
+  bash code/scripts/local_run.sh
+```
+
+#### Pros (when to enable)
+
+- **Faster spacelike HE on GPU** for the rotated single-basis surface code, by
+  amortising per-iteration Python overhead and running both colour classes
+  through `torch.compile` together.
+- **Canonically equivalent to the sequential path** on supported codes: the
+  same canonicalised frames come out, just produced more efficiently.
+  Coverage is added under `code/tests/mid/test_homological_equivalence.py`.
+- **Composes with `data.use_weight2`** — the weight-2 fix-equivalence pass is
+  applied per colour.
+
+#### Cons / caveats (when to leave it off)
+
+- **Rotated single-basis surface code only.** The 2-colouring assumes the
+  stabiliser-overlap graph is bipartite, which holds by construction for the
+  rotated surface code targeted here. Color codes, non-rotated layouts,
+  subsystem codes and mixed-basis matrices can produce odd cycles; in that
+  case the cache build refuses with a diagnostic naming the offending
+  stabiliser pair rather than silently falling back.
+- **`use_compile=True` is required** for the speedup; without it the partition
+  is built but the optimised compiled inner loop is not entered.
+- **Cache-build cost and memory grow slightly.** A packed
+  `parallel_partition_packed` view is materialised once at cache-build time so
+  the hot path only does dtype casts.
+- **GPU-targeted.** The parallel path is designed for CUDA; on CPU you may
+  not see a speedup over the sequential path.
+
 ## Logging and outputs
 
 ### What gets written where

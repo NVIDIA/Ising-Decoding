@@ -35,6 +35,11 @@ workflow:
 data:
   # Surface code orientation (public naming): O1, O2, O3, O4
   code_rotation: O1
+  # Optional HE acceleration flag, surfaced here for discoverability (other HE
+  # knobs live in the internal defaults). Enables the 2-partition parallel
+  # spacelike homological-equivalence path; see the "HE acceleration (advanced):
+  # parallel spacelike" section in README.md for the pros/cons and constraints.
+  use_parallel_spacelike: False
   # Circuit-level noise model (25-parameter). This is the default public noise specification.
   # The defaults are chosen for p=0.003.
   noise_model:

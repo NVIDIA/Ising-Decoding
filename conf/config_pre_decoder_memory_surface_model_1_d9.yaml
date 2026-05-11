@@ -36,6 +36,7 @@ data:
   generator: torch # Training data generator (Torch-only)
   timelike_he: True # Enable timelike homological equivalence
   num_he_cycles: 1 # Number of (spacelike+timelike) HE cycles to apply (default: 1)
+  use_parallel_spacelike: False # Enable 2-partition parallel spacelike HE acceleration
   use_weight2: False # Enable weight-2 timelike HE (in addition to weight-1)
   max_passes_w1: 8 # Maximum passes for weight-1 timelike HE convergence (default: 32)
   max_passes_w2: 4 # Maximum passes for weight-2 timelike HE convergence (default: 32)
