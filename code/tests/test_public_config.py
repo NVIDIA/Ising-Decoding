@@ -158,6 +158,64 @@ class TestPublicConfig(unittest.TestCase):
         expected_frames_dir = (repo_root / "frames_data").resolve()
         self.assertEqual(Path(merged.data.precomputed_frames_dir).resolve(), expected_frames_dir)
 
+    def test_validate_accepts_use_parallel_spacelike_flag(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "data": {
+                    "use_parallel_spacelike": True
+                },
+            }
+        )
+        spec = validate_public_config(cfg)
+        merged = apply_public_defaults_and_model(cfg, spec)
+        self.assertTrue(bool(merged.data.use_parallel_spacelike))
+
+    def test_validate_rejects_nonbool_use_parallel_spacelike_flag(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "data": {
+                    "use_parallel_spacelike": "yes"
+                },
+            }
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(cfg)
+
+    def test_validate_accepts_use_compile_flag(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "data": {
+                    "use_compile": True
+                },
+            }
+        )
+        spec = validate_public_config(cfg)
+        merged = apply_public_defaults_and_model(cfg, spec)
+        self.assertTrue(bool(merged.data.use_compile))
+
+    def test_validate_rejects_nonbool_use_compile_flag(self):
+        cfg = OmegaConf.create(
+            {
+                "model_id": 1,
+                "distance": 9,
+                "n_rounds": 9,
+                "data": {
+                    "use_compile": "true"
+                },
+            }
+        )
+        with self.assertRaises(ValueError):
+            validate_public_config(cfg)
+
     def test_validate_rejects_optimizer_subfields(self):
         cfg = OmegaConf.create(
             {

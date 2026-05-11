@@ -359,12 +359,31 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                 "Config field 'data.precomputed_frames_dir' is not supported in the public release. "
                 "Remove it from the config/CLI overrides."
             )
-        allowed_data_keys = {"code_rotation", "noise_model"}
+        # `use_compile` and `use_parallel_spacelike` are HE-acceleration flags
+        # surfaced in the public release. Both default False; users opt in via
+        # `conf/config_public.yaml` or CLI override. See README.md, section
+        # "HE acceleration (advanced): parallel spacelike" for the contract.
+        allowed_data_keys = {
+            "code_rotation",
+            "noise_model",
+            "use_compile",
+            "use_parallel_spacelike",
+        }
         for k in cfg.data.keys():
             if k not in allowed_data_keys:
                 raise ValueError(
                     f"Config field 'data.{k}' is not supported in the public release. "
                     f"Allowed data fields are: {sorted(allowed_data_keys)}"
+                )
+        # The HE-acceleration flags must be plain booleans. OmegaConf will
+        # accept strings like "True"/"yes" silently and they'd then flow into
+        # `bool(...)` casts downstream as truthy regardless of intent, so we
+        # reject anything that isn't a real bool with a clear message.
+        for bool_key in ("use_compile", "use_parallel_spacelike"):
+            if bool_key in cfg.data and not isinstance(cfg.data[bool_key], bool):
+                raise ValueError(
+                    f"Config field 'data.{bool_key}' must be a boolean "
+                    f"(got {type(cfg.data[bool_key]).__name__}: {cfg.data[bool_key]!r})."
                 )
         # Validate rotation value (accept O1..O4; also allow internal XV/XH/ZV/ZH for compatibility).
         if "code_rotation" in cfg.data:
