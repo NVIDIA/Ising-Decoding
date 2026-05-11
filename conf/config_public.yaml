@@ -39,6 +39,7 @@ data:
   # knobs live in the internal defaults). Enables the 2-partition parallel
   # spacelike homological-equivalence path; see the "HE acceleration (advanced):
   # parallel spacelike" section in README.md for the pros/cons and constraints.
+  use_compile: False # Required to see the speedup from use_parallel_spacelike=True.
   use_parallel_spacelike: False
   # Circuit-level noise model (25-parameter). This is the default public noise specification.
   # The defaults are chosen for p=0.003.

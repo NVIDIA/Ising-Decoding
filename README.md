@@ -683,8 +683,9 @@ EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
 - **Faster spacelike HE on GPU** for the rotated single-basis surface code, by
   amortising per-iteration Python overhead and running both colour classes
   through `torch.compile` together.
-- **Canonically equivalent to the sequential path** on supported codes: the
-  same canonicalised frames come out, just produced more efficiently.
+- **Syndrome-equivalent to the sequential path** on supported codes: the
+  parallel path preserves the HE invariants and produces valid non-increasing
+  representatives, while avoiding the sequential stabiliser order.
   Coverage is added under `code/tests/mid/test_homological_equivalence.py`.
 - **Composes with `data.use_weight2`** — the weight-2 fix-equivalence pass is
   applied per colour.
