@@ -194,7 +194,7 @@ jobs:
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
       env:
         NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Install system dependencies
         run: |
@@ -249,6 +249,41 @@ jobs:
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
           # [LER Validation] lines are emitted during training, not inference
           python code/scripts/check_ler_from_log.py /tmp/ci_multigpu_train.log --max-ler 0.35
+        env:
+          PREDECODER_TRAIN_SAMPLES: "16384"
+          PREDECODER_VAL_SAMPLES: "2048"
+          PREDECODER_TEST_SAMPLES: "2048"
+          PREDECODER_TRAIN_EPOCHS: "2"
+
+      - name: Multi-GPU smoke training with parallel spacelike HE (2 GPUs, DDP)
+        # Additive coverage on top of the default-config multi-GPU smoke above.
+        # Forces data.use_compile=True + data.use_parallel_spacelike=True so the
+        # parallel + compiled spacelike HE path runs end-to-end under DDP on
+        # 2 GPUs. Failure modes specific to this combination (per-rank device
+        # pinning of the partition, torch.compile cache contention across
+        # ranks, deadlocks during the compiled inner loop) surface as a
+        # training crash here. The existing default-config step above is
+        # intentionally left untouched so we do not regress on coverage of
+        # the default path.
+        shell: bash
+        run: |
+          . .venv_multigpu/bin/activate
+          export PREDECODER_TIMING_RUN=1
+          export PREDECODER_DISABLE_SDR=1
+          export PREDECODER_LER_FINAL_ONLY=1
+          export PREDECODER_INFERENCE_NUM_SAMPLES=32
+          export PREDECODER_INFERENCE_LATENCY_SAMPLES=0
+          export PREDECODER_INFERENCE_MEAS_BASIS=both
+          export PREDECODER_INFERENCE_NUM_WORKERS=0
+          EXPERIMENT_NAME=ci_multi_gpu_he WORKFLOW=train GPUS=2 \
+            EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
+            bash code/scripts/local_run.sh 2>&1 | tee /tmp/ci_multigpu_he_train.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          EXPERIMENT_NAME=ci_multi_gpu_he WORKFLOW=inference GPUS=2 \
+            EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
+            bash code/scripts/local_run.sh 2>&1 | tee /tmp/ci_multigpu_he_infer.log
+          r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
+          python code/scripts/check_ler_from_log.py /tmp/ci_multigpu_he_train.log --max-ler 0.35
         env:
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
