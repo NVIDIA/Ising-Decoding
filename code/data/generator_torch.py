@@ -53,6 +53,7 @@ class QCDataGeneratorTorch:
         use_coset_search=False,
         coset_max_generators=20,
         use_dense_overlap=False,
+        use_parallel_spacelike=False,
         **_ignored,
     ):
         if global_rank is None:
@@ -102,6 +103,7 @@ class QCDataGeneratorTorch:
                         max_passes_w1=max_passes_w1,
                         use_weight2=use_weight2,
                         max_passes_w2=max_passes_w2,
+                        use_parallel_spacelike=use_parallel_spacelike,
                     ),
                     daemon=True,
                 )
@@ -211,6 +213,7 @@ class QCDataGeneratorTorch:
             use_coset_search=use_coset_search,
             coset_max_generators=coset_max_generators,
             use_dense_overlap=use_dense_overlap,
+            use_parallel_spacelike=use_parallel_spacelike,
         )
 
         if self._mixed:

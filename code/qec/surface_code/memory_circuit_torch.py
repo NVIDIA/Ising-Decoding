@@ -84,6 +84,7 @@ class MemoryCircuitTorch:
         use_coset_search: bool = False,
         coset_max_generators: int = 20,
         use_dense_overlap: bool = False,
+        use_parallel_spacelike: bool = False,
         # Optional in-memory DEM artifacts (to avoid writing/loading files).
         H: torch.Tensor | None = None,  # (2*num_detectors, num_errors) uint8
         p: torch.Tensor | None = None,  # (num_errors,) float32
@@ -105,6 +106,7 @@ class MemoryCircuitTorch:
         self.use_coset_search = bool(use_coset_search)
         self.coset_max_generators = int(coset_max_generators)
         self.use_dense_overlap = bool(use_dense_overlap)
+        self.use_parallel_spacelike = bool(use_parallel_spacelike)
         self.device = device if device is not None else torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
@@ -121,6 +123,7 @@ class MemoryCircuitTorch:
                     max_passes_w1=self.max_passes_w1,
                     use_weight2=self.use_weight2,
                     max_passes_w2=self.max_passes_w2,
+                    use_parallel_spacelike=self.use_parallel_spacelike,
                 ),
                 daemon=True,
             )
@@ -339,6 +342,7 @@ class MemoryCircuitTorch:
                 use_coset_search=self.use_coset_search,
                 coset_max_generators=self.coset_max_generators,
                 use_dense_overlap=self.use_dense_overlap,
+                use_parallel_spacelike=self.use_parallel_spacelike,
             )
             meas_new = torch.cat([s1s2x, s1s2z], dim=2)
         else:

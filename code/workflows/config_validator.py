@@ -138,6 +138,7 @@ def _base_hidden_defaults_dict() -> Dict[str, Any]:
                 "timelike_he": True,
                 "num_he_cycles": 1,
                 "use_weight2_timelike": False,
+                "use_parallel_spacelike": False,
                 "max_passes_w1": 8,
                 "max_passes_w2": 4,
                 "decompose_y": True,

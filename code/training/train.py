@@ -45,7 +45,8 @@ SDR threshold gate (early stopping requires minimum SDR):
 HE acceleration (forwarded to QCDataGeneratorTorch):
   cfg.data.use_compile, cfg.data.compile_chunk_size, cfg.data.compute_dtype,
   cfg.data.use_weight2, cfg.data.max_passes_w2, cfg.data.use_coset_search,
-  cfg.data.coset_max_generators, cfg.data.use_dense_overlap
+  cfg.data.coset_max_generators, cfg.data.use_dense_overlap,
+  cfg.data.use_parallel_spacelike
 
 Logging:
   Compact epoch summary: loss | LER | SDR | wall time | throughput
@@ -948,6 +949,7 @@ def main(cfg: DictConfig) -> None:
         use_coset_search=bool(getattr(cfg.data, 'use_coset_search', False)),
         coset_max_generators=int(getattr(cfg.data, 'coset_max_generators', 20)),
         use_dense_overlap=bool(getattr(cfg.data, 'use_dense_overlap', False)),
+        use_parallel_spacelike=bool(getattr(cfg.data, 'use_parallel_spacelike', False)),
     )
 
     if use_multi_pairs:
