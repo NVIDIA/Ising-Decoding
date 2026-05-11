@@ -383,6 +383,112 @@ class TestHEKernelGPU(unittest.TestCase):
         w_after = z_diff.sum() + x_diff.sum()
         self.assertLessEqual(w_after.item(), w_before.item() + 1e-6)
 
+    def test_parallel_spacelike_eager_on_cuda(self):
+        """Parallel spacelike HE should run on CUDA and preserve basic invariants."""
+        from qec.surface_code.memory_circuit import SurfaceCode
+        from qec.surface_code.homological_equivalence_torch import (
+            apply_homological_equivalence_torch_vmap,
+            build_spacelike_he_cache,
+        )
+
+        code = SurfaceCode(self.distance, first_bulk_syndrome_type="X", rotated_type="V")
+        parity_X = torch.tensor(code.hx, dtype=torch.uint8, device=self.device)
+        parity_Z = torch.tensor(code.hz, dtype=torch.uint8, device=self.device)
+        cache_X = build_spacelike_he_cache(
+            parity_X, distance=self.distance, basis="X", device=self.device
+        )
+        cache_Z = build_spacelike_he_cache(
+            parity_Z, distance=self.distance, basis="Z", device=self.device
+        )
+
+        B, D2, R = 4, self.distance**2, self.n_rounds
+        torch.manual_seed(2026)
+        z_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+        x_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+        z_out, x_out = apply_homological_equivalence_torch_vmap(
+            z_in,
+            x_in,
+            parity_Z,
+            parity_X,
+            self.distance,
+            cache_Z=cache_Z,
+            cache_X=cache_X,
+            use_parallel_spacelike=True,
+        )
+
+        self.assertEqual(z_out.device.type, "cuda")
+        self.assertEqual(x_out.device.type, "cuda")
+        self.assertTrue(torch.all(z_out.sum(dim=-1) <= z_in.sum(dim=-1)))
+        self.assertTrue(torch.all(x_out.sum(dim=-1) <= x_in.sum(dim=-1)))
+
+    def test_parallel_spacelike_compiled_on_cuda(self):
+        """Compiled parallel spacelike HE should run on CUDA and produce
+        bit-identical output to the eager parallel path. Equality locks in
+        the pack-once cache field (`cache.parallel_partition_packed`) and the
+        float-only chunk convergence check that the parallel path introduces.
+        """
+        from qec.surface_code.memory_circuit import SurfaceCode
+        from qec.surface_code.homological_equivalence_torch import (
+            apply_homological_equivalence_torch_vmap,
+            build_spacelike_he_cache,
+        )
+
+        code = SurfaceCode(self.distance, first_bulk_syndrome_type="X", rotated_type="V")
+        parity_X = torch.tensor(code.hx, dtype=torch.uint8, device=self.device)
+        parity_Z = torch.tensor(code.hz, dtype=torch.uint8, device=self.device)
+        cache_X = build_spacelike_he_cache(
+            parity_X, distance=self.distance, basis="X", device=self.device
+        )
+        cache_Z = build_spacelike_he_cache(
+            parity_Z, distance=self.distance, basis="Z", device=self.device
+        )
+
+        # The packed partition view must be populated so the compiled path
+        # can read it directly instead of re-packing on every call.
+        self.assertIsNotNone(cache_X.parallel_partition_packed)
+        self.assertIsNotNone(cache_Z.parallel_partition_packed)
+
+        B, D2, R = 2, self.distance**2, self.n_rounds
+        torch.manual_seed(2027)
+        z_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+        x_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+
+        z_eager, x_eager = apply_homological_equivalence_torch_vmap(
+            z_in,
+            x_in,
+            parity_Z,
+            parity_X,
+            self.distance,
+            cache_Z=cache_Z,
+            cache_X=cache_X,
+            use_compile=False,
+            use_parallel_spacelike=True,
+        )
+        z_out, x_out = apply_homological_equivalence_torch_vmap(
+            z_in,
+            x_in,
+            parity_Z,
+            parity_X,
+            self.distance,
+            cache_Z=cache_Z,
+            cache_X=cache_X,
+            use_compile=True,
+            use_parallel_spacelike=True,
+        )
+
+        self.assertEqual(z_out.device.type, "cuda")
+        self.assertEqual(x_out.device.type, "cuda")
+        self.assertTrue(torch.all((z_out == 0) | (z_out == 1)))
+        self.assertTrue(torch.all((x_out == 0) | (x_out == 1)))
+        self.assertTrue(
+            torch.equal(z_eager, z_out),
+            "compiled parallel Z output diverged from eager parallel",
+        )
+        self.assertTrue(
+            torch.equal(x_eager, x_out),
+            "compiled parallel X output diverged from eager parallel",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Oracle predecoder residuals on GPU

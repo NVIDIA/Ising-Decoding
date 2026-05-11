@@ -37,11 +37,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from qec.surface_code.memory_circuit import SurfaceCode
 from qec.surface_code.memory_circuit_torch import MemoryCircuitTorch
 from qec.surface_code.homological_equivalence_torch import (
+    apply_homological_equivalence_torch_vmap,
     apply_weight1_timelike_homological_equivalence_torch,
     build_spacelike_he_cache,
     build_timelike_he_cache,
     build_weight2_timelike_cache,
+    _validate_spacelike_partition,
     _simplify_time_w2_step,
+    _build_fix_equiv_map,
+    _build_spacelike_partition,
+    _require_parallel_partition,
+    SpacelikeHECache,
 )
 from qec.surface_code.homological_equivalence import (
     linear_index_to_coordinates,
@@ -1184,6 +1190,681 @@ class TestTorchCacheBuilders(unittest.TestCase):
                 all_idx.extend(layer.tolist())
             self.assertEqual(sorted(all_idx), list(range(hx.shape[0])))
 
+    def test_parallel_partition_valid_for_supported_distances(self):
+        """Parallel partition should cover every stabilizer and avoid same-partition overlaps."""
+        for d in (3, 5, 7, 9):
+            hx, hz, _ = _build_parity_matrices(d)
+            for basis, parity in (("X", hx), ("Z", hz)):
+                cache = build_spacelike_he_cache(
+                    parity.to(torch.uint8), distance=d, basis=basis, device=torch.device("cpu")
+                )
+                partition = cache.parallel_partition
+                self.assertIsNotNone(partition, f"d={d} basis={basis}: missing partition")
+
+                groups = [
+                    partition["indices_c0"].cpu().tolist(),
+                    partition["indices_c1"].cpu().tolist(),
+                ]
+                self.assertEqual(
+                    sorted(groups[0] + groups[1]),
+                    list(range(parity.shape[0])),
+                    f"d={d} basis={basis}: partition does not cover stabilizers",
+                )
+                self.assertTrue(
+                    _validate_spacelike_partition(parity.to(torch.uint8), groups),
+                    f"d={d} basis={basis}: invalid same-partition overlap",
+                )
+
+    def test_parallel_partition_validator_rejects_overlap(self):
+        """A same-partition overlap must fail validation instead of silently looking valid."""
+        hx, _, _ = _build_parity_matrices(3)
+        overlapping = None
+        for i in range(hx.shape[0]):
+            for j in range(i + 1, hx.shape[0]):
+                if bool(torch.any((hx[i] == 1) & (hx[j] == 1))):
+                    overlapping = (i, j)
+                    break
+            if overlapping is not None:
+                break
+        self.assertIsNotNone(overlapping)
+        i, j = overlapping
+        remaining = [k for k in range(hx.shape[0]) if k not in (i, j)]
+        self.assertFalse(_validate_spacelike_partition(hx.to(torch.uint8), [[i, j], remaining]))
+
+
+class TestParallelSpacelikeHE(unittest.TestCase):
+    """Correctness tests for the 2-partition parallel spacelike HE path."""
+
+    def _make_inputs(self, d: int, seed: int = 123):
+        hx, hz, _ = _build_parity_matrices(d)
+        parity_X = hx.to(torch.uint8)
+        parity_Z = hz.to(torch.uint8)
+        cache_X = build_spacelike_he_cache(
+            parity_X, distance=d, basis="X", device=torch.device("cpu")
+        )
+        cache_Z = build_spacelike_he_cache(
+            parity_Z, distance=d, basis="Z", device=torch.device("cpu")
+        )
+        g = torch.Generator().manual_seed(seed)
+        z_diffs = torch.randint(0, 2, (4, d, d * d), dtype=torch.uint8, generator=g)
+        x_diffs = torch.randint(0, 2, (4, d, d * d), dtype=torch.uint8, generator=g)
+        return parity_X, parity_Z, cache_X, cache_Z, z_diffs, x_diffs
+
+    def _assert_spacelike_invariants(
+        self,
+        *,
+        d: int,
+        parity_X: torch.Tensor,
+        parity_Z: torch.Tensor,
+        z_in: torch.Tensor,
+        x_in: torch.Tensor,
+        z_out: torch.Tensor,
+        x_out: torch.Tensor,
+        tag: str,
+    ):
+        self.assertTrue(((z_out == 0) | (z_out == 1)).all(), f"{tag}: Z output non-binary")
+        self.assertTrue(((x_out == 0) | (x_out == 1)).all(), f"{tag}: X output non-binary")
+        self.assertTrue(
+            torch.all(z_out.sum(dim=-1) <= z_in.sum(dim=-1)),
+            f"{tag}: Z weight increased for d={d}",
+        )
+        self.assertTrue(
+            torch.all(x_out.sum(dim=-1) <= x_in.sum(dim=-1)),
+            f"{tag}: X weight increased for d={d}",
+        )
+        z_syn_in = (z_in.float() @ parity_X.float().T) % 2
+        z_syn_out = (z_out.float() @ parity_X.float().T) % 2
+        x_syn_in = (x_in.float() @ parity_Z.float().T) % 2
+        x_syn_out = (x_out.float() @ parity_Z.float().T) % 2
+        self.assertTrue(torch.equal(z_syn_in, z_syn_out), f"{tag}: Z syndrome changed")
+        self.assertTrue(torch.equal(x_syn_in, x_syn_out), f"{tag}: X syndrome changed")
+
+    def test_parallel_spacelike_invariants_and_idempotence(self):
+        for d in (3, 5, 7):
+            parity_X, parity_Z, cache_X, cache_Z, z_in, x_in = self._make_inputs(d, seed=1000 + d)
+            z_out, x_out = apply_homological_equivalence_torch_vmap(
+                z_in,
+                x_in,
+                parity_Z,
+                parity_X,
+                d,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+                use_parallel_spacelike=True,
+            )
+            self._assert_spacelike_invariants(
+                d=d,
+                parity_X=parity_X,
+                parity_Z=parity_Z,
+                z_in=z_in,
+                x_in=x_in,
+                z_out=z_out,
+                x_out=x_out,
+                tag=f"parallel d={d}",
+            )
+
+            z_twice, x_twice = apply_homological_equivalence_torch_vmap(
+                z_out,
+                x_out,
+                parity_Z,
+                parity_X,
+                d,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+                use_parallel_spacelike=True,
+            )
+            self.assertTrue(torch.equal(z_out, z_twice), f"parallel d={d}: Z not idempotent")
+            self.assertTrue(torch.equal(x_out, x_twice), f"parallel d={d}: X not idempotent")
+
+    def test_parallel_spacelike_matches_or_preserves_legacy_invariants(self):
+        for d in (3, 5):
+            parity_X, parity_Z, cache_X, cache_Z, z_in, x_in = self._make_inputs(d, seed=2000 + d)
+            z_seq, x_seq = apply_homological_equivalence_torch_vmap(
+                z_in,
+                x_in,
+                parity_Z,
+                parity_X,
+                d,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+            )
+            z_par, x_par = apply_homological_equivalence_torch_vmap(
+                z_in,
+                x_in,
+                parity_Z,
+                parity_X,
+                d,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+                use_parallel_spacelike=True,
+            )
+            if not (torch.equal(z_seq, z_par) and torch.equal(x_seq, x_par)):
+                self._assert_spacelike_invariants(
+                    d=d,
+                    parity_X=parity_X,
+                    parity_Z=parity_Z,
+                    z_in=z_in,
+                    x_in=x_in,
+                    z_out=z_par,
+                    x_out=x_par,
+                    tag=f"parallel-vs-legacy d={d}",
+                )
+                z_seq_syn = (z_seq.float() @ parity_X.float().T) % 2
+                z_par_syn = (z_par.float() @ parity_X.float().T) % 2
+                x_seq_syn = (x_seq.float() @ parity_Z.float().T) % 2
+                x_par_syn = (x_par.float() @ parity_Z.float().T) % 2
+                self.assertTrue(
+                    torch.equal(z_seq_syn, z_par_syn), f"parallel d={d}: Z syndrome mismatch"
+                )
+                self.assertTrue(
+                    torch.equal(x_seq_syn, x_par_syn), f"parallel d={d}: X syndrome mismatch"
+                )
+
+    def test_parallel_spacelike_requires_partition(self):
+        d = 3
+        hx, hz, _ = _build_parity_matrices(d)
+        parity_X = hx.to(torch.uint8)
+        parity_Z = hz.to(torch.uint8)
+        cache_X = build_spacelike_he_cache(parity_X, distance=d, device=torch.device("cpu"))
+        cache_Z = build_spacelike_he_cache(parity_Z, distance=d, device=torch.device("cpu"))
+        z = torch.zeros((1, 1, d * d), dtype=torch.uint8)
+        x = torch.zeros((1, 1, d * d), dtype=torch.uint8)
+        with self.assertRaises(ValueError):
+            apply_homological_equivalence_torch_vmap(
+                z,
+                x,
+                parity_Z,
+                parity_X,
+                d,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+                use_parallel_spacelike=True,
+            )
+
+    def test_parallel_partition_packs_w2_indices(self):
+        """The 2-partition must surface per-color w2 (canonical, other) index lists.
+
+        Regression guard: without these, the parallel
+        FE path silently drops the boundary-stabilizer fix-equivalence rule that
+        the sequential path applies in its `ss == 2` branch.
+        """
+        for d in (3, 5, 7):
+            hx, hz, _ = _build_parity_matrices(d)
+            for basis, parity in (("X", hx), ("Z", hz)):
+                cache = build_spacelike_he_cache(
+                    parity.to(torch.uint8), distance=d, basis=basis, device=torch.device("cpu")
+                )
+                partition = cache.parallel_partition
+                self.assertIsNotNone(partition)
+                for c in (0, 1):
+                    self.assertIn(f"w2_can_c{c}", partition, f"d={d} {basis} c{c}: missing w2_can")
+                    self.assertIn(f"w2_oth_c{c}", partition, f"d={d} {basis} c{c}: missing w2_oth")
+                    self.assertEqual(
+                        partition[f"w2_can_c{c}"].shape,
+                        partition[f"w2_oth_c{c}"].shape,
+                        f"d={d} {basis} c{c}: w2_can/oth shape mismatch",
+                    )
+
+                total_w2 = sum(partition[f"w2_can_c{c}"].numel() for c in (0, 1))
+                expected_w2 = int((cache.support_sizes == 2).sum().item())
+                self.assertEqual(
+                    total_w2,
+                    expected_w2,
+                    f"d={d} {basis}: partition w2 count {total_w2} != cache w2 count {expected_w2}",
+                )
+
+    def test_parallel_w2_fe_moves_error_from_other_to_canonical(self):
+        """Single-error sentinel: error placed on `other` of a w2 stabilizer must
+        end up on `canonical` after one parallel HE pass, exactly like the
+        sequential path. The parallel path must preserve this property."""
+        for d in (3, 5, 7):
+            hx, hz, _ = _build_parity_matrices(d)
+            parity_X = hx.to(torch.uint8)
+            parity_Z = hz.to(torch.uint8)
+            cache_X = build_spacelike_he_cache(
+                parity_X, distance=d, basis="X", device=torch.device("cpu")
+            )
+            cache_Z = build_spacelike_he_cache(
+                parity_Z, distance=d, basis="Z", device=torch.device("cpu")
+            )
+
+            for basis, cache in (("X", cache_X), ("Z", cache_Z)):
+                w2_stabs = (cache.support_sizes == 2).nonzero().flatten().tolist()
+                self.assertGreater(len(w2_stabs), 0, f"d={d} {basis}: expected at least one w2")
+
+                for s in w2_stabs:
+                    canonical = int(cache.w2_canonical[s].item())
+                    other = int(cache.w2_other[s].item())
+                    self.assertGreaterEqual(canonical, 0)
+                    self.assertGreaterEqual(other, 0)
+
+                    err = torch.zeros((1, 1, d * d), dtype=torch.uint8)
+                    err[0, 0, other] = 1
+
+                    if basis == "X":
+                        z_in = torch.zeros_like(err)
+                        x_in = err
+                    else:
+                        z_in = err
+                        x_in = torch.zeros_like(err)
+
+                    z_out, x_out = apply_homological_equivalence_torch_vmap(
+                        z_in,
+                        x_in,
+                        parity_Z,
+                        parity_X,
+                        d,
+                        cache_Z=cache_Z,
+                        cache_X=cache_X,
+                        use_parallel_spacelike=True,
+                    )
+                    out = (x_out if basis == "X" else z_out)[0, 0]
+                    self.assertEqual(
+                        int(out[canonical].item()),
+                        1,
+                        f"d={d} {basis} s={s}: parallel did not move error to canonical "
+                        f"(canonical={canonical}, other={other}, out={out.tolist()})",
+                    )
+                    self.assertEqual(
+                        int(out[other].item()),
+                        0,
+                        f"d={d} {basis} s={s}: parallel left error at `other`",
+                    )
+
+    def test_parallel_w2_fe_idempotent_on_already_canonical(self):
+        """Error already at `canonical` of a w2 stabilizer must stay put."""
+        d = 5
+        hx, hz, _ = _build_parity_matrices(d)
+        parity_X = hx.to(torch.uint8)
+        parity_Z = hz.to(torch.uint8)
+        cache_X = build_spacelike_he_cache(
+            parity_X, distance=d, basis="X", device=torch.device("cpu")
+        )
+        cache_Z = build_spacelike_he_cache(
+            parity_Z, distance=d, basis="Z", device=torch.device("cpu")
+        )
+
+        for basis, cache in (("X", cache_X), ("Z", cache_Z)):
+            w2_stabs = (cache.support_sizes == 2).nonzero().flatten().tolist()
+            for s in w2_stabs:
+                canonical = int(cache.w2_canonical[s].item())
+                err = torch.zeros((1, 1, d * d), dtype=torch.uint8)
+                err[0, 0, canonical] = 1
+                if basis == "X":
+                    z_in, x_in = torch.zeros_like(err), err
+                else:
+                    z_in, x_in = err, torch.zeros_like(err)
+                z_out, x_out = apply_homological_equivalence_torch_vmap(
+                    z_in,
+                    x_in,
+                    parity_Z,
+                    parity_X,
+                    d,
+                    cache_Z=cache_Z,
+                    cache_X=cache_X,
+                    use_parallel_spacelike=True,
+                )
+                out = (x_out if basis == "X" else z_out)[0, 0]
+                self.assertEqual(
+                    int(out[canonical].item()),
+                    1,
+                    f"d={d} {basis} s={s}: parallel mutated already-canonical error",
+                )
+                self.assertEqual(int(out.sum().item()), 1)
+
+    def test_parallel_w2_fe_matches_sequential_for_w2_only_inputs(self):
+        """For inputs that exercise only w2 stabilizers (single error on `other`),
+        parallel and sequential paths must produce bit-identical outputs.
+
+        Stronger than the broader random-input comparison (which can legitimately
+        diverge on cross-color w4 tie-breaking): w2-only inputs have no w4
+        action, so both paths are constrained to the same final bit pattern.
+        """
+        for d in (3, 5, 7):
+            hx, hz, _ = _build_parity_matrices(d)
+            parity_X = hx.to(torch.uint8)
+            parity_Z = hz.to(torch.uint8)
+            cache_X = build_spacelike_he_cache(
+                parity_X, distance=d, basis="X", device=torch.device("cpu")
+            )
+            cache_Z = build_spacelike_he_cache(
+                parity_Z, distance=d, basis="Z", device=torch.device("cpu")
+            )
+
+            for basis, cache in (("X", cache_X), ("Z", cache_Z)):
+                w2_stabs = (cache.support_sizes == 2).nonzero().flatten().tolist()
+                for s in w2_stabs:
+                    other = int(cache.w2_other[s].item())
+                    err = torch.zeros((1, 1, d * d), dtype=torch.uint8)
+                    err[0, 0, other] = 1
+                    if basis == "X":
+                        z_in, x_in = torch.zeros_like(err), err
+                    else:
+                        z_in, x_in = err, torch.zeros_like(err)
+
+                    z_seq, x_seq = apply_homological_equivalence_torch_vmap(
+                        z_in,
+                        x_in,
+                        parity_Z,
+                        parity_X,
+                        d,
+                        cache_Z=cache_Z,
+                        cache_X=cache_X,
+                    )
+                    z_par, x_par = apply_homological_equivalence_torch_vmap(
+                        z_in,
+                        x_in,
+                        parity_Z,
+                        parity_X,
+                        d,
+                        cache_Z=cache_Z,
+                        cache_X=cache_X,
+                        use_parallel_spacelike=True,
+                    )
+                    self.assertTrue(
+                        torch.equal(z_seq, z_par),
+                        f"d={d} {basis} s={s}: w2-only Z mismatch seq={z_seq} par={z_par}",
+                    )
+                    self.assertTrue(
+                        torch.equal(x_seq, x_par),
+                        f"d={d} {basis} s={s}: w2-only X mismatch seq={x_seq} par={x_par}",
+                    )
+
+    def test_fix_equiv_map_cache_driven_matches_legacy_sort(self):
+        """The cache-driven `_build_fix_equiv_map` must produce bit-identical
+        output to the legacy parity-matrix sort path. The corner derivation
+        has a single source of truth in `cache.w4_{tl,tr,bl,br}`."""
+
+        def _legacy_sort_form(parity, d, error_type):
+            # Inline copy of the previous parity-driven implementation, kept
+            # locally so that any future drift in the cache-driven path is
+            # caught here rather than silently producing different patterns.
+            et = error_type.upper()
+            w4_maps = []
+            for s in range(parity.shape[0]):
+                support = torch.nonzero(parity[s], as_tuple=True)[0].tolist()
+                if len(support) != 4:
+                    continue
+                coords = sorted((idx // d, idx % d, idx) for idx in support)
+                tl, tr, bl, br = coords[0][2], coords[1][2], coords[2][2], coords[3][2]
+                patterns = torch.empty((3, 4), dtype=torch.int16)
+                patterns[0] = torch.tensor([tl, bl, tr, br], dtype=torch.int16)
+                patterns[1] = torch.tensor([bl, br, tl, tr], dtype=torch.int16)
+                if et == "X":
+                    patterns[2] = torch.tensor([tl, br, tr, bl], dtype=torch.int16)
+                else:
+                    patterns[2] = torch.tensor([tr, bl, tl, br], dtype=torch.int16)
+                w4_maps.append(patterns)
+            if not w4_maps:
+                return torch.zeros((0, 3, 4), dtype=torch.int16)
+            return torch.stack(w4_maps, dim=0)
+
+        for d in (3, 5, 7, 9):
+            hx, hz, _ = _build_parity_matrices(d)
+            for basis, parity in (("X", hx), ("Z", hz)):
+                cache = build_spacelike_he_cache(
+                    parity.to(torch.uint8),
+                    distance=d,
+                    basis=basis,
+                    device=torch.device("cpu"),
+                )
+                cache_driven = _build_fix_equiv_map(
+                    parity.to(torch.uint8),
+                    d,
+                    basis,
+                    w4_tl_cpu=cache.w4_tl.cpu(),
+                    w4_tr_cpu=cache.w4_tr.cpu(),
+                    w4_bl_cpu=cache.w4_bl.cpu(),
+                    w4_br_cpu=cache.w4_br.cpu(),
+                )
+                legacy = _legacy_sort_form(parity.to(torch.uint8), d, basis)
+                self.assertTrue(
+                    torch.equal(cache_driven, legacy),
+                    f"d={d} {basis}: cache-driven fix_equiv_map diverged from legacy sort form",
+                )
+
+    def test_build_partition_returns_named_failure_on_non_bipartite(self):
+        """A non-bipartite stabilizer-overlap graph must be rejected with a
+        diagnostic that names the offending stabilizer pair."""
+        # 3 weight-2 stabilizers forming an odd cycle in the overlap graph:
+        #   stab 0: qubits {0, 1}
+        #   stab 1: qubits {1, 2}
+        #   stab 2: qubits {2, 0}
+        # Triangle => non-bipartite => expect failure with named pair.
+        parity = torch.zeros((3, 9), dtype=torch.uint8)
+        parity[0, 0] = 1
+        parity[0, 1] = 1
+        parity[1, 1] = 1
+        parity[1, 2] = 1
+        parity[2, 2] = 1
+        parity[2, 0] = 1
+
+        fix_map = torch.zeros((0, 3, 4), dtype=torch.int16)
+        partition, reason = _build_spacelike_partition(
+            parity,
+            fix_map,
+            torch.device("cpu"),
+        )
+        self.assertIsNone(partition)
+        self.assertIsNotNone(reason)
+        self.assertIn("not bipartite", reason)
+        # Must name a concrete offending stabilizer pair, not just "no partition".
+        self.assertTrue(
+            any(f"stabilizers {a} and {b}" in reason for a in range(3) for b in range(3) if a != b),
+            f"failure reason did not name a stabilizer pair: {reason!r}",
+        )
+
+    def test_parallel_partition_packed_at_cache_build_time(self):
+        """`cache.parallel_partition_packed` must be populated at cache-build
+        time when a partition is built (this avoids re-packing on every
+        compiled-path call). Empty colors must be padded
+        to width 1 with `valid=0` so the compiled chunk function has fixed
+        input shapes regardless of partition."""
+        required_keys = {
+            "parity_c0",
+            "is_boundary_c0",
+            "w4_parity_c0",
+            "src0_c0",
+            "src1_c0",
+            "dst0_c0",
+            "dst1_c0",
+            "w2_can_c0",
+            "w2_oth_c0",
+            "w2_valid_c0",
+            "parity_c1",
+            "is_boundary_c1",
+            "w4_parity_c1",
+            "src0_c1",
+            "src1_c1",
+            "dst0_c1",
+            "dst1_c1",
+            "w2_can_c1",
+            "w2_oth_c1",
+            "w2_valid_c1",
+        }
+        for d in (3, 5, 7, 9):
+            hx, hz, _ = _build_parity_matrices(d)
+            for basis, parity in (("X", hx), ("Z", hz)):
+                cache = build_spacelike_he_cache(
+                    parity.to(torch.uint8),
+                    distance=d,
+                    basis=basis,
+                    device=torch.device("cpu"),
+                )
+                packed = cache.parallel_partition_packed
+                self.assertIsNotNone(
+                    packed,
+                    f"d={d} {basis}: parallel_partition_packed not populated",
+                )
+                missing = required_keys - set(packed.keys())
+                self.assertEqual(
+                    missing,
+                    set(),
+                    f"d={d} {basis}: packed dict missing keys {missing}",
+                )
+                # Empty-color padding contract: every w2_can / w2_oth / w2_valid
+                # tensor must have a positive size (padded to 1 if natural width
+                # was 0).
+                for c in (0, 1):
+                    self.assertGreaterEqual(packed[f"w2_can_c{c}"].numel(), 1)
+                    self.assertGreaterEqual(packed[f"w2_oth_c{c}"].numel(), 1)
+                    self.assertEqual(
+                        packed[f"w2_valid_c{c}"].numel(), packed[f"w2_can_c{c}"].numel()
+                    )
+
+    def test_compiled_parallel_reads_pre_packed_partition_off_cache(self):
+        """Production hot path must NOT re-run `_pack_partition_for_compile`
+        on every call.
+
+        An earlier iteration plumbed `cache.parallel_partition_packed` onto the
+        cache, but the production entry point (`_simplify_spacelike`)
+        unconditionally passed `partition_override=_require_parallel_partition(cache)`
+        through to `_simplify_spacelike_parallel_compiled`. With the previous
+        `if partition_override is not None: pack` dispatch, that meant the
+        cached pack was populated at build time but never read on the hot path
+        and `_pack_partition_for_compile` fired on every training-step call.
+
+        This test pins the production-call contract: across N production calls
+        through `_simplify_spacelike`, the packer fires exactly zero times
+        post-cache-build. Test-only callers that hand a *different* partition
+        dict to `_simplify_spacelike_parallel_compiled` (bench harnesses,
+        synthetic overrides) still pack on the fly -- identity, not
+        equality, decides which path runs.
+        """
+        from unittest import mock
+        from qec.surface_code import homological_equivalence_torch as he_mod
+
+        # Build the cache *outside* the patched region so the one-time pack at
+        # build time is not counted. We want to assert "post-build re-packs",
+        # not "lifetime packs".
+        hx, _, _ = _build_parity_matrices(5)
+        cache = build_spacelike_he_cache(
+            hx.to(torch.uint8),
+            distance=5,
+            basis="X",
+            device=torch.device("cpu"),
+        )
+        self.assertIsNotNone(cache.parallel_partition_packed)
+
+        # Stub the compiled chunk to an identity (`cfg_f` -> `cfg_f`). This
+        # keeps the test in pure-Python land: the dispatch logic in
+        # `_simplify_spacelike_parallel_compiled` runs unchanged, but no
+        # torch.compile / inductor / CUDA-graph machinery fires, so the test
+        # is fast on CPU. The convergence check trivially short-circuits on
+        # iteration 1, which is fine -- we are testing dispatch, not work.
+        identity_chunk = lambda cfg_f, *args: cfg_f
+        pack_wrapper = mock.Mock(wraps=he_mod._pack_partition_for_compile)
+
+        with mock.patch.object(he_mod, "_get_compiled_spacelike_chunk",
+                               return_value=identity_chunk), \
+             mock.patch.object(he_mod, "_pack_partition_for_compile", pack_wrapper):
+
+            cfg = torch.zeros((4, 5 * 5), dtype=torch.uint8)
+
+            # (1) Production entry point: 10 calls via `_simplify_spacelike`
+            # with `use_compile=True, use_parallel_spacelike=True` must
+            # produce zero `_pack_partition_for_compile` invocations.
+            for _ in range(10):
+                he_mod._simplify_spacelike(
+                    cfg,
+                    cache,
+                    basis="X",
+                    max_iterations=1,
+                    use_compile=True,
+                    use_parallel_spacelike=True,
+                )
+            self.assertEqual(
+                pack_wrapper.call_count,
+                0,
+                f"production path re-ran `_pack_partition_for_compile` "
+                f"{pack_wrapper.call_count} times across 10 calls; "
+                f"the cached pack on `cache.parallel_partition_packed` is "
+                f"populated but unreachable from the hot path",
+            )
+
+            # (2) Identity override (same object the cache packed) must also
+            # hit the cached path -- this mirrors what `_simplify_spacelike`
+            # threads through.
+            he_mod._simplify_spacelike_parallel_compiled(
+                cfg,
+                cache,
+                max_iterations=1,
+                partition_override=cache.parallel_partition,
+            )
+            self.assertEqual(
+                pack_wrapper.call_count,
+                0,
+                "identity `partition_override is cache.parallel_partition` "
+                "must read the cached pack, not re-pack",
+            )
+
+            # (3) Fresh-dict override (e.g. bench harness with a synthesized
+            # partition) MUST re-pack -- the dispatch is by identity, not
+            # equality, so callers that supply a different partition still
+            # get correct behavior.
+            fresh_partition = dict(cache.parallel_partition)
+            he_mod._simplify_spacelike_parallel_compiled(
+                cfg,
+                cache,
+                max_iterations=1,
+                partition_override=fresh_partition,
+            )
+            self.assertEqual(
+                pack_wrapper.call_count,
+                1,
+                "fresh-dict override must trigger `_pack_partition_for_compile` "
+                "(the override path is the escape hatch for bench/test harnesses)",
+            )
+
+    def test_partition_packed_is_none_when_no_partition(self):
+        """When `basis` is not provided the parallel partition is not built;
+        the packed view must be `None` (not an empty dict)."""
+        hx, _, _ = _build_parity_matrices(3)
+        cache = build_spacelike_he_cache(
+            hx.to(torch.uint8),
+            distance=3,
+            device=torch.device("cpu"),
+        )
+        self.assertIsNone(cache.parallel_partition)
+        self.assertIsNone(cache.parallel_partition_packed)
+
+    def test_require_parallel_partition_surfaces_failure_reason(self):
+        """`_require_parallel_partition` must surface the cache's failure
+        reason, not a generic 'missing partition' message."""
+        # Build a real cache and synthesize an "as-if non-bipartite" failure
+        # state by replacing the partition + stashing a reason. Use a real
+        # cache so we don't have to duplicate the SpacelikeHECache field list.
+        hx, _, _ = _build_parity_matrices(3)
+        cache = build_spacelike_he_cache(
+            hx.to(torch.uint8),
+            distance=3,
+            basis="X",
+            device=torch.device("cpu"),
+        )
+        bad = SpacelikeHECache(
+            distance=cache.distance,
+            parity=cache.parity,
+            support_masks=cache.support_masks,
+            support_sizes=cache.support_sizes,
+            layers=cache.layers,
+            w2_canonical=cache.w2_canonical,
+            w2_other=cache.w2_other,
+            w4_tl=cache.w4_tl,
+            w4_tr=cache.w4_tr,
+            w4_bl=cache.w4_bl,
+            w4_br=cache.w4_br,
+            parallel_partition=None,
+            parallel_partition_failure_reason=(
+                "stabilizer overlap graph is not bipartite "
+                "(stabilizers 7 and 11 fall in the same color class via BFS)"
+            ),
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _require_parallel_partition(bad)
+        msg = str(ctx.exception)
+        self.assertIn("stabilizers 7 and 11", msg)
+        self.assertIn("not bipartite", msg)
+
 
 # ---------------------------------------------------------------------------
 # Torch integration tests
@@ -1209,7 +1890,13 @@ class TestHETorchIntegration(unittest.TestCase):
             seed=2026,
         )
 
-    def _make_generator(self, num_he_cycles: int) -> MemoryCircuitTorch:
+    def _make_generator(
+        self,
+        num_he_cycles: int,
+        *,
+        use_parallel_spacelike: bool = False,
+        use_weight2: bool = False,
+    ) -> MemoryCircuitTorch:
         return MemoryCircuitTorch(
             distance=self.distance,
             n_rounds=self.n_rounds,
@@ -1218,6 +1905,9 @@ class TestHETorchIntegration(unittest.TestCase):
             timelike_he=True,
             num_he_cycles=num_he_cycles,
             max_passes_w1=8,
+            use_parallel_spacelike=use_parallel_spacelike,
+            use_weight2=use_weight2,
+            max_passes_w2=2,
             device=self.device,
             H=self.H,
             p=self.p,
@@ -1273,6 +1963,39 @@ class TestHETorchIntegration(unittest.TestCase):
         unique = torch.unique(trainY)
         # All values should be exactly 0 or 1 for trainY channels.
         self.assertTrue(torch.all((unique == 0.0) | (unique == 1.0)))
+
+    def test_parallel_spacelike_generate_batch_shapes_and_trainX(self):
+        """Parallel spacelike HE should integrate through MemoryCircuitTorch without changing trainX."""
+        gen_seq = self._make_generator(num_he_cycles=1)
+        gen_par = self._make_generator(num_he_cycles=1, use_parallel_spacelike=True)
+
+        trainX_seq, trainY_seq = gen_seq.generate_batch(batch_size=self.batch_size, seed=314)
+        trainX_par, trainY_par = gen_par.generate_batch(batch_size=self.batch_size, seed=314)
+
+        expected = (self.batch_size, 4, self.n_rounds, self.distance, self.distance)
+        self.assertEqual(trainX_par.shape, expected)
+        self.assertEqual(trainY_par.shape, expected)
+        self.assertTrue(torch.equal(trainX_seq, trainX_par))
+        self.assertFalse(torch.isnan(trainY_par).any())
+        self.assertTrue(
+            torch.all((torch.unique(trainY_par) == 0.0) | (torch.unique(trainY_par) == 1.0))
+        )
+        # Spacelike kernel correctness (syndrome preservation, weight non-increase,
+        # idempotence) is covered directly by TestParallelSpacelikeHE; this test
+        # only smokes the integration: shapes, dtype, no NaNs, trainX unchanged.
+
+    def test_parallel_spacelike_generate_batch_with_weight2(self):
+        """Parallel spacelike should compose with weight-2 timelike HE."""
+        gen = self._make_generator(
+            num_he_cycles=1,
+            use_parallel_spacelike=True,
+            use_weight2=True,
+        )
+        trainX, trainY = gen.generate_batch(batch_size=self.batch_size, seed=2718)
+        expected = (self.batch_size, 4, self.n_rounds, self.distance, self.distance)
+        self.assertEqual(trainX.shape, expected)
+        self.assertEqual(trainY.shape, expected)
+        self.assertFalse(torch.isnan(trainY).any())
 
 
 class TestWeight2TimelikeTorchVsCPU(unittest.TestCase):
