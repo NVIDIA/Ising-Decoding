@@ -375,10 +375,11 @@ def validate_public_config(cfg: DictConfig) -> PublicModelSpec:
                     f"Config field 'data.{k}' is not supported in the public release. "
                     f"Allowed data fields are: {sorted(allowed_data_keys)}"
                 )
-        # The HE-acceleration flags must be plain booleans. OmegaConf will
-        # accept strings like "True"/"yes" silently and they'd then flow into
-        # `bool(...)` casts downstream as truthy regardless of intent, so we
-        # reject anything that isn't a real bool with a clear message.
+        # These two flags are part of the public config surface, so keep their
+        # accepted type stricter than hidden/internal HE knobs that are merged
+        # from trusted defaults. OmegaConf accepts strings like "True"/"yes",
+        # which would otherwise flow into downstream `bool(...)` casts and
+        # become truthy regardless of the user's intent.
         for bool_key in ("use_compile", "use_parallel_spacelike"):
             if bool_key in cfg.data and not isinstance(cfg.data[bool_key], bool):
                 raise ValueError(

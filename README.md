@@ -685,7 +685,9 @@ EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
   through `torch.compile` together.
 - **Syndrome-equivalent to the sequential path** on supported codes: the
   parallel path preserves the HE invariants and produces valid non-increasing
-  representatives, while avoiding the sequential stabiliser order.
+  representatives, while avoiding the sequential stabiliser order. Outputs are
+  not guaranteed bit-identical to the sequential path; both are valid
+  representatives of the same coset.
   Coverage is added under `code/tests/mid/test_homological_equivalence.py`.
 - **Composes with `data.use_weight2`** — the weight-2 fix-equivalence pass is
   applied per colour.
@@ -700,6 +702,9 @@ EXTRA_PARAMS="data.use_compile=True data.use_parallel_spacelike=True" \
   stabiliser pair rather than silently falling back.
 - **`use_compile=True` is required** for the speedup; without it the partition
   is built but the optimised compiled inner loop is not entered.
+- **`torch.compile` has cold-start cost.** The first compiled call can pause
+  while Inductor/CUDA graph capture runs, and shape changes such as different
+  batch sizes or round counts can trigger recompilation.
 - **Cache-build cost and memory grow slightly.** A packed
   `parallel_partition_packed` view is materialised once at cache-build time so
   the hot path only does dtype casts.
