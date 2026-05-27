@@ -7,7 +7,7 @@
 [![Model: Fast](https://img.shields.io/badge/🤗%20HuggingFace-Fast%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast)
 [![Model: Accurate](https://img.shields.io/badge/🤗%20HuggingFace-Accurate%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate)
 
-This repo offers AI training frameworks and recipes to build, customize and deploy scalable quantum error correction **decoders**:
+This repo offers AI training recipes to build, customize and deploy scalable quantum error correction **decoders**:
 
 - A neural network consumes detector syndromes across space **and** time
 - It predicts corrections that reduce syndrome density / improve decoding
