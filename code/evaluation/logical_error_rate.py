@@ -115,6 +115,40 @@ def _get_env_bool(name: str, default: bool = False) -> bool:
     return val not in ("0", "false", "no", "off", "")
 
 
+def _get_decode_mode(cfg) -> str:
+    mode = os.environ.get("PREDECODER_DECODE_MODE", "").strip()
+    if not mode:
+        mode = str(getattr(getattr(cfg, "test", None), "decode_mode", "ising_decoding_pymatching"))
+    mode = mode.strip().lower()
+    valid = {"ising_decoding_pymatching", "pymatching_only"}
+    if mode not in valid:
+        raise ValueError(f"Invalid decode mode {mode!r}. Supported modes: {sorted(valid)}")
+    return mode
+
+
+def _get_decode_output_dir(cfg) -> Optional[Path]:
+    """Return the configured decode-output directory without creating it.
+
+    Resolution order: ``PREDECODER_DECODE_OUTPUT_DIR`` environment variable, then
+    ``cfg.test.decode_output_dir``. Returns ``None`` when neither is set. The
+    directory is materialised lazily by :func:`_save_decode_array` so that a
+    pure read does not leave empty directories on disk.
+    """
+    raw = os.environ.get("PREDECODER_DECODE_OUTPUT_DIR", "").strip()
+    if not raw:
+        raw = str(getattr(getattr(cfg, "test", None), "decode_output_dir", "") or "").strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _save_decode_array(output_dir: Optional[Path], basis: str, name: str, arr) -> None:
+    if output_dir is None:
+        return
+    output_dir.mkdir(parents=True, exist_ok=True)
+    np.save(output_dir / f"{basis}_{name}.npy", np.asarray(arr))
+
+
 def _parse_quant_format(rank: int = 0) -> str:
     """Read and validate the QUANT_FORMAT environment variable.
 
@@ -903,6 +937,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
 
     verbose = bool(getattr(cfg.test, "verbose_inference", False)
                   ) or bool(getattr(cfg.test, "verbose", False))
+    decode_mode = _get_decode_mode(cfg)
+    decode_output_dir = _get_decode_output_dir(cfg)
+    basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
+    if basis not in ("X", "Z"):
+        raise AssertionError(f"Invalid meas_basis_test='{basis}'. Use 'X' or 'Z'.")
     # Log distributed and sampling configuration (only on rank 0, verbose only)
     if verbose and dist.rank == 0:
         if dist.world_size > 1:
@@ -915,6 +954,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
             )
         else:
             print(f"[LER] Sampling mode: threshold (th_data={th_data}, th_syn={th_syn})")
+        print(f"[LER] Decode mode: {decode_mode}")
 
     enable_timing_instrumentation = bool(getattr(cfg.test, "enable_timing_instrumentation", False))
     enable_timing_instrumentation = _get_env_bool(
@@ -1036,6 +1076,25 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
 
     baseline_pred = np.asarray(baseline_pred, dtype=np.uint8).reshape(-1, circuit.num_observables)
     num_pymatch_errors = int((baseline_pred != stim_obs).sum())
+    if dist.rank == 0:
+        _save_decode_array(decode_output_dir, basis, "observables", stim_obs)
+        _save_decode_array(decode_output_dir, basis, "pymatching_predictions", baseline_pred)
+
+    if decode_mode == "pymatching_only":
+        if dist.rank == 0:
+            LAST_DEM_TIMING.update(
+                {
+                    "dem_build_s": float(dem_build_s),
+                    "dem_decode_s": float(dem_decode_s),
+                    "basis": basis,
+                    "num_batches": 0,
+                }
+            )
+            print(
+                f"[DEM Timing] build={dem_build_s:.2f}s decode={dem_decode_s:.2f}s "
+                f"(basis={basis}, decode_mode=pymatching_only)"
+            )
+        return num_pymatch_errors, int(stim_obs.shape[0]), num_pymatch_errors, float("nan"), float("nan")
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
@@ -1085,10 +1144,6 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     D = cfg.distance
     code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
     maps = _build_stab_maps(D, code_rotation)
-
-    basis = str(getattr(cfg.test, "meas_basis_test", "X")).upper()
-    if basis not in ("X", "Z"):
-        raise AssertionError(f"Invalid meas_basis_test='{basis}'. Use 'X' or 'Z'.")
 
     batch_size_original = test_loader_kwargs.get("batch_size", 1)
     T_original = cfg.test.n_rounds
@@ -1342,6 +1397,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     ) / stim_dets.size if stim_dets.size > 0 else 0.0
     floor_time_per_round = None
     detector_shape = None
+    final_prediction_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
+    residual_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
 
     t_start = time.perf_counter()
     t_model_time = 0.0
@@ -1426,6 +1483,10 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         pre_L_cpu = pre_L.cpu() if pre_L.is_cuda else pre_L
         pred_obs_t = pred_obs_t.view(-1).contiguous()  # always (B,)
         final_L = (pre_L_cpu + pred_obs_t).remainder_(2)  # (B,)
+        if final_prediction_rows is not None:
+            final_prediction_rows.append(final_L.numpy().reshape(-1, 1).copy())
+        if residual_rows is not None:
+            residual_rows.append(residual_np.copy())
 
         # Ground truth (same for X or Z; DEM has 1 observable)
         gt_obs = dets_and_obs[:, -num_obs:]
@@ -1530,6 +1591,22 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         logical_errors = int(t_log.item())
         total_samples = int(t_n.item())
         num_pymatch_errors = int(t_pymatch.item())
+
+    if dist.rank == 0:
+        if final_prediction_rows:
+            _save_decode_array(
+                decode_output_dir,
+                basis,
+                "ising_decoding_pymatching_predictions",
+                np.concatenate(final_prediction_rows, axis=0),
+            )
+        if residual_rows:
+            _save_decode_array(
+                decode_output_dir,
+                basis,
+                "predecoder_residual_detectors",
+                np.concatenate(residual_rows, axis=0),
+            )
 
     # Latency: single-shot (batch_size=1, matcher.decode) on a small subset on rank 0 only,
     # timed after the main loop for a clean CPU state.

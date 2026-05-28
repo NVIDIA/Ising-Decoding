@@ -78,8 +78,53 @@ def run_surface(cfg: DictConfig):
         from evaluation.inference import run_inference
         DistributedManager.initialize()
         dist = DistributedManager()
-        model = _load_model(cfg, dist)
+        decode_mode = os.environ.get("PREDECODER_DECODE_MODE", "").strip().lower()
+        if decode_mode == "pymatching_only":
+            model = torch.nn.Identity()
+        else:
+            model = _load_model(cfg, dist)
         run_inference(model, dist.device, dist, cfg)
+    elif cfg.workflow.task == "generate_stim_data":
+        from export.generate_test_data import generate_test_data
+        from hydra.core.hydra_config import HydraConfig
+        from omegaconf import OmegaConf
+
+        basis_cfg = str(getattr(cfg.test, "meas_basis_test", "both")).upper()
+        bases = ["X", "Z"] if basis_cfg in ("BOTH", "MIXED") else [basis_cfg]
+        if any(b not in ("X", "Z") for b in bases):
+            raise ValueError(f"Invalid test.meas_basis_test={basis_cfg!r}; expected X, Z, or both.")
+
+        num_samples = int(getattr(cfg.test, "num_samples", 1000))
+        output_dir = os.path.join(HydraConfig.get().runtime.output_dir, "stim_samples")
+        noise_model_cfg = getattr(cfg.data, "noise_model", None)
+        noise_model_params = None
+        if noise_model_cfg is not None:
+            noise_model_params = OmegaConf.to_container(noise_model_cfg, resolve=True)
+
+        # The generate_stim_data workflow ONLY writes Stim sample artifacts
+        # (samples_{basis}.dets + metadata_{basis}.json). The CUDA-Q .bin
+        # artifacts are produced by a separate workflow (see generate_test_data
+        # CLI with --stim-artifacts/--no-cudaq-artifacts) to keep the offline
+        # decoding output dir narrowly scoped.
+        write_cudaq_artifacts = False
+
+        print(
+            "[generate_stim_data] Writing Stim detector samples "
+            f"to {output_dir} for basis={bases}, shots={num_samples}"
+        )
+        for basis in bases:
+            generate_test_data(
+                distance=int(cfg.distance),
+                n_rounds=int(cfg.n_rounds),
+                basis=basis,
+                p_error=float(getattr(cfg.test, "p_error", 0.003)),
+                code_rotation=str(getattr(cfg.data, "code_rotation", "XV")),
+                noise_model_params=noise_model_params,
+                num_samples=num_samples,
+                output_dir=output_dir,
+                write_stim_artifacts=True,
+                write_cudaq_artifacts=write_cudaq_artifacts,
+            )
     elif cfg.workflow.task == "data":
         DistributedManager.initialize()
         dist = DistributedManager()

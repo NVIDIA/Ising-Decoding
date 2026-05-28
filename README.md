@@ -29,6 +29,7 @@ The public release exposes a **single user-facing config** and a **single runner
   - [Converting .pt checkpoints to SafeTensors](#converting-pt-checkpoints-to-safetensors-optional-post-training)
   - [ONNX export and quantization](#onnx-export-and-quantization-optional-post-training)
   - [Generating data for CUDA-Q QEC](#generating-data-for-cuda-q-qec-realtime-predecoder-test-application)
+  - [Offline decoding from Stim detector samples](#offline-decoding-from-stim-detector-samples)
   - [Decoder ablation study with cudaq-qec](#decoder-ablation-study-with-cudaq-qec-optional)
 - [Configuration and advanced usage](#configuration-and-advanced-usage)
   - [GPU selection](#gpu-selection)
@@ -357,6 +358,210 @@ Done.
   observables.bin                      40,008 bytes
   priors.bin                          750,916 bytes
   pymatching_predictions.bin           40,008 bytes
+```
+
+### Offline decoding from Stim detector samples
+
+This is the file-based path for decoding detector samples produced outside the
+in-memory simulator. It exists for two distinct audiences:
+
+1. **You already have detector samples** (from a QPU, a third-party simulator,
+   or a previously cached run) and want to feed them to the same decoders we
+   ship. Jump to [Bring your own detector samples](#bring-your-own-detector-samples).
+2. **You want a reproducible end-to-end smoke test.** Use the local
+   generator below, then run the same decode commands.
+
+#### File contract
+
+Each basis is exactly two files:
+
+```text
+<root>/
+  samples_X.dets       # Stim sparse detector-sample format
+  metadata_X.json      # circuit + noise fingerprint
+  samples_Z.dets
+  metadata_Z.json
+```
+
+`samples_*.dets` uses Stim's sparse format with logical observables appended,
+so a line `shot D3 D8 L0` says detectors 3 and 8 fired and logical observable
+0 flipped on that shot. Stim does not encode the memory basis in the sample
+format, so X and Z always live in separate files; the LER loop iterates over
+both when `cfg.test.meas_basis_test=both`. The resolver
+(`resolve_stim_sample_paths`) also accepts the alternate layouts
+`<root>/<basis>/samples.dets` + `metadata.json` and the flat
+`<root>/samples.dets` + `metadata.json`.
+
+The metadata JSON has the shape that
+`qec.surface_code.stim_sample_io.build_stim_sample_metadata` writes:
+
+```json
+{
+  "schema_version": 2,
+  "artifact": "stim_detector_samples",
+  "format": "dets",
+  "append_observables": true,
+  "distance": 7,
+  "n_rounds": 7,
+  "basis": "X",
+  "code_rotation": "XV",
+  "num_detectors": 168,
+  "num_observables": 1,
+  "num_shots": 262144,
+  "p_error": 0.003,
+  "noise_model": "25-param",
+  "noise_model_sha256": "abcd…",
+  "noise_model_params": { "p_prep_X": 0.002, "...": 0.0 }
+}
+```
+
+`p_error`, `noise_model`, `noise_model_sha256`, and `noise_model_params` are
+optional but recommended; when present, the decoder cross-checks its active
+noise model against the recorded fingerprint and raises by default if the two
+disagree. Files written before this schema (no noise fields) keep loading
+unchanged. `code_rotation` accepts both the canonical names (`XV`, `XH`, `ZV`,
+`ZH`) and the public aliases (`O1`..`O4`).
+
+#### Bring your own detector samples
+
+If you have `.dets` data from elsewhere (a QPU, an external simulator), the
+contract is exactly the three things above:
+
+1. Write `samples_{basis}.dets` in Stim's sparse format with observables
+   appended.
+2. Write `metadata_{basis}.json` matching the schema above. The easiest way is
+   to call `build_stim_sample_metadata(...)` and `write_metadata_json(...)`
+   from `qec.surface_code.stim_sample_io`; you can also hand-author it.
+3. Make sure `conf/config_public.yaml` reflects the experiment your samples
+   came from: `distance`, `n_rounds`, `data.code_rotation`, and
+   `data.noise_model` must match exactly. The decoder rebuilds a Stim memory
+   circuit from these and validates the file against it before decoding.
+
+Then point the launcher at the directory:
+
+```bash
+PREDECODER_STIM_SAMPLES_DIR=/path/to/your/dets \
+PREDECODER_DECODE_MODE=pymatching_only \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+Validation is strict by default: mismatches in distance, rounds, basis,
+orientation, detector count, observable presence, `p_error`, or
+`noise_model_sha256` raise with one explicit error per mismatch before any
+decoding happens. To downgrade only the **noise** mismatches to warnings (for
+example when sweeping `p_error` for a calibration study), set
+`PREDECODER_STIM_STRICT_NOISE=0`. Structural mismatches are always fatal.
+
+#### Generate local reference files
+
+```bash
+WORKFLOW=generate_stim_data \
+EXPERIMENT_NAME=offline_stim_run \
+bash code/scripts/local_run.sh
+```
+
+The generator reads from `conf/config_public.yaml`:
+
+| config field | role |
+| --- | --- |
+| `distance` | surface-code distance |
+| `n_rounds` | number of measurement rounds |
+| `data.code_rotation` | code orientation (`XV`/`XH`/`ZV`/`ZH` or `O1`..`O4`) |
+| `data.noise_model` | 25-parameter noise model dict (optional) |
+| `test.meas_basis_test` | `X`, `Z`, or `both` (default `both`) |
+| `test.p_error` | scalar noise level (default `0.003`) |
+| `test.num_samples` | shots per basis (default `262144`, ~20 MB per file) |
+
+The default sample count is large because the smoke run targets LER stable to
+~3 significant digits; override `++test.num_samples=N` (or set the field in a
+local override config) to shrink it for a faster iteration. Output goes to:
+
+```text
+outputs/offline_stim_run/stim_samples/samples_X.dets
+outputs/offline_stim_run/stim_samples/metadata_X.json
+outputs/offline_stim_run/stim_samples/samples_Z.dets
+outputs/offline_stim_run/stim_samples/metadata_Z.json
+```
+
+The `generate_stim_data` workflow writes only the Stim sample artifacts. The
+CUDA-Q `.bin` artifacts (`detectors.bin`, `H_csr.bin`, etc.) live in a
+separate output dir and are produced by `python code/export/generate_test_data.py`
+directly; see [the CUDA-Q section](#generating-data-for-cuda-q-qec-realtime-predecoder-test-application).
+
+#### Decode the files
+
+PyMatching only — useful as the apples-to-apples baseline to compare against
+the Ising pre-decoder. In this mode the launcher replaces the neural model
+with `torch.nn.Identity()` and **no checkpoint is required**:
+
+```bash
+PREDECODER_STIM_SAMPLES_DIR=outputs/offline_stim_run/stim_samples \
+PREDECODER_DECODE_MODE=pymatching_only \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+Ising pre-decoder followed by PyMatching — **requires a model checkpoint.**
+Point `PREDECODER_MODEL_CHECKPOINT_FILE` (or `model_checkpoint_file` in the
+config) at one of the released models, or run training under the same
+`EXPERIMENT_NAME` first:
+
+```bash
+PREDECODER_STIM_SAMPLES_DIR=outputs/offline_stim_run/stim_samples \
+PREDECODER_DECODE_MODE=ising_decoding_pymatching \
+EXTRA_PARAMS="++model_checkpoint_file=models/Ising-Decoder-SurfaceCode-1-Fast.pt" \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+No changes to `conf/config_public.yaml` are required for either command; the
+existing config controls the model, distance, rounds, orientation, and noise
+model, and the Stim file metadata is checked against the rebuilt circuit
+before decoding.
+
+To persist the per-shot comparison arrays, also set:
+
+```bash
+PREDECODER_DECODE_OUTPUT_DIR=offline_decode_outputs
+```
+
+With that set, `pymatching_only` writes:
+
+* `{basis}_observables.npy`
+* `{basis}_pymatching_predictions.npy`
+
+…and `ising_decoding_pymatching` writes those plus:
+
+* `{basis}_predecoder_residual_detectors.npy`
+* `{basis}_ising_decoding_pymatching_predictions.npy`
+
+The directory is created lazily on the first write, so it is safe to point at
+a path that does not yet exist.
+
+#### Smoke script
+
+```bash
+code/scripts/offline_smoketest.sh
+```
+
+The script defaults `EXPERIMENT_NAME=offline_stim_run` (matching the example
+paths above), generates Stim files, decodes with `pymatching_only`, and (if
+`models/Ising-Decoder-SurfaceCode-1-Fast.pt` is on disk) decodes again with
+`ising_decoding_pymatching`. It then parses a structured
+`[Inference Summary]` JSON marker that the inference loop emits on the last
+line of its summary block. The marker is **off by default** to keep
+interactive and notebook runs clean; the smoketest opts in by exporting
+`PREDECODER_EMIT_INFERENCE_SUMMARY=1` before each inference call. Set the same
+env var yourself if you want to pipe these results into other tooling.
+
+Example output from one `d=7`, `n_rounds=7`, `O1`, `262,144` shots per basis
+run is shown below. Treat timing/speedup as a smoke signal, not a benchmark:
+
+```text
+                    No pre-decoder    After pre-decoder
+LER - X basis:             0.002766            0.002209
+LER - Z basis:             0.002590            0.002361
+LER - Avg:                 0.002678            0.002285
+PyMatching latency Avg:    0.809 us/round      0.446 us/round
+PyMatching speedup Avg:    1.815x
 ```
 
 ### Decoder ablation study with cudaq-qec (optional)

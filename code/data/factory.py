@@ -17,6 +17,7 @@ Factory module for creating datapipes.
 
 Provides DatapipeFactory for instantiating data generators/datapipes from config.
 """
+import os
 
 import torch
 
@@ -67,14 +68,17 @@ class DatapipeFactory:
         Datapipe for inference using Stim.
         """
         if cfg.datapipe == "memory":
-            from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
+            from data.datapipe_stim import (
+                QCDataPipePreDecoder_Memory_from_stim_file,
+                QCDataPipePreDecoder_Memory_inference,
+            )
             from qec.noise_model import NoiseModel
 
             error_mode_value = getattr(cfg.data, 'error_mode', 'circuit_level_surface_custom')
             code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
             # Test-time noise model selection:
             # - cfg.test.noise_model='train': use cfg.data.noise_model (if present)
-            # - cfg.test.noise_model='none': ignore cfg.data.noise_model, use cfg.test.p_error (legacy single-p)
+            # - cfg.test.noise_model='none': ignore cfg.data.noise_model, use cfg.test.p_error (single-p)
             # Takes priority over cfg.test.p_error.
             test_nm_mode = getattr(getattr(cfg, "test", None), "noise_model", None)
             if test_nm_mode is None:
@@ -100,24 +104,48 @@ class DatapipeFactory:
                 )
 
             # Fail fast: if the user provided an explicit 25p noise model and asked to use it,
-            # do not silently fall back to legacy p_error-based generation.
+            # do not silently fall back to p_error-based generation.
             if test_nm_mode == "train" and getattr(
                 cfg.data, "noise_model", None
             ) is not None and noise_model_obj is None:
                 raise ValueError(
                     "cfg.test.noise_model='train' but failed to construct NoiseModel from cfg.data.noise_model. "
-                    "Refusing to fall back to legacy cfg.test.p_error."
+                    "Refusing to fall back to cfg.test.p_error."
                 )
 
-            test_dataset = QCDataPipePreDecoder_Memory_inference(
+            stim_samples_dir = os.environ.get("PREDECODER_STIM_SAMPLES_DIR", "").strip()
+            if not stim_samples_dir:
+                stim_samples_dir = str(getattr(cfg.test, "stim_samples_dir", "") or "").strip()
+            measure_basis = cfg.test.meas_basis_test
+            if stim_samples_dir and str(measure_basis).upper() in ("BOTH", "MIXED"):
+                # The file pipe holds one basis per instance; callers that need
+                # both bases re-instantiate per basis (the LER loop does this).
+                # Pick X for shape probing here; choice does not affect tensor
+                # shapes because they only depend on (distance, n_rounds).
+                measure_basis = "X"
+
+            dataset_kwargs: dict = {}
+            if stim_samples_dir:
+                dataset_cls = QCDataPipePreDecoder_Memory_from_stim_file
+                dataset_kwargs["stim_samples_dir"] = stim_samples_dir
+                # PREDECODER_STIM_STRICT_NOISE=0 downgrades the noise-fingerprint
+                # mismatch from an error to a UserWarning. Default is strict.
+                strict_env = os.environ.get("PREDECODER_STIM_STRICT_NOISE", "").strip().lower()
+                if strict_env in ("0", "false", "no", "off"):
+                    dataset_kwargs["strict_noise"] = False
+            else:
+                dataset_cls = QCDataPipePreDecoder_Memory_inference
+
+            test_dataset = dataset_cls(
                 distance=cfg.distance,
                 n_rounds=cfg.n_rounds,
                 num_samples=cfg.test.num_samples,
                 error_mode=error_mode_value,
                 p_error=cfg.test.p_error,
-                measure_basis=cfg.test.meas_basis_test,
+                measure_basis=measure_basis,
                 code_rotation=code_rotation,
                 noise_model=noise_model_obj,
+                **dataset_kwargs,
             )
             return test_dataset
         else:
