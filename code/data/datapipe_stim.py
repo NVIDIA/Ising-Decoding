@@ -461,7 +461,9 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
         )
         self.circ.set_error_rates()
 
-        samples_path, metadata_path = resolve_stim_sample_paths(stim_samples_dir, self.measure_basis)
+        samples_path, metadata_path = resolve_stim_sample_paths(
+            stim_samples_dir, self.measure_basis
+        )
         dets_and_obs, metadata = read_stim_detector_samples(
             samples_path=samples_path,
             metadata_path=metadata_path,

@@ -333,7 +333,9 @@ class TestStimSampleFileContract(unittest.TestCase):
                     noise_model=NoiseModel.from_single_p(0.003),
                 )
                 self.assertEqual(len(pipe), 32)
-                self.assertTrue(torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs)))
+                self.assertTrue(
+                    torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs))
+                )
                 sample = pipe[0]
                 self.assertEqual(tuple(sample["trainX"].shape), (4, 3, 3, 3))
                 self.assertEqual(
@@ -386,7 +388,9 @@ class TestStimSampleFileContract(unittest.TestCase):
                             rotation="XV",
                         )
 
-                        self.assertTrue(torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs)))
+                        self.assertTrue(
+                            torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs))
+                        )
                         self.assertTrue(torch.equal(pipe.x_syn_diff_all, expected_x))
                         self.assertTrue(torch.equal(pipe.z_syn_diff_all, expected_z))
                         self.assertTrue(torch.equal(pipe.trainX_all, expected_train_x))
@@ -466,9 +470,8 @@ class TestStimSampleFileContract(unittest.TestCase):
                     basis=basis,
                     code_rotation="XV",
                 )
-                (train_x_m, x_syn_m, z_syn_m, _baseline, _nbd, _B, _T, _nx, _nz) = (
-                    module._batch_to_trainx_and_syndromes(dets)
-                )
+                (train_x_m, x_syn_m, z_syn_m, _baseline, _nbd, _B, _T, _nx,
+                 _nz) = (module._batch_to_trainx_and_syndromes(dets))
                 self.assertTrue(torch.equal(x_syn_m.to(torch.int32), expected_x_syn))
                 self.assertTrue(torch.equal(z_syn_m.to(torch.int32), expected_z_syn))
                 self.assertTrue(torch.allclose(train_x_m, expected_train_x, atol=0.0, rtol=0.0))
@@ -726,9 +729,7 @@ class TestStimSampleFileContract(unittest.TestCase):
                 noise_model=NoiseModel.from_single_p(0.003),
             )
             self.assertEqual(len(pipe), 8)
-            self.assertTrue(
-                torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs))
-            )
+            self.assertTrue(torch.equal(pipe.dets_and_obs, torch.from_numpy(artifact.dets_and_obs)))
 
     def test_truncated_dets_file_raises_at_load_time(self):
         """Truncating the .dets file must trip the num_shots/shape check in
@@ -748,7 +749,7 @@ class TestStimSampleFileContract(unittest.TestCase):
             # to keep the parser from raising on its own; the shot-count check
             # in read_stim_detector_samples should then notice.
             lines = raw_bytes.splitlines(keepends=True)
-            truncated = b"".join(lines[: max(1, len(lines) // 2)])
+            truncated = b"".join(lines[:max(1, len(lines) // 2)])
             artifact.samples_path.write_bytes(truncated)
             with self.assertRaisesRegex(ValueError, "num_shots mismatch"):
                 read_stim_detector_samples(
@@ -825,11 +826,11 @@ class TestOfflineStimLER(unittest.TestCase):
             ),
             test=SimpleNamespace(
                 num_samples=num_samples,
-                    n_rounds=3,
+                n_rounds=3,
                 p_error=0.003,
                 meas_basis_test="both",
                 noise_model="none",
-                    latency_num_samples=0,
+                latency_num_samples=0,
                 th_data=0.0,
                 th_syn=0.0,
                 sampling_mode="threshold",
@@ -880,7 +881,9 @@ class TestOfflineStimLER(unittest.TestCase):
                 self.assertIn(basis, result)
                 observed = float(result[basis]["logical error ratio (pymatch mean)"])
                 self.assertEqual(observed, expected[basis])
-                self.assertEqual(float(result[basis]["logical error ratio (mean)"]), expected[basis])
+                self.assertEqual(
+                    float(result[basis]["logical error ratio (mean)"]), expected[basis]
+                )
                 self.assertGreaterEqual(observed, 0.0)
                 self.assertLessEqual(observed, 1.0)
 

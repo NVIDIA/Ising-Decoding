@@ -223,22 +223,24 @@ def run_inference(model, device, dist, cfg) -> None:
         summary = {
             "schema_version": 1,
             "marker": "inference_summary",
-            "ler": {
-                "x_basis_no_predecoder": float(x_base),
-                "x_basis_after_predecoder": float(x_after),
-                "z_basis_no_predecoder": float(z_base),
-                "z_basis_after_predecoder": float(z_after),
-                "avg_no_predecoder": float(_avg(x_base, z_base)),
-                "avg_after_predecoder": float(_avg(x_after, z_after)),
-            },
-            "pymatching_latency_us_per_round": {
-                "x_basis_no_predecoder": float(x_lat_base),
-                "x_basis_after_predecoder": float(x_lat_after),
-                "z_basis_no_predecoder": float(z_lat_base),
-                "z_basis_after_predecoder": float(z_lat_after),
-                "avg_no_predecoder": float(avg_lat_base),
-                "avg_after_predecoder": float(avg_lat_after),
-            },
+            "ler":
+                {
+                    "x_basis_no_predecoder": float(x_base),
+                    "x_basis_after_predecoder": float(x_after),
+                    "z_basis_no_predecoder": float(z_base),
+                    "z_basis_after_predecoder": float(z_after),
+                    "avg_no_predecoder": float(_avg(x_base, z_base)),
+                    "avg_after_predecoder": float(_avg(x_after, z_after)),
+                },
+            "pymatching_latency_us_per_round":
+                {
+                    "x_basis_no_predecoder": float(x_lat_base),
+                    "x_basis_after_predecoder": float(x_lat_after),
+                    "z_basis_no_predecoder": float(z_lat_base),
+                    "z_basis_after_predecoder": float(z_lat_after),
+                    "avg_no_predecoder": float(avg_lat_base),
+                    "avg_after_predecoder": float(avg_lat_after),
+                },
             "pymatching_speedup_avg_xz": float(avg_speedup),
         }
         print("[Inference Summary] " + _json.dumps(summary, sort_keys=True))

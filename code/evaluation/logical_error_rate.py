@@ -1094,7 +1094,8 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 f"[DEM Timing] build={dem_build_s:.2f}s decode={dem_decode_s:.2f}s "
                 f"(basis={basis}, decode_mode=pymatching_only)"
             )
-        return num_pymatch_errors, int(stim_obs.shape[0]), num_pymatch_errors, float("nan"), float("nan")
+        return num_pymatch_errors, int(stim_obs.shape[0]
+                                      ), num_pymatch_errors, float("nan"), float("nan")
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)

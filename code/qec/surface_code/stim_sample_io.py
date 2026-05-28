@@ -268,8 +268,8 @@ def validate_stim_sample_metadata(
         errors.extend(noise_messages)
     elif noise_messages:
         warnings.warn(
-            "Stim sample noise-model drift (continuing because strict_noise=False):\n- "
-            + "\n- ".join(noise_messages),
+            "Stim sample noise-model drift (continuing because strict_noise=False):\n- " +
+            "\n- ".join(noise_messages),
             UserWarning,
             stacklevel=2,
         )
@@ -410,4 +410,6 @@ def resolve_stim_sample_paths(root: str | Path, basis: str) -> tuple[Path, Path]
         if samples_path.exists() and metadata_path.exists():
             return samples_path, metadata_path
     expected = ", ".join(f"{s} + {m}" for s, m in candidates)
-    raise FileNotFoundError(f"No Stim sample artifact found for basis {basis}. Expected one of: {expected}")
+    raise FileNotFoundError(
+        f"No Stim sample artifact found for basis {basis}. Expected one of: {expected}"
+    )
