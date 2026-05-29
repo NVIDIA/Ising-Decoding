@@ -556,12 +556,7 @@ Example output from one `d=7`, `n_rounds=7`, `O1`, `262,144` shots per basis
 run is shown below. Treat timing/speedup as a smoke signal, not a benchmark:
 
 ```text
-                    No pre-decoder    After pre-decoder
-LER - X basis:             0.002766            0.002209
-LER - Z basis:             0.002590            0.002361
-LER - Avg:                 0.002678            0.002285
-PyMatching latency Avg:    0.809 us/round      0.446 us/round
-PyMatching speedup Avg:    1.815x
+[offline_smoketest.sh] Avg LER 0.002678 (no pre-decoder) -> 0.002285 (after); PyMatching speedup 1.815x
 ```
 
 ### Decoder ablation study with cudaq-qec (optional)

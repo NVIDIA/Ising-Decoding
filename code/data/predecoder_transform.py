@@ -121,25 +121,18 @@ def dets_to_predecoder_inputs(
     zero_idx = torch.zeros(1, dtype=torch.long, device=dev)
     sentinel = torch.full((1,), sentinel_idx, dtype=torch.long, device=dev)
 
-    if basis_upper == "X":
-        idx_x = torch.cat([zero_idx, x_bulk_idx])
-        idx_z = torch.cat([sentinel, z_bulk_idx[:-1], sentinel]) if T > 1 \
-            else torch.cat([sentinel, sentinel])
-    else:
-        idx_z = torch.cat([zero_idx, z_bulk_idx])
-        idx_x = torch.cat([sentinel, x_bulk_idx[:-1], sentinel]) if T > 1 \
-            else torch.cat([sentinel, sentinel])
-
     if T == 1:
-        # For a single round there is no "bulk" interior; both index lists must
-        # contain exactly T = 1 entry. The cross-basis row is the all-zero
-        # sentinel; the in-basis row is the t=0 detector group.
         if basis_upper == "X":
-            idx_x = zero_idx
-            idx_z = sentinel
+            idx_x, idx_z = zero_idx, sentinel
         else:
-            idx_z = zero_idx
-            idx_x = sentinel
+            idx_z, idx_x = zero_idx, sentinel
+    else:
+        if basis_upper == "X":
+            idx_x = torch.cat([zero_idx, x_bulk_idx])
+            idx_z = torch.cat([sentinel, z_bulk_idx[:-1], sentinel])
+        else:
+            idx_z = torch.cat([zero_idx, z_bulk_idx])
+            idx_x = torch.cat([sentinel, x_bulk_idx[:-1], sentinel])
 
     x_syn_diff = torch.index_select(padded, 2, idx_x).to(torch.int32).contiguous()
     z_syn_diff = torch.index_select(padded, 2, idx_z).to(torch.int32).contiguous()

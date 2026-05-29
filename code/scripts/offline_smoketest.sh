@@ -106,51 +106,14 @@ if not records:
 
 summary = records[-1]
 ler = summary.get("ler", {})
-lat = summary.get("pymatching_latency_us_per_round", {})
 speedup = summary.get("pymatching_speedup_avg_xz", float("nan"))
 
-
-def _fmt(value, width=14, precision=6):
-    if value is None:
-        return "nan".rjust(width)
-    try:
-        return f"{float(value):>{width}.{precision}f}"
-    except (TypeError, ValueError):
-        return str(value).rjust(width)
-
-
-print("\nOffline Stim inference summary")
-print(f"                                  {'No pre-decoder':>17}    {'After pre-decoder':>17}")
+# Full per-basis latency/LER/speedup table is already printed by
+# code/evaluation/inference.py; just emit one headline line here.
 print(
-    f"PyMatching latency - X (us/round):"
-    f" {_fmt(lat.get('x_basis_no_predecoder'), 17, 3)}"
-    f"    {_fmt(lat.get('x_basis_after_predecoder'), 17, 3)}"
+    f"\n[offline_smoketest.sh] Avg LER {ler.get('avg_no_predecoder')} "
+    f"(no pre-decoder) -> {ler.get('avg_after_predecoder')} (after); "
+    f"PyMatching speedup {speedup}"
 )
-print(
-    f"PyMatching latency - Z (us/round):"
-    f" {_fmt(lat.get('z_basis_no_predecoder'), 17, 3)}"
-    f"    {_fmt(lat.get('z_basis_after_predecoder'), 17, 3)}"
-)
-print(
-    f"PyMatching latency - Avg:         "
-    f" {_fmt(lat.get('avg_no_predecoder'), 17, 3)}"
-    f"    {_fmt(lat.get('avg_after_predecoder'), 17, 3)}"
-)
-print(
-    f"LER - X basis:                    "
-    f" {_fmt(ler.get('x_basis_no_predecoder'), 17, 6)}"
-    f"    {_fmt(ler.get('x_basis_after_predecoder'), 17, 6)}"
-)
-print(
-    f"LER - Z basis:                    "
-    f" {_fmt(ler.get('z_basis_no_predecoder'), 17, 6)}"
-    f"    {_fmt(ler.get('z_basis_after_predecoder'), 17, 6)}"
-)
-print(
-    f"LER - Avg:                        "
-    f" {_fmt(ler.get('avg_no_predecoder'), 17, 6)}"
-    f"    {_fmt(ler.get('avg_after_predecoder'), 17, 6)}"
-)
-print(f"PyMatching speedup (Avg X/Z): {float(speedup):.3f}x")
 PY
 fi

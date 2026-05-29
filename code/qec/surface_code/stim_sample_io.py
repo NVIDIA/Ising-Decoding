@@ -181,6 +181,10 @@ def validate_stim_sample_metadata(
             explicit because these files are a cross-team contract.
     """
     errors: list[str] = []
+    # Legacy files (no schema_version key) predate the noise fingerprint; treat them as v1.
+    sv = metadata.get("schema_version", 1)
+    if not isinstance(sv, int) or isinstance(sv, bool) or sv > SCHEMA_VERSION:
+        errors.append(f"unsupported schema_version: {sv!r} (max {SCHEMA_VERSION})")
     sample_format = str(metadata.get("format", "")).strip().lower()
     if sample_format not in _SUPPORTED_FORMATS:
         errors.append(
