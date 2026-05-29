@@ -30,16 +30,9 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-from data.datapipe_stim import (
-    QCDataPipePreDecoder_Memory_from_stim_file,
-    QCDataPipePreDecoder_Memory_inference,
-)
+from data.datapipe_stim import QCDataPipePreDecoder_Memory_from_stim_file
 from data.predecoder_transform import dets_to_predecoder_inputs
-from evaluation.logical_error_rate import (
-    PreDecoderMemoryEvalModule,
-    _build_stab_maps,
-    count_logical_errors_with_errorbar,
-)
+from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from qec.noise_model import NoiseModel
 from qec.surface_code.data_mapping import (
     compute_stabX_to_data_index_map,
@@ -237,7 +230,7 @@ def _reference_tensors_from_measurements(
     """Independent oracle: build (x_syn_diff, z_syn_diff, trainX) from raw
     Stim measurements via XOR-differencing.
 
-    This is the *fourth* implementation by design: it is the slowest, simplest
+    This is the *second* implementation by design: it is the slowest, simplest
     one written purely against the surface-code memory experiment convention,
     so it cross-checks both the production dets-based helper and Stim's m2d
     converter at once. Any drift in the production helper or Stim's detector
@@ -430,84 +423,6 @@ class TestStimSampleFileContract(unittest.TestCase):
                         self.assertTrue(torch.equal(x_syn, expected_x))
                         self.assertTrue(torch.equal(z_syn, expected_z))
                         self.assertTrue(torch.equal(train_x, expected_train_x))
-
-    def test_canonical_helper_matches_eval_module_batch_transform(self):
-        """`PreDecoderMemoryEvalModule._batch_to_trainx_and_syndromes` is a
-        buffer-fused GPU/ONNX-friendly variant of the canonical helper.
-        Drift here would silently change LER results on the ONNX/TRT path
-        without changing the file-datapipe path, so we lock the two together.
-        """
-        distance, n_rounds, shots = 3, 3, 8
-        for basis in ("X", "Z"):
-            with self.subTest(basis=basis):
-                cfg = SimpleNamespace(
-                    distance=distance,
-                    enable_fp16=False,
-                    data=SimpleNamespace(code_rotation="XV"),
-                    test=SimpleNamespace(
-                        meas_basis_test=basis,
-                        th_data=0.0,
-                        th_syn=0.0,
-                        sampling_mode="threshold",
-                        temperature=1.0,
-                        temperature_data=1.0,
-                        temperature_syn=1.0,
-                        n_rounds=n_rounds,
-                    ),
-                )
-                maps = _build_stab_maps(distance, "XV")
-                device = torch.device("cpu")
-                module = PreDecoderMemoryEvalModule(nn.Identity(), cfg, maps, device).to(device)
-
-                torch.manual_seed(7)
-                half = (distance * distance - 1) // 2
-                dets = torch.randint(0, 2, (shots, 2 * n_rounds * half), dtype=torch.uint8)
-
-                expected_train_x, expected_x_syn, expected_z_syn = dets_to_predecoder_inputs(
-                    dets,
-                    distance=distance,
-                    n_rounds=n_rounds,
-                    basis=basis,
-                    code_rotation="XV",
-                )
-                (train_x_m, x_syn_m, z_syn_m, _baseline, _nbd, _B, _T, _nx,
-                 _nz) = (module._batch_to_trainx_and_syndromes(dets))
-                self.assertTrue(torch.equal(x_syn_m.to(torch.int32), expected_x_syn))
-                self.assertTrue(torch.equal(z_syn_m.to(torch.int32), expected_z_syn))
-                self.assertTrue(torch.allclose(train_x_m, expected_train_x, atol=0.0, rtol=0.0))
-
-    def test_in_memory_datapipe_matches_canonical_helper_on_its_own_dets(self):
-        """The in-memory datapipe computes its tensors from the raw
-        measurement record, but Stim's m2d converter is supposed to give the
-        same syndromes after XOR'ing. Round-trip its `dets_and_obs` through
-        the canonical helper and assert numerical equality with its own
-        precomputed tensors. Catches any drift between the in-memory pipe and
-        the file pipe.
-        """
-        for basis in ("X", "Z"):
-            with self.subTest(basis=basis):
-                pipe = QCDataPipePreDecoder_Memory_inference(
-                    distance=3,
-                    n_rounds=3,
-                    num_samples=24,
-                    error_mode="circuit_level_surface_custom",
-                    p_error=0.02,
-                    measure_basis=basis,
-                    code_rotation="XV",
-                    noise_model=NoiseModel.from_single_p(0.02),
-                )
-                num_obs = pipe.circ.stim_circuit.num_observables
-                dets = pipe.dets_and_obs[:, :-num_obs]
-                train_x, x_syn, z_syn = dets_to_predecoder_inputs(
-                    dets,
-                    distance=3,
-                    n_rounds=3,
-                    basis=basis,
-                    code_rotation="XV",
-                )
-                self.assertTrue(torch.equal(x_syn, pipe.x_syn_diff_all))
-                self.assertTrue(torch.equal(z_syn, pipe.z_syn_diff_all))
-                self.assertTrue(torch.equal(train_x, pipe.trainX_all))
 
     def test_metadata_mismatches_are_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

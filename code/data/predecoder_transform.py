@@ -14,14 +14,13 @@
 # limitations under the License.
 """Canonical transformation from Stim detector samples to pre-decoder inputs.
 
-This is the single source of truth for converting Stim detector bits into the
-``(trainX, x_syn_diff, z_syn_diff)`` tuple that the pre-decoder consumes. Both
-the file-based datapipe and the offline reference path use this helper so the
-transformation cannot drift between callers.
-
-The GPU-resident :class:`PreDecoderMemoryEvalModule` keeps its own buffer-fused
-forward for ONNX/TensorRT export, but its algorithm must match the helper bit
-for bit; ``test_offline_stim_decoding.py`` asserts that parity.
+Single source of truth for converting Stim detector bits into the
+``(trainX, x_syn_diff, z_syn_diff)`` tuple that the pre-decoder consumes.
+:func:`dets_to_predecoder_inputs` (file-based datapipe) and
+:meth:`evaluation.logical_error_rate.PreDecoderMemoryEvalModule._batch_to_trainx_and_syndromes`
+(GPU/ONNX/TensorRT export path) both delegate to
+:func:`_predecoder_transform_core`; the latter pre-registers the same buffers
+the helper rebuilds ad-hoc per call.
 
 Input contract
 --------------
@@ -51,6 +50,117 @@ from qec.surface_code.data_mapping import (
     normalized_weight_mapping_Xstab_memory,
     normalized_weight_mapping_Zstab_memory,
 )
+
+
+def _build_scatter_perm(idx_map: torch.Tensor, D2: int, half: int) -> torch.Tensor:
+    """Invert ``idx_map`` into a length-``D2`` permutation whose missing entries
+    point at ``half`` (a sentinel column that callers keep all-zero)."""
+    perm = torch.full((D2,), half, dtype=torch.long, device=idx_map.device)
+    perm[idx_map] = torch.arange(idx_map.shape[0], dtype=torch.long, device=idx_map.device)
+    return perm
+
+
+def _predecoder_transform_core(
+    dets: torch.Tensor,
+    *,
+    D: int,
+    T: int,
+    half: int,
+    basis: str,
+    scatter_perm_x: torch.Tensor,
+    scatter_perm_z: torch.Tensor,
+    w_mapXgrid: torch.Tensor,
+    w_mapZgrid: torch.Tensor,
+    zero_pad_row: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Buffer-fused dets → ``(trainX, x_syn_diff, z_syn_diff)`` transform.
+
+    Returns ``x_syn_diff`` and ``z_syn_diff`` as float32; callers that need
+    int32 cast at the boundary. The signature mirrors the buffers that
+    :class:`PreDecoderMemoryEvalModule` pre-registers so the eval/export path
+    can call this directly without per-call allocations.
+
+    Args:
+        dets: ``(B, 2 * T * half)`` detector bits.
+        D, T, half, basis: Code / batch geometry. ``basis`` is ``'X'`` or ``'Z'``.
+        scatter_perm_x, scatter_perm_z: length-``D*D`` long tensors mapping
+            each grid position to a syndrome row (or to the sentinel column
+            at index ``half``); see :func:`_build_scatter_perm`.
+        w_mapXgrid, w_mapZgrid: ``(1, 1, D, D)`` float32 presence grids.
+        zero_pad_row: ``(1, 1, 1)`` float32 — broadcast to fabricate
+            sentinel rows/columns for scatter-via-gather.
+    """
+    B = dets.shape[0]
+    timeline_len = 2 * T
+    dev = dets.device
+
+    # ── trt_L1: preprocessor (cast, deinterleave, index_select, boundary handling) ──
+    # (B, 2*T*half) -> (B, half, 2*T) float32, then pad a sentinel column for
+    # boundary rounds that have no corresponding detector.
+    dets_timeline = dets.to(torch.float32).view(B, timeline_len, half).permute(0, 2, 1).contiguous()
+    zero_col = zero_pad_row.expand(B, half, 1)
+    padded = torch.cat([dets_timeline, zero_col], dim=2)  # (B, half, 2*T+1)
+    sentinel_idx = timeline_len
+
+    x_bulk_idx = torch.arange(1, timeline_len - 1, 2, dtype=torch.long, device=dev)
+    z_bulk_idx = torch.arange(2, timeline_len, 2, dtype=torch.long, device=dev)
+    zero_idx = torch.zeros(1, dtype=torch.long, device=dev)
+    sentinel = torch.full((1,), sentinel_idx, dtype=torch.long, device=dev)
+
+    if T == 1:
+        if basis == "X":
+            idx_x, idx_z = zero_idx, sentinel
+        else:
+            idx_z, idx_x = zero_idx, sentinel
+    else:
+        if basis == "X":
+            idx_x = torch.cat([zero_idx, x_bulk_idx])
+            idx_z = torch.cat([sentinel, z_bulk_idx[:-1], sentinel])
+        else:
+            idx_z = torch.cat([zero_idx, z_bulk_idx])
+            idx_x = torch.cat([sentinel, x_bulk_idx[:-1], sentinel])
+
+    x_syn_diff = torch.index_select(padded, 2, idx_x)  # (B, half, T) float32
+    z_syn_diff = torch.index_select(padded, 2, idx_z)  # (B, half, T) float32
+
+    # Presence: broadcast-multiply by round mask to zero boundary rounds (no clone/in-place)
+    if T == 1:
+        boundary_mask = torch.zeros(1, device=dev, dtype=torch.float32)
+    else:
+        boundary_mask = torch.cat(
+            [
+                torch.zeros(1, device=dev, dtype=torch.float32),
+                torch.ones(T - 2, device=dev, dtype=torch.float32),
+                torch.zeros(1, device=dev, dtype=torch.float32),
+            ]
+        )
+    boundary_mask = boundary_mask.view(1, T, 1, 1)
+    if basis == "X":
+        x_present = w_mapXgrid.expand(B, T, D, D)
+        z_present = (w_mapZgrid * boundary_mask).expand(B, T, D, D)
+    else:
+        x_present = (w_mapXgrid * boundary_mask).expand(B, T, D, D)
+        z_present = w_mapZgrid.expand(B, T, D, D)
+
+    # ── trt_L2: trainX assembly (scatter-via-gather → grid reshape → cat) ──
+    zero_pad = zero_pad_row.expand(B, 1, T)
+    x_grid = torch.index_select(
+        torch.cat([x_syn_diff, zero_pad], dim=1), 1, scatter_perm_x
+    )  # (B, D², T)
+    z_grid = torch.index_select(torch.cat([z_syn_diff, zero_pad], dim=1), 1, scatter_perm_z)
+    x_type = x_grid.reshape(B, D, D, T).permute(0, 3, 1, 2).contiguous()  # (B, T, D, D)
+    z_type = z_grid.reshape(B, D, D, T).permute(0, 3, 1, 2).contiguous()
+    trainX = torch.cat(
+        [
+            x_type.unsqueeze(1),
+            z_type.unsqueeze(1),
+            x_present.unsqueeze(1),
+            z_present.unsqueeze(1),
+        ],
+        dim=1,
+    ).contiguous()
+
+    return trainX, x_syn_diff, z_syn_diff
 
 
 def dets_to_predecoder_inputs(
@@ -96,7 +206,7 @@ def dets_to_predecoder_inputs(
     if rotation not in ("XV", "XH", "ZV", "ZH"):
         raise ValueError(f"code_rotation must be one of XV/XH/ZV/ZH, got {code_rotation!r}")
 
-    B, num_dets = dets.shape
+    num_dets = dets.shape[1]
     expected = 2 * T * half
     if int(num_dets) != expected:
         raise ValueError(
@@ -105,84 +215,38 @@ def dets_to_predecoder_inputs(
             f"(distance={D}, n_rounds={T})."
         )
 
-    dets_f = dets.to(torch.float32)
-    timeline_len = 2 * T
-
-    # (B, half, 2*T) with one extra zero column at index ``timeline_len`` used
-    # as a sentinel for boundary rounds that have no corresponding detector.
-    dets_timeline = dets_f.view(B, timeline_len, half).permute(0, 2, 1).contiguous()
-    zero_col = torch.zeros((B, half, 1), dtype=torch.float32, device=dets_f.device)
-    padded = torch.cat([dets_timeline, zero_col], dim=2)
-    sentinel_idx = timeline_len
-
     dev = dets.device
-    x_bulk_idx = torch.arange(1, timeline_len - 1, 2, dtype=torch.long, device=dev)
-    z_bulk_idx = torch.arange(2, timeline_len, 2, dtype=torch.long, device=dev)
-    zero_idx = torch.zeros(1, dtype=torch.long, device=dev)
-    sentinel = torch.full((1,), sentinel_idx, dtype=torch.long, device=dev)
-
-    if T == 1:
-        if basis_upper == "X":
-            idx_x, idx_z = zero_idx, sentinel
-        else:
-            idx_z, idx_x = zero_idx, sentinel
-    else:
-        if basis_upper == "X":
-            idx_x = torch.cat([zero_idx, x_bulk_idx])
-            idx_z = torch.cat([sentinel, z_bulk_idx[:-1], sentinel])
-        else:
-            idx_z = torch.cat([zero_idx, z_bulk_idx])
-            idx_x = torch.cat([sentinel, x_bulk_idx[:-1], sentinel])
-
-    x_syn_diff = torch.index_select(padded, 2, idx_x).to(torch.int32).contiguous()
-    z_syn_diff = torch.index_select(padded, 2, idx_z).to(torch.int32).contiguous()
-
-    w_map_x = normalized_weight_mapping_Xstab_memory(D, rotation).reshape(D, D)
-    w_map_z = normalized_weight_mapping_Zstab_memory(D, rotation).reshape(D, D)
-    x_present = w_map_x.to(dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0)
-    z_present = w_map_z.to(dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0)
-    x_present = x_present.expand(B, T, D, D).contiguous()
-    z_present = z_present.expand(B, T, D, D).contiguous()
-
-    if basis_upper == "X":
-        if T >= 1:
-            z_present = z_present.clone()
-            z_present[:, 0] = 0
-            if T > 1:
-                z_present[:, -1] = 0
-    else:
-        if T >= 1:
-            x_present = x_present.clone()
-            x_present[:, 0] = 0
-            if T > 1:
-                x_present[:, -1] = 0
-
     idx_map_x = torch.as_tensor(
         compute_stabX_to_data_index_map(D, rotation), dtype=torch.long, device=dev
     )
     idx_map_z = torch.as_tensor(
         compute_stabZ_to_data_index_map(D, rotation), dtype=torch.long, device=dev
     )
-    n_stab_x = int(idx_map_x.shape[0])
-    n_stab_z = int(idx_map_z.shape[0])
+    scatter_perm_x = _build_scatter_perm(idx_map_x, D * D, half)
+    scatter_perm_z = _build_scatter_perm(idx_map_z, D * D, half)
+    w_mapX = normalized_weight_mapping_Xstab_memory(D, rotation).reshape(D, D)
+    w_mapZ = normalized_weight_mapping_Zstab_memory(D, rotation).reshape(D, D)
+    w_mapXgrid = w_mapX.to(dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0)
+    w_mapZgrid = w_mapZ.to(dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0)
+    zero_pad_row = torch.zeros(1, 1, 1, dtype=torch.float32, device=dev)
 
-    x_grid = torch.zeros(B, D * D, T, dtype=torch.float32, device=dev)
-    z_grid = torch.zeros(B, D * D, T, dtype=torch.float32, device=dev)
-    x_grid[:, idx_map_x, :] = x_syn_diff[:, :n_stab_x, :].to(torch.float32)
-    z_grid[:, idx_map_z, :] = z_syn_diff[:, :n_stab_z, :].to(torch.float32)
-
-    x_type = x_grid.reshape(B, D, D, T).permute(0, 3, 1, 2).contiguous()
-    z_type = z_grid.reshape(B, D, D, T).permute(0, 3, 1, 2).contiguous()
-    train_x = torch.cat(
-        [
-            x_type.unsqueeze(1),
-            z_type.unsqueeze(1),
-            x_present.unsqueeze(1),
-            z_present.unsqueeze(1),
-        ],
-        dim=1,
-    ).contiguous()
-    return train_x, x_syn_diff, z_syn_diff
+    trainX, x_syn_diff, z_syn_diff = _predecoder_transform_core(
+        dets,
+        D=D,
+        T=T,
+        half=half,
+        basis=basis_upper,
+        scatter_perm_x=scatter_perm_x,
+        scatter_perm_z=scatter_perm_z,
+        w_mapXgrid=w_mapXgrid,
+        w_mapZgrid=w_mapZgrid,
+        zero_pad_row=zero_pad_row,
+    )
+    return (
+        trainX,
+        x_syn_diff.to(torch.int32).contiguous(),
+        z_syn_diff.to(torch.int32).contiguous(),
+    )
 
 
 __all__ = ["dets_to_predecoder_inputs"]

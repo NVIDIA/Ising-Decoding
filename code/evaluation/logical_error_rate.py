@@ -81,6 +81,7 @@ class OnnxWorkflow(IntEnum):
 
 
 from data.factory import DatapipeFactory
+from data.predecoder_transform import _predecoder_transform_core
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from training.utils import *
@@ -659,75 +660,30 @@ class PreDecoderMemoryEvalModule(nn.Module):
         if not getattr(torch.onnx, "is_in_onnx_export", lambda: False)():
             assert T >= 2, f"T={T} is too small for DEM (need T>=2)."
 
-        timeline_len = 2 * T
+        trainX, x_syn_diff, z_syn_diff = _predecoder_transform_core(
+            dets,
+            D=self.D,
+            T=T,
+            half=half,
+            basis=self.basis,
+            scatter_perm_x=self.scatter_perm_x,
+            scatter_perm_z=self.scatter_perm_z,
+            w_mapXgrid=self.w_mapXgrid,
+            w_mapZgrid=self.w_mapZgrid,
+            zero_pad_row=self.zero_pad_row,
+        )
 
-        # ── trt_L1: preprocessor (cast, deinterleave, index_select, boundary handling) ──
-        # (B, 2*T*half) -> (B, half, 2*T) float32.
+        # baseline_detectors_batch: dets reshape pass-through, preserved
+        # explicitly to keep the original ONNX graph for the post-processing
+        # GEMM input.
+        timeline_len = 2 * T
         dets_timeline = dets.to(torch.float32).view(B, timeline_len, half).permute(0, 2,
                                                                                    1).contiguous()
-        zero_col = self.zero_pad_row.expand(B, half, 1)  # (B, half, 1)
-        dets_timeline_padded = torch.cat([dets_timeline, zero_col], dim=2)  # (B, half, 2*T+1)
-
-        # Build deinterleave indices dynamically for this T.
-        sentinel_idx = timeline_len  # points to appended all-zero column
-        dev = dets.device
-        x_bulk_idx = torch.arange(1, timeline_len - 1, 2, dtype=torch.long, device=dev)  # T-1
-        z_bulk_idx = torch.arange(2, timeline_len, 2, dtype=torch.long, device=dev)  # T-1
-
-        _zero = torch.zeros(1, dtype=torch.long, device=dev)
-        _sentinel = torch.full((1,), sentinel_idx, dtype=torch.long, device=dev)
-
-        if self.basis == "X":
-            idx_x = torch.cat([_zero, x_bulk_idx])
-            idx_z = torch.cat([_sentinel, z_bulk_idx[:-1], _sentinel])
-            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)  # (B, half, T)
-            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)  # (B, half, T)
-        else:
-            idx_z = torch.cat([_zero, z_bulk_idx])
-            idx_x = torch.cat([_sentinel, x_bulk_idx[:-1], _sentinel])
-            z_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_z)  # (B, half, T)
-            x_syn_diff = torch.index_select(dets_timeline_padded, 2, idx_x)  # (B, half, T)
-
-        # Presence: broadcast-multiply by round mask to zero boundary rounds (no clone/in-place)
-        boundary_mask = torch.cat(
-            [
-                torch.zeros(1, device=dev, dtype=torch.float32),
-                torch.ones(T - 2, device=dev, dtype=torch.float32),
-                torch.zeros(1, device=dev, dtype=torch.float32),
-            ]
-        ).view(1, T, 1, 1)
-        if self.basis == "X":
-            x_present = self.w_mapXgrid.expand(B, T, self.D, self.D)
-            z_present = (self.w_mapZgrid * boundary_mask).expand(B, T, self.D, self.D)
-        else:
-            x_present = (self.w_mapXgrid * boundary_mask).expand(B, T, self.D, self.D)
-            z_present = self.w_mapZgrid.expand(B, T, self.D, self.D)
-
-        # ── trt_L2: trainX assembly (scatter-via-gather → grid reshape → cat) ──
-        zero_pad = self.zero_pad_row.expand(B, 1, T)
-        x_grid = torch.index_select(
-            torch.cat([x_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_x
-        )  # (B, D², T)
-        z_grid = torch.index_select(
-            torch.cat([z_syn_diff, zero_pad], dim=1), 1, self.scatter_perm_z
-        )  # (B, D², T)
-        x_type = x_grid.reshape(B, self.D, self.D, T).permute(0, 3, 1,
-                                                              2).contiguous()  # (B, T, D, D)
-        z_type = z_grid.reshape(B, self.D, self.D, T).permute(0, 3, 1, 2).contiguous()
-        trainX = torch.cat(
-            [
-                x_type.unsqueeze(1),
-                z_type.unsqueeze(1),
-                x_present.unsqueeze(1),
-                z_present.unsqueeze(1),
-            ],
-            dim=1
-        ).contiguous()
+        baseline_detectors_batch = dets_timeline.permute(0, 2, 1).contiguous().view(B, -1)
 
         n_x = half
         n_z = z_syn_diff.shape[1]
         num_boundary_dets = n_x if self.basis == "X" else n_z
-        baseline_detectors_batch = dets_timeline.permute(0, 2, 1).contiguous().view(B, -1)
 
         return trainX, x_syn_diff, z_syn_diff, baseline_detectors_batch, num_boundary_dets, B, T, n_x, n_z
 
