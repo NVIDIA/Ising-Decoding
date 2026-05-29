@@ -66,7 +66,7 @@ if [ -f "${MODEL_CHECKPOINT}" ]; then
   EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
   GPUS=1 \
   WORKFLOW=inference \
-  EXTRA_PARAMS="++model_checkpoint_file=${MODEL_CHECKPOINT}" \
+  EXTRA_PARAMS="++model_checkpoint_file=${MODEL_CHECKPOINT}${MODEL_ID:+ ++model_id=${MODEL_ID}}" \
   bash code/scripts/local_run.sh
 else
   echo "[offline_smoketest.sh] Model not found; skipped ising_decoding_pymatching:"
