@@ -21,6 +21,7 @@ set -euo pipefail
 # Examples:
 #   bash code/scripts/local_run.sh
 #   WORKFLOW=inference bash code/scripts/local_run.sh
+#   WORKFLOW=generate_stim_data bash code/scripts/local_run.sh
 #   GPUS=4 bash code/scripts/local_run.sh
 #   CUDA_VISIBLE_DEVICES=1 bash code/scripts/local_run.sh        # use only GPU 1
 #
@@ -85,30 +86,34 @@ else
   RESUME_FLAG="++load_checkpoint=True"
 fi
 
-# GPU-only runs: require a visible GPU and nvidia-smi.
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "[local_run.sh] Error: GPU-only mode requires nvidia-smi on PATH." >&2
-  echo "[local_run.sh] Hint: run on a GPU host or pass CUDA_VISIBLE_DEVICES." >&2
-  exit 1
-fi
+if [ "${WORKFLOW}" = "generate_stim_data" ]; then
+  GPUS=1
+else
+  # GPU-only runs: require a visible GPU and nvidia-smi.
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    echo "[local_run.sh] Error: GPU-only mode requires nvidia-smi on PATH." >&2
+    echo "[local_run.sh] Hint: run on a GPU host or pass CUDA_VISIBLE_DEVICES." >&2
+    exit 1
+  fi
 
-# Respect CUDA_VISIBLE_DEVICES if set; otherwise auto-detect via nvidia-smi.
-if [ -z "${GPUS}" ]; then
-  if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
-    GPUS="$(python3 - <<'PY'
+  # Respect CUDA_VISIBLE_DEVICES if set; otherwise auto-detect via nvidia-smi.
+  if [ -z "${GPUS}" ]; then
+    if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+      GPUS="$(python3 - <<'PY'
 import os
 v=os.environ.get('CUDA_VISIBLE_DEVICES','').strip()
 print(len([x for x in v.split(',') if x.strip()]) or 1)
 PY
 )"
-  else
-    GPUS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')"
+    else
+      GPUS="$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l | tr -d ' ')"
+    fi
   fi
-fi
 
-if [ "${GPUS}" -le 0 ]; then
-  echo "[local_run.sh] Error: no GPUs detected. GPU-only mode requires CUDA." >&2
-  exit 1
+  if [ "${GPUS}" -le 0 ]; then
+    echo "[local_run.sh] Error: no GPUs detected. GPU-only mode requires CUDA." >&2
+    exit 1
+  fi
 fi
 
 if [ -z "${MASTER_PORT:-}" ]; then
@@ -204,8 +209,8 @@ if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
   fi
 fi
 
-# Ensure CUDA is usable before launching the workflow.
-if ! "${PYTHON_BIN}" - <<'PY'
+# Ensure CUDA is usable before launching GPU workflows.
+if [ "${WORKFLOW}" != "generate_stim_data" ] && ! "${PYTHON_BIN}" - <<'PY'
 import sys
 try:
     import torch

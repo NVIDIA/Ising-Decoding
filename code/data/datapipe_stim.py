@@ -25,12 +25,14 @@ import torch
 from torch.utils.data import Dataset
 
 from qec.surface_code.memory_circuit import MemoryCircuit
+from qec.surface_code.stim_sample_io import read_stim_detector_samples, resolve_stim_sample_paths
 from qec.surface_code.data_mapping import (
     normalized_weight_mapping_Xstab_memory,
     normalized_weight_mapping_Zstab_memory,
     compute_stabX_to_data_index_map,
     compute_stabZ_to_data_index_map,
 )
+from data.predecoder_transform import dets_to_predecoder_inputs
 
 
 class QCDataPipePreDecoder_Memory_inference(Dataset):
@@ -94,7 +96,7 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
         self._presence_x_Z[:, 0] = 0
         self._presence_x_Z[:, -1] = 0
 
-        # If using explicit noise model, use a conservative scalar placeholder for MemoryCircuit's legacy slots.
+        # If using explicit noise model, use a conservative scalar placeholder for MemoryCircuit's scalar-rate slots.
         if noise_model is not None:
             p_placeholder = float(noise_model.get_max_probability())
         else:
@@ -380,4 +382,141 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             }
 
 
-__all__ = ['QCDataPipePreDecoder_Memory_inference']
+class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
+    """
+    Datapipe for offline inference from Stim detector-sample files.
+
+    The file stores detector events plus appended observables. Metadata is
+    validated against a freshly rebuilt MemoryCircuit before data is exposed.
+
+    Noise-model validation: when ``noise_model`` is provided (the typical
+    inference path), the datapipe computes a deterministic fingerprint of its
+    25-parameter dict and asks :func:`read_stim_detector_samples` to compare it
+    against the value recorded in the JSON metadata. Mismatches raise unless
+    ``strict_noise`` is ``False`` (in which case a warning is emitted). When
+    ``noise_model`` is ``None``, only the scalar ``p_error`` is checked.
+
+    Args:
+        distance, n_rounds, num_samples, error_mode, measure_basis,
+            code_rotation: Standard circuit parameters; ``num_samples`` may
+            truncate the loaded file to the first N shots when positive.
+        stim_samples_dir: Directory containing ``samples_{basis}.dets`` and
+            ``metadata_{basis}.json``.
+        p_error: Scalar physical error rate used by the active config. Compared
+            against ``metadata['p_error']`` when present.
+        noise_model: Optional explicit :class:`NoiseModel`. When set, its
+            ``sha256()`` is compared against ``metadata['noise_model_sha256']``.
+        strict_noise: ``True`` (default) raises on noise-fingerprint drift;
+            ``False`` downgrades the failure to a :class:`UserWarning`.
+    """
+
+    def __init__(
+        self,
+        distance,
+        n_rounds,
+        num_samples,
+        error_mode,
+        stim_samples_dir,
+        p_error=0.005,
+        measure_basis='X',
+        code_rotation='XV',
+        noise_model=None,
+        strict_noise: bool = True,
+    ):
+        self.distance = int(distance)
+        self.n_rounds = max(int(n_rounds), 1)
+        self.measure_basis = str(measure_basis).upper()
+        self.code_rotation = code_rotation.upper() if code_rotation else 'XV'
+        self.requested_num_samples = int(num_samples) if num_samples is not None else 0
+
+        if self.measure_basis not in ("X", "Z"):
+            raise ValueError(
+                "Stim file datapipe expects one basis at a time. "
+                f"Got measure_basis={measure_basis!r}."
+            )
+        if error_mode != "circuit_level_surface_custom":
+            raise ValueError("error_mode not supported")
+
+        D = self.distance
+        if noise_model is not None:
+            p_placeholder = float(noise_model.get_max_probability())
+            noise_sha = noise_model.sha256()
+            noise_label = "25-param"
+        else:
+            p_placeholder = float(p_error)
+            noise_sha = None
+            noise_label = "simple"
+
+        self.circ = MemoryCircuit(
+            distance=D,
+            idle_error=p_placeholder,
+            sqgate_error=p_placeholder,
+            tqgate_error=p_placeholder,
+            spam_error=(2.0 / 3.0) * p_placeholder,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+            noise_model=noise_model,
+            add_boundary_detectors=True,
+        )
+        self.circ.set_error_rates()
+
+        samples_path, metadata_path = resolve_stim_sample_paths(
+            stim_samples_dir, self.measure_basis
+        )
+        dets_and_obs, metadata = read_stim_detector_samples(
+            samples_path=samples_path,
+            metadata_path=metadata_path,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+            num_detectors=self.circ.stim_circuit.num_detectors,
+            num_observables=self.circ.stim_circuit.num_observables,
+            p_error=float(p_error),
+            noise_model_sha256=noise_sha,
+            noise_model_label=noise_label,
+            strict_noise=bool(strict_noise),
+        )
+        if self.requested_num_samples > 0:
+            dets_and_obs = dets_and_obs[:self.requested_num_samples]
+
+        self.samples_path = samples_path
+        self.metadata_path = metadata_path
+        self.metadata = metadata
+        self.dets_and_obs = torch.from_numpy(dets_and_obs).to(torch.uint8).contiguous()
+        self.num_samples = int(self.dets_and_obs.shape[0])
+        self._half = (D * D - 1) // 2
+
+        self._precompute_transformations_from_dets()
+
+    def _precompute_transformations_from_dets(self):
+        num_obs = self.circ.stim_circuit.num_observables
+        dets = self.dets_and_obs[:, :-num_obs].contiguous()
+        train_x, x_syn_diff, z_syn_diff = dets_to_predecoder_inputs(
+            dets,
+            distance=self.distance,
+            n_rounds=self.n_rounds,
+            basis=self.measure_basis,
+            code_rotation=self.code_rotation,
+        )
+        self.x_syn_diff_all = x_syn_diff
+        self.z_syn_diff_all = z_syn_diff
+        self.trainX_all = train_x
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        return {
+            "x_syn_diff": self.x_syn_diff_all[idx],
+            "z_syn_diff": self.z_syn_diff_all[idx],
+            "trainX": self.trainX_all[idx],
+            "dets_and_obs": self.dets_and_obs[idx],
+        }
+
+
+__all__ = [
+    'QCDataPipePreDecoder_Memory_inference',
+    'QCDataPipePreDecoder_Memory_from_stim_file',
+]

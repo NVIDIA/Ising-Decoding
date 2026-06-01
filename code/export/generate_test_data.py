@@ -95,6 +95,12 @@ _sc_pkg.__package__ = "qec.surface_code"
 sys.modules.setdefault("qec.surface_code", _sc_pkg)
 
 from qec.surface_code.memory_circuit import MemoryCircuit
+from qec.surface_code.stim_sample_io import (
+    build_stim_sample_metadata,
+    normalize_code_rotation,
+    write_metadata_json,
+    write_stim_detector_samples,
+)
 from qec.noise_model import NoiseModel
 
 # Default 25-parameter noise model matching config_public.yaml at p=0.003
@@ -125,8 +131,6 @@ DEFAULT_NOISE_PARAMS = {
     "p_cnot_ZY": 0.0002,
     "p_cnot_ZZ": 0.0002,
 }
-
-_ROTATION_ALIASES = {"O1": "XV", "O2": "XH", "O3": "ZV", "O4": "ZH"}
 
 # ---------------------------------------------------------------------------
 # Binary I/O helpers
@@ -185,8 +189,10 @@ def generate_test_data(
     num_samples: int = 1000,
     onnx_model: str | None = None,
     output_dir: str = "test_data",
+    write_stim_artifacts: bool = False,
+    write_cudaq_artifacts: bool = True,
 ):
-    code_rotation = _ROTATION_ALIASES.get(code_rotation.upper(), code_rotation.upper())
+    code_rotation = normalize_code_rotation(code_rotation)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -230,17 +236,19 @@ def generate_test_data(
     print(f"  DEM + matcher built in {time.perf_counter() - t0:.3f}s")
     print(f"  Detectors: {det_model.num_detectors}, Observables: {det_model.num_observables}")
 
-    # ---- Extract H, O, priors via beliefmatching ----
-    print("Extracting check matrices (beliefmatching)...")
-    matrices = detector_error_model_to_check_matrices(det_model)
-    H = matrices.edge_check_matrix
-    O = matrices.edge_observables_matrix
-    edge_probs = matrices.hyperedge_to_edge_matrix @ matrices.priors
-    eps = 1e-14
-    edge_probs[edge_probs > 1 - eps] = 1 - eps
-    edge_probs[edge_probs < eps] = eps
-    priors = edge_probs
-    print(f"  H shape: {H.shape}, O shape: {O.shape}, priors shape: {priors.shape}")
+    H = O = priors = None
+    if write_cudaq_artifacts:
+        # ---- Extract H, O, priors via beliefmatching ----
+        print("Extracting check matrices (beliefmatching)...")
+        matrices = detector_error_model_to_check_matrices(det_model)
+        H = matrices.edge_check_matrix
+        O = matrices.edge_observables_matrix
+        edge_probs = matrices.hyperedge_to_edge_matrix @ matrices.priors
+        eps = 1e-14
+        edge_probs[edge_probs > 1 - eps] = 1 - eps
+        edge_probs[edge_probs < eps] = eps
+        priors = edge_probs
+        print(f"  H shape: {H.shape}, O shape: {O.shape}, priors shape: {priors.shape}")
 
     # ---- Sample syndrome data ----
     print(f"Sampling {num_samples} shots...")
@@ -291,33 +299,70 @@ def generate_test_data(
     # ---- Save everything ----
     print(f"Writing outputs to {out}/")
 
-    save_dense_bin(str(out / "detectors.bin"), stim_dets)
-    save_dense_bin(str(out / "observables.bin"), stim_obs)
-    save_dense_bin(str(out / "pymatching_predictions.bin"), predictions)
-    save_csr_bin(str(out / "H_csr.bin"), H)
-    save_csr_bin(str(out / "O_csr.bin"), O)
-    save_priors_bin(str(out / "priors.bin"), priors)
+    if write_cudaq_artifacts:
+        save_dense_bin(str(out / "detectors.bin"), stim_dets)
+        save_dense_bin(str(out / "observables.bin"), stim_obs)
+        save_dense_bin(str(out / "pymatching_predictions.bin"), predictions)
+        save_csr_bin(str(out / "H_csr.bin"), H)
+        save_csr_bin(str(out / "O_csr.bin"), O)
+        save_priors_bin(str(out / "priors.bin"), priors)
 
-    if predecoder_outputs is not None:
+    if write_cudaq_artifacts and predecoder_outputs is not None:
         save_dense_bin(str(out / "predecoder_outputs.bin"), predecoder_outputs)
 
     noise_label = "25-param" if noise_model_params else "simple"
-    save_metadata(
-        str(out / "metadata.txt"),
-        distance=distance,
-        n_rounds=n_rounds,
-        basis=basis.upper(),
-        code_rotation=code_rotation,
-        p_error=p_error,
-        num_samples=num_samples,
-        num_detectors=det_model.num_detectors,
-        num_observables=det_model.num_observables,
-        H_shape=H.shape,
-        noise_model=noise_label,
-        **({
-            "onnx_model": onnx_model
-        } if onnx_model else {}),
-    )
+    if write_cudaq_artifacts:
+        save_metadata(
+            str(out / "metadata.txt"),
+            distance=distance,
+            n_rounds=n_rounds,
+            basis=basis.upper(),
+            code_rotation=code_rotation,
+            p_error=p_error,
+            num_samples=num_samples,
+            num_detectors=det_model.num_detectors,
+            num_observables=det_model.num_observables,
+            H_shape=H.shape,
+            noise_model=noise_label,
+            **({
+                "onnx_model": onnx_model
+            } if onnx_model else {}),
+        )
+
+    if write_stim_artifacts:
+        basis_label = basis.upper()
+        samples_path = out / f"samples_{basis_label}.dets"
+        metadata_path = out / f"metadata_{basis_label}.json"
+        write_stim_detector_samples(
+            path=samples_path,
+            dets_and_obs=dets_and_obs,
+            num_detectors=det_model.num_detectors,
+            num_observables=det_model.num_observables,
+            sample_format="dets",
+        )
+        if noise_model is not None:
+            noise_params_for_meta = noise_model.canonical_parameters()
+            noise_sha_for_meta = noise_model.sha256()
+        else:
+            noise_params_for_meta = None
+            noise_sha_for_meta = None
+        metadata = build_stim_sample_metadata(
+            distance=distance,
+            n_rounds=n_rounds,
+            basis=basis_label,
+            code_rotation=code_rotation,
+            num_detectors=det_model.num_detectors,
+            num_observables=det_model.num_observables,
+            num_shots=num_samples,
+            sample_format="dets",
+            append_observables=True,
+            p_error=float(p_error),
+            noise_model_label=noise_label,
+            noise_model_params=noise_params_for_meta,
+            noise_model_sha256=noise_sha_for_meta,
+            extra={"onnx_model": onnx_model} if onnx_model else None,
+        )
+        write_metadata_json(metadata_path, metadata)
 
     print("Done.")
     for f in sorted(out.iterdir()):
@@ -330,7 +375,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--distance", type=int, default=13)
     parser.add_argument("--n-rounds", type=int, default=104)
-    parser.add_argument("--basis", type=str, default="X", choices=["X", "Z"])
+    parser.add_argument("--basis", type=str, default="X", choices=["X", "Z", "both"])
     parser.add_argument(
         "--code-rotation", type=str, default="XV", help="XV, XH, ZV, ZH or public aliases O1-O4"
     )
@@ -350,6 +395,16 @@ if __name__ == "__main__":
         action="store_true",
         help="Use simple p_error instead of 25-parameter noise model"
     )
+    parser.add_argument(
+        "--stim-artifacts",
+        action="store_true",
+        help="Write Stim-standard samples_{basis}.dets and metadata_{basis}.json files"
+    )
+    parser.add_argument(
+        "--no-cudaq-artifacts",
+        action="store_true",
+        help="Do not write the CUDA-Q/export .bin/.txt artifacts"
+    )
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -357,14 +412,24 @@ if __name__ == "__main__":
 
     noise_params = None if args.simple_noise else DEFAULT_NOISE_PARAMS
 
-    generate_test_data(
-        distance=args.distance,
-        n_rounds=args.n_rounds,
-        basis=args.basis,
-        p_error=args.p_error,
-        code_rotation=args.code_rotation,
-        noise_model_params=noise_params,
-        num_samples=args.num_samples,
-        onnx_model=args.onnx_model,
-        output_dir=args.output_dir,
-    )
+    if args.basis == "both" and not args.no_cudaq_artifacts:
+        raise ValueError(
+            "--basis both writes X and Z into one directory; use --no-cudaq-artifacts "
+            "to avoid collisions in detectors.bin/observables.bin outputs."
+        )
+
+    bases = ["X", "Z"] if args.basis == "both" else [args.basis]
+    for one_basis in bases:
+        generate_test_data(
+            distance=args.distance,
+            n_rounds=args.n_rounds,
+            basis=one_basis,
+            p_error=args.p_error,
+            code_rotation=args.code_rotation,
+            noise_model_params=noise_params,
+            num_samples=args.num_samples,
+            onnx_model=args.onnx_model,
+            output_dir=args.output_dir,
+            write_stim_artifacts=args.stim_artifacts,
+            write_cudaq_artifacts=not args.no_cudaq_artifacts,
+        )

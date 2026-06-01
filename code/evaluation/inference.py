@@ -38,6 +38,17 @@ def _detect_shm_bytes() -> Optional[int]:
         return None
 
 
+def _emit_inference_summary_marker() -> bool:
+    """Whether to print the machine-readable ``[Inference Summary]`` JSON line.
+
+    Off by default so interactive runs see only the pretty-printed table.
+    Set ``PREDECODER_EMIT_INFERENCE_SUMMARY=1`` to opt in; the offline
+    smoketest sets this automatically when it invokes inference.
+    """
+    raw = os.environ.get("PREDECODER_EMIT_INFERENCE_SUMMARY", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _safe_float(x: Any) -> float:
     try:
         return float(x)
@@ -199,3 +210,37 @@ def run_inference(model, device, dist, cfg) -> None:
         f"  {'LER - Avg:':<{label_w}}{_avg(x_base, z_base):>15.6f}  {_avg(x_after, z_after):>17.6f}"
     )
     print(f"  {'PyMatching speedup (Avg X/Z):':<{label_w}}{avg_speedup:>15.3f}x")
+
+    # Opt-in machine-readable summary. Off by default so interactive and
+    # notebook runs see only the pretty-printed table above. Tools that need a
+    # stable contract (e.g. ``code/scripts/offline_smoketest.sh``) set
+    # ``PREDECODER_EMIT_INFERENCE_SUMMARY=1`` and parse the JSON marker. The
+    # smoketest reads the LAST marker in the log to handle the case where a
+    # single run invokes inference more than once.
+    if _emit_inference_summary_marker():
+        import json as _json
+
+        summary = {
+            "schema_version": 1,
+            "marker": "inference_summary",
+            "ler":
+                {
+                    "x_basis_no_predecoder": float(x_base),
+                    "x_basis_after_predecoder": float(x_after),
+                    "z_basis_no_predecoder": float(z_base),
+                    "z_basis_after_predecoder": float(z_after),
+                    "avg_no_predecoder": float(_avg(x_base, z_base)),
+                    "avg_after_predecoder": float(_avg(x_after, z_after)),
+                },
+            "pymatching_latency_us_per_round":
+                {
+                    "x_basis_no_predecoder": float(x_lat_base),
+                    "x_basis_after_predecoder": float(x_lat_after),
+                    "z_basis_no_predecoder": float(z_lat_base),
+                    "z_basis_after_predecoder": float(z_lat_after),
+                    "avg_no_predecoder": float(avg_lat_base),
+                    "avg_after_predecoder": float(avg_lat_after),
+                },
+            "pymatching_speedup_avg_xz": float(avg_speedup),
+        }
+        print("[Inference Summary] " + _json.dumps(summary, sort_keys=True))
