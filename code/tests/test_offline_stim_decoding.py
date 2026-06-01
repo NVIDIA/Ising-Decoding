@@ -30,7 +30,10 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
-from data.datapipe_stim import QCDataPipePreDecoder_Memory_from_stim_file
+from data.datapipe_stim import (
+    QCDataPipePreDecoder_Memory_from_stim_file,
+    QCDataPipePreDecoder_Memory_inference,
+)
 from data.predecoder_transform import dets_to_predecoder_inputs
 from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from qec.noise_model import NoiseModel
@@ -230,7 +233,7 @@ def _reference_tensors_from_measurements(
     """Independent oracle: build (x_syn_diff, z_syn_diff, trainX) from raw
     Stim measurements via XOR-differencing.
 
-    This is the *second* implementation by design: it is the slowest, simplest
+    This is the *third* implementation by design: it is the slowest, simplest
     one written purely against the surface-code memory experiment convention,
     so it cross-checks both the production dets-based helper and Stim's m2d
     converter at once. Any drift in the production helper or Stim's detector
@@ -423,6 +426,39 @@ class TestStimSampleFileContract(unittest.TestCase):
                         self.assertTrue(torch.equal(x_syn, expected_x))
                         self.assertTrue(torch.equal(z_syn, expected_z))
                         self.assertTrue(torch.equal(train_x, expected_train_x))
+
+    def test_in_memory_datapipe_matches_canonical_helper_on_its_own_dets(self):
+        """The in-memory datapipe computes its tensors from the raw
+        measurement record, but Stim's m2d converter is supposed to give the
+        same syndromes after XOR'ing. Round-trip its `dets_and_obs` through
+        the canonical helper and assert numerical equality with its own
+        precomputed tensors. Catches any drift between the in-memory pipe and
+        the file pipe.
+        """
+        for basis in ("X", "Z"):
+            with self.subTest(basis=basis):
+                pipe = QCDataPipePreDecoder_Memory_inference(
+                    distance=3,
+                    n_rounds=3,
+                    num_samples=24,
+                    error_mode="circuit_level_surface_custom",
+                    p_error=0.02,
+                    measure_basis=basis,
+                    code_rotation="XV",
+                    noise_model=NoiseModel.from_single_p(0.02),
+                )
+                num_obs = pipe.circ.stim_circuit.num_observables
+                dets = pipe.dets_and_obs[:, :-num_obs]
+                train_x, x_syn, z_syn = dets_to_predecoder_inputs(
+                    dets,
+                    distance=3,
+                    n_rounds=3,
+                    basis=basis,
+                    code_rotation="XV",
+                )
+                self.assertTrue(torch.equal(x_syn, pipe.x_syn_diff_all))
+                self.assertTrue(torch.equal(z_syn, pipe.z_syn_diff_all))
+                self.assertTrue(torch.equal(train_x, pipe.trainX_all))
 
     def test_metadata_mismatches_are_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:
