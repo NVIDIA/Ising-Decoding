@@ -1268,18 +1268,22 @@ def main(cfg: DictConfig) -> None:
             )
             if 'metadata' in checkpoint_dict and 'best_vloss' in checkpoint_dict['metadata']:
                 saved_using_ler = checkpoint_dict['metadata'].get('using_ler', False)
+                # With PREDECODER_LER_FINAL_ONLY=1 the per-epoch metric is validation
+                # loss even when LER validation is enabled, so expect a loss-based best.
+                ler_final_only = os.environ.get("PREDECODER_LER_FINAL_ONLY", "0") == "1"
+                expect_ler_metric = use_ler_for_early_stopping and not ler_final_only
                 # Only restore best_vloss if the metric type matches (both LER or both loss)
-                if saved_using_ler == use_ler_for_early_stopping:
+                if saved_using_ler == expect_ler_metric:
                     best_vloss = checkpoint_dict['metadata']['best_vloss']
                     if 'epochs_since_best' in checkpoint_dict['metadata']:
                         epochs_since_best = checkpoint_dict['metadata']['epochs_since_best']
                     if dist.rank == 0:
-                        metric_name = "LER" if use_ler_for_early_stopping else "validation loss"
+                        metric_name = "LER" if expect_ler_metric else "validation loss"
                         print(f"[Checkpoint] Restored best {metric_name}: {best_vloss:.6f}")
                 else:
                     if dist.rank == 0:
                         old_metric = "LER" if saved_using_ler else "validation loss"
-                        new_metric = "LER" if use_ler_for_early_stopping else "validation loss"
+                        new_metric = "LER" if expect_ler_metric else "validation loss"
                         print(
                             f"[Checkpoint] Metric type changed ({old_metric} → {new_metric}), resetting best metric"
                         )
@@ -1669,7 +1673,10 @@ def main(cfg: DictConfig) -> None:
                     metadata={
                         "best_vloss": best_vloss,
                         "epochs_since_best": epochs_since_best,
-                        "using_ler": use_ler_for_early_stopping,
+                        # Record the metric that actually produced best_vloss: when LER
+                        # extraction fails, current_metric falls back to validation loss,
+                        # and resume relies on this flag to tell the two scales apart.
+                        "using_ler": use_ler_for_early_stopping and validation_ler is not None,
                     },
                     global_step=global_step,
                 )
