@@ -64,6 +64,22 @@ def _safe_ratio(numer: Any, denom: Any) -> float:
     return n / d
 
 
+def _first_present_metric(source: Any, keys) -> Any:
+    """
+    Return the first value in `source` whose key is present and not None.
+
+    Selection is based on key presence + "is not None" rather than a boolean
+    `or` chain, so that a legitimate falsy metric (e.g. a perfect LER of 0.0)
+    is preserved instead of being skipped and lost.
+    """
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        if key in source and source[key] is not None:
+            return source[key]
+    return None
+
+
 def configure_metrics(rank=0):
     """
     Configure which metric computation functions to use.
@@ -246,45 +262,34 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
                 pymatching_latency_after_avg = float(sum(post_vals) / len(post_vals))
 
         if isinstance(result, dict):
-            ler_value = None
-            for key in [
-                'logical_error_rate', 'ler', 'error_rate', 'avg_ler', 'logical error ratio (mean)'
-            ]:
-                if key in result:
-                    ler_value = result[key]
-                    break
+            # NOTE: select by key presence + "is not None" instead of boolean `or`.
+            # A perfect LER of 0.0 is a valid value but falsy, so `a or b or c`
+            # would skip it and could ultimately yield None, discarding the metric.
+            ler_value = _first_present_metric(
+                result,
+                [
+                    'logical_error_rate', 'ler', 'error_rate', 'avg_ler',
+                    'logical error ratio (mean)'
+                ],
+            )
 
             if ler_value is None:
+                basis_keys = ['logical error ratio (mean)', 'logical_error_rate', 'ler']
+
+                x_ler = None
                 if 'X' in result and isinstance(result['X'], dict):
-                    x_ler = (
-                        result['X'].get('logical error ratio (mean)') or
-                        result['X'].get('logical_error_rate') or result['X'].get('ler')
-                    )
-                    if x_ler is not None:
-                        ler_value = x_ler
+                    x_ler = _first_present_metric(result['X'], basis_keys)
 
-                if ler_value is None and 'Z' in result and isinstance(result['Z'], dict):
-                    z_ler = (
-                        result['Z'].get('logical error ratio (mean)') or
-                        result['Z'].get('logical_error_rate') or result['Z'].get('ler')
-                    )
-                    if z_ler is not None:
-                        ler_value = z_ler
+                z_ler = None
+                if 'Z' in result and isinstance(result['Z'], dict):
+                    z_ler = _first_present_metric(result['Z'], basis_keys)
 
-                if 'X' in result and 'Z' in result and isinstance(result['X'], dict) and isinstance(
-                    result['Z'], dict
-                ):
-                    x_ler = (
-                        result['X'].get('logical error ratio (mean)') or
-                        result['X'].get('logical_error_rate') or result['X'].get('ler')
-                    )
-                    z_ler = (
-                        result['Z'].get('logical error ratio (mean)') or
-                        result['Z'].get('logical_error_rate') or result['Z'].get('ler')
-                    )
-
-                    if x_ler is not None and z_ler is not None:
-                        ler_value = (x_ler + z_ler) / 2.0
+                if x_ler is not None and z_ler is not None:
+                    ler_value = (x_ler + z_ler) / 2.0
+                elif x_ler is not None:
+                    ler_value = x_ler
+                elif z_ler is not None:
+                    ler_value = z_ler
         elif isinstance(result, (float, int)):
             ler_value = float(result)
         else:
