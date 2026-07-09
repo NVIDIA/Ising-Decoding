@@ -302,10 +302,7 @@ def main() -> int:
             print("Missing SPDX headers:\n" + missing_str)
         if wrong_license:
             wrong_str = "\n".join(f"- {path}" for path in wrong_license)
-            print(
-                "SPDX headers without 'SPDX-License-Identifier: Apache-2.0':\n"
-                + wrong_str
-            )
+            print("SPDX headers without 'SPDX-License-Identifier: Apache-2.0':\n" + wrong_str)
         if missing or wrong_license:
             return 1
         print("All checked files have Apache-2.0 SPDX headers.")
