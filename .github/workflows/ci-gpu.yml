@@ -41,6 +41,10 @@ env:
 jobs:
   gpu-tests:
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    # contents: write gives the token push access, which is required to see the
+    # permanent-draft release that fetch-models downloads the weights from.
+    permissions:
+      contents: write
     container:
       image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
@@ -59,16 +63,16 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+
+      - name: Fetch pre-trained models
+        uses: ./.github/actions/fetch-models
 
       - name: Verify GPU
         run: nvidia-smi
@@ -134,16 +138,13 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Verify GPU
         run: nvidia-smi
@@ -205,12 +206,9 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
-          git lfs install
+          apt-get install -y git python3 python3-pip python3-venv
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Verify 2 GPUs are visible
         run: |
@@ -300,6 +298,9 @@ jobs:
   # ---------------------------------------------------------------------------
   gpu-coverage:
     runs-on: linux-amd64-gpu-rtxpro6000-latest-1
+    # contents: write — see gpu-tests: needed to read the draft release.
+    permissions:
+      contents: write
     container:
       image: ubuntu:24.04
       options: -u root --security-opt seccomp=unconfined --shm-size 16g
@@ -311,12 +312,12 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs python3 python3-pip python3-venv
-          git lfs install
+          apt-get install -y git python3 python3-pip python3-venv
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+
+      - name: Fetch pre-trained models
+        uses: ./.github/actions/fetch-models
 
       - name: Verify GPU
         run: nvidia-smi

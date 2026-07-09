@@ -202,16 +202,30 @@ If you are not training locally, you can run inference using pre-trained models.
    ```
 
 2. **Get the pre-trained models**
-   This repo ships two pre-trained model files (tracked with Git LFS):
-   - `models/Ising-Decoder-SurfaceCode-1-Fast.pt` (receptive field R=9)
-   - `models/Ising-Decoder-SurfaceCode-1-Accurate.pt` (receptive field R=13)
+   Two pre-trained models are published on Hugging Face (they are licensed
+   separately from the code in this repo and are not part of it):
+   - [nvidia/Ising-Decoder-SurfaceCode-1-Fast](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast) (receptive field R=9)
+   - [nvidia/Ising-Decoder-SurfaceCode-1-Accurate](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate) (receptive field R=13)
+
+   The models are access-controlled: sign in with a Hugging Face token
+   (create one at <https://huggingface.co/settings/tokens>), then download
+   the files into `models/`:
+
+   ```bash
+   pip install -U "huggingface_hub[cli]"
+   hf auth login
+   hf download nvidia/Ising-Decoder-SurfaceCode-1-Fast --local-dir models/
+   hf download nvidia/Ising-Decoder-SurfaceCode-1-Accurate --local-dir models/
+   ```
+
+   See each model card for the available files and formats. The scripts below
+   expect `models/Ising-Decoder-SurfaceCode-1-Fast.pt` and
+   `models/Ising-Decoder-SurfaceCode-1-Accurate.pt`.
 
    These checkpoints target the uniform circuit-level depolarizing setting
    encoded by the public configs. Custom, non-uniform 25-parameter noise models
    are supported for training by the pipeline below; they are a training-time
-   customization rather than a property of the shipped checkpoints.
-
-   Clones get the files via `git lfs pull`. Optionally, set `PREDECODER_MODEL_URL` to the LFS/raw URL to fetch files when not in the working tree (e.g. in a minimal checkout or CI).
+   customization rather than a property of the published checkpoints.
 
 3. Set:
 
@@ -255,7 +269,7 @@ The pre-trained public models use `--model-id 1` (R=9) and `--model-id 4` (R=13)
 
 ### ONNX export and quantization (optional, post-training)
 
-After training (or starting from the shipped `.safetensors` files), you can export the model to
+After training (or starting from the `.safetensors` files downloaded from Hugging Face), you can export the model to
 ONNX and optionally apply INT8 or FP8 post-training quantization for deployment.
 
 You may also change the surface code distance and number of rounds at inference

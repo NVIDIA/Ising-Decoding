@@ -56,6 +56,10 @@ jobs:
 
   unit-tests:
     runs-on: linux-amd64-cpu4
+    # contents: write gives the token push access, which is required to see the
+    # permanent-draft release that fetch-models downloads the weights from.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -63,8 +67,8 @@ jobs:
     name: "unit-tests / py${{ matrix.python-version }}"
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+      - name: Fetch pre-trained models
+        uses: ./.github/actions/fetch-models
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -85,8 +89,6 @@ jobs:
     runs-on: linux-amd64-cpu4
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -102,10 +104,13 @@ jobs:
 
   unit-tests-coverage:
     runs-on: linux-amd64-cpu4
+    # contents: write — see unit-tests: needed to read the draft release.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+      - name: Fetch pre-trained models
+        uses: ./.github/actions/fetch-models
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
