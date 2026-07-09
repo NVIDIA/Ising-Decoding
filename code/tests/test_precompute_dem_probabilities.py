@@ -195,12 +195,11 @@ class TestBuildSinglePMarginalResetWindowAndFinalRound(unittest.TestCase):
                 count = 0
                 for error_index, round_index, time_index, qubit, error_type, _ in metadata:
                     if (
-                        round_index == n_rounds - 1 and time_index == 0 and
-                        qubit in data_qubits and len(error_type) == 1
+                        round_index == n_rounds - 1 and time_index == 0 and qubit in data_qubits and
+                        len(error_type) == 1
                     ):
                         expected = (
-                            getattr(noise_model, rate_name)
-                            if error_type == allowed_type else 0.0
+                            getattr(noise_model, rate_name) if error_type == allowed_type else 0.0
                         )
                         self.assertAlmostEqual(
                             float(probabilities[error_index]),
@@ -223,12 +222,11 @@ class TestBuildSinglePMarginalResetWindowAndFinalRound(unittest.TestCase):
                 count = 0
                 for error_index, round_index, time_index, qubit, error_type, _ in metadata:
                     if (
-                        round_index == 0 and time_index == 0 and
-                        qubit in data_qubits and len(error_type) == 1
+                        round_index == 0 and time_index == 0 and qubit in data_qubits and
+                        len(error_type) == 1
                     ):
                         expected = (
-                            getattr(noise_model, rate_name)
-                            if error_type == allowed_type else 0.0
+                            getattr(noise_model, rate_name) if error_type == allowed_type else 0.0
                         )
                         self.assertAlmostEqual(
                             float(probabilities[error_index]),
@@ -257,11 +255,17 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
     @staticmethod
     def _make_noise_model(**overrides):
         params = {
-            key: 0.0
-            for key in (
-                "p_prep_X", "p_prep_Z", "p_meas_X", "p_meas_Z",
-                "p_idle_cnot_X", "p_idle_cnot_Y", "p_idle_cnot_Z",
-                "p_idle_spam_X", "p_idle_spam_Y", "p_idle_spam_Z",
+            key: 0.0 for key in (
+                "p_prep_X",
+                "p_prep_Z",
+                "p_meas_X",
+                "p_meas_Z",
+                "p_idle_cnot_X",
+                "p_idle_cnot_Y",
+                "p_idle_cnot_Z",
+                "p_idle_spam_X",
+                "p_idle_spam_Y",
+                "p_idle_spam_Z",
             )
         }
         params.update({f"p_cnot_{error_type}": 0.0 for error_type in CNOT_ERROR_TYPES})
@@ -305,10 +309,12 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
         zcheck_qubits = np.asarray(circuit.code.zcheck_qubits, dtype=np.int64)
         meas_qubits = torch.from_numpy(np.concatenate([xcheck_qubits, zcheck_qubits]))
         meas_bases = torch.from_numpy(
-            np.concatenate([
-                np.zeros(len(xcheck_qubits), np.int64),
-                np.ones(len(zcheck_qubits), np.int64),
-            ])
+            np.concatenate(
+                [
+                    np.zeros(len(xcheck_qubits), np.int64),
+                    np.ones(len(zcheck_qubits), np.int64),
+                ]
+            )
         )
 
         generator = torch.Generator().manual_seed(20260709)
@@ -317,9 +323,7 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
         remaining = self.SHOTS
         while remaining > 0:
             batch = min(self.CHUNK, remaining)
-            errors = (
-                torch.rand((batch, H.shape[1]), generator=generator) < p[None, :]
-            ).float()
+            errors = (torch.rand((batch, H.shape[1]), generator=generator) < p[None, :]).float()
             frames = (errors @ H_t).remainder(2).to(torch.uint8)
             measurements = measure_from_stacked_frames(frames, meas_qubits, meas_bases, nq)
             syndromes = measurements.clone()
@@ -336,9 +340,9 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
         n_ancillas = len(circuit.code.xcheck_qubits) + len(circuit.code.zcheck_qubits)
         measurements = sampler.sample(self.SHOTS)
         measurements = (
-            measurements[:, : self.N_ROUNDS * n_ancillas]
-            .reshape(self.SHOTS, self.N_ROUNDS, n_ancillas)
-            .astype(np.uint8)
+            measurements[:, :self.N_ROUNDS *
+                         n_ancillas].reshape(self.SHOTS, self.N_ROUNDS,
+                                             n_ancillas).astype(np.uint8)
         )
         syndromes = measurements.copy()
         syndromes[:, 1:] ^= measurements[:, :-1]
@@ -356,9 +360,7 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
             model_mean = model[round_index][valid[round_index]].mean()
             reference_mean = reference[round_index][valid[round_index]].mean()
             n_cells = int(valid[round_index].sum()) * self.SHOTS
-            stderr = float(
-                np.sqrt(max(reference_mean * (1.0 - reference_mean), 1e-12) / n_cells)
-            )
+            stderr = float(np.sqrt(max(reference_mean * (1.0 - reference_mean), 1e-12) / n_cells))
             self.assertLess(
                 abs(model_mean - reference_mean),
                 5.0 * stderr + 1e-4,
@@ -370,23 +372,25 @@ class TestSamplerMatchesStimSyndromeDensities(unittest.TestCase):
 
     def test_cnot_idle_only_matches_stim(self):
         self._assert_densities_match(
-            self._make_noise_model(
-                p_idle_cnot_X=0.002, p_idle_cnot_Y=0.002, p_idle_cnot_Z=0.002
-            )
+            self._make_noise_model(p_idle_cnot_X=0.002, p_idle_cnot_Y=0.002, p_idle_cnot_Z=0.002)
         )
 
     def test_measurement_only_matches_stim(self):
-        self._assert_densities_match(
-            self._make_noise_model(p_meas_X=0.004, p_meas_Z=0.004)
-        )
+        self._assert_densities_match(self._make_noise_model(p_meas_X=0.004, p_meas_Z=0.004))
 
     def test_full_noise_model_matches_stim(self):
         self._assert_densities_match(
             self._make_noise_model(
-                p_prep_X=0.004, p_prep_Z=0.004,
-                p_meas_X=0.004, p_meas_Z=0.004,
-                p_idle_cnot_X=0.002, p_idle_cnot_Y=0.002, p_idle_cnot_Z=0.002,
-                p_idle_spam_X=0.003984, p_idle_spam_Y=0.003984, p_idle_spam_Z=0.003984,
+                p_prep_X=0.004,
+                p_prep_Z=0.004,
+                p_meas_X=0.004,
+                p_meas_Z=0.004,
+                p_idle_cnot_X=0.002,
+                p_idle_cnot_Y=0.002,
+                p_idle_cnot_Z=0.002,
+                p_idle_spam_X=0.003984,
+                p_idle_spam_Y=0.003984,
+                p_idle_spam_Z=0.003984,
                 **{f"p_cnot_{error_type}": 0.0004 for error_type in CNOT_ERROR_TYPES},
             )
         )
