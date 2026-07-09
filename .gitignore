@@ -53,6 +53,11 @@ env_stim/
 .venv_*/
 .conda
 
+# Pre-trained model weights: distributed via Hugging Face (users) and the
+# permanent-draft GitHub release consumed by .github/actions/fetch-models (CI).
+# Never commit weights — their license differs from the code license.
+/models/
+
 # Outputs & logs
 outputs/
 logs/

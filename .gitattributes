@@ -1,2 +1,0 @@
-# Track large model binaries with Git LFS
-models/*.pt filter=lfs diff=lfs merge=lfs -text
