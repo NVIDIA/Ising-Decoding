@@ -671,8 +671,13 @@ def build_single_p_marginal(
                     else:
                         allowed = (et == "X")
                     if is_final_round:
+                        # The circuit represents noisy data readout as a fake
+                        # data-measurement flip injected at the start of the final
+                        # perfect round, at the *measurement* rates: Z_ERROR(p_meas_X)
+                        # for X-basis readout, X_ERROR(p_meas_Z) for Z-basis (see
+                        # MemoryCircuit's logical_measurement injection).
                         p_err[eidx] = float(
-                            p_prep_X if prep_basis == 0 else p_prep_Z
+                            p_meas_X if prep_basis == 0 else p_meas_Z
                         ) if allowed else 0.0
                     else:
                         p_err[eidx] = float(
@@ -683,6 +688,14 @@ def build_single_p_marginal(
                         p_err[eidx] = 0.0
                     else:
                         p_err[eidx] = float(_nm_single.get(et, {}).get("idle_spam", 0.0))
+                elif tt == 0 and is_data:
+                    # Data qubits idling during the ancilla prep/reset window carry
+                    # no separate noise location: the circuit folds that idle into
+                    # the measurement-window SPAM idle above and emits nothing here
+                    # (see MemoryCircuit: "IGNORE data-idle during ancilla
+                    # prep/reset"). Boundary rounds never reach this branch: their
+                    # tt == 0 data locations are consumed by is_data_prep.
+                    p_err[eidx] = 0.0
                 else:
                     # Remaining single-qubit locations are bulk/CNOT-layer idles.
                     if is_final_round:
