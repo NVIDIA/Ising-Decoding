@@ -99,16 +99,13 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install Python dependencies
         run: |
@@ -152,16 +149,13 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install Python dependencies
         run: |
@@ -213,6 +207,10 @@ jobs:
   # ---------------------------------------------------------------------------
   ler-regression:
     needs: check-for-changes
+    # contents: write gives the token push access, which is required to see the
+    # permanent-draft release that fetch-models downloads the weights from.
+    permissions:
+      contents: write
     if: >-
       needs.check-for-changes.outputs.has_changes == 'true' &&
       (github.event_name == 'schedule' ||
@@ -230,16 +228,16 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
+
+      - name: Fetch pre-trained models
+        uses: ./.github/actions/fetch-models
 
       - name: Install Python dependencies
         run: |
@@ -282,16 +280,13 @@ jobs:
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
-          apt-get install -y git git-lfs gcc
-          git lfs install
+          apt-get install -y git gcc
 
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install Python dependencies
         run: |

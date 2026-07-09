@@ -69,7 +69,10 @@ def _run_inference_rtest(distance: int, n_rounds: int, model_info: dict):
     model_file = (MODELS_DIR / model_info["filename"]).resolve()
     if not model_file.exists():
         raise FileNotFoundError(
-            f"Missing model file: {model_file}. It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file."
+            f"Missing model file: {model_file}. Download it from Hugging Face "
+            "(https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast or "
+            "https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate); "
+            "in CI it is fetched by .github/actions/fetch-models."
         )
 
     merged.model_checkpoint_file = str(model_file)
@@ -121,12 +124,13 @@ class TestPublicInferenceModels(unittest.TestCase):
     """Tests for pre-trained model files (r9 and r13)."""
 
     def test_required_model_files_present(self):
-        """Fail if any tracked model file is missing. Must not skip."""
+        """Fail if any required model file is missing. Must not skip."""
         for model_file in REQUIRED_MODEL_FILES:
             self.assertTrue(
                 model_file.exists(),
                 msg=f"Required model file missing: {model_file}. "
-                "It must be in the repo (Git LFS). Run 'git lfs pull' or restore the file.",
+                "Download it from Hugging Face (see README, 'Inference (pre-trained "
+                "models)'); in CI it is fetched by .github/actions/fetch-models.",
             )
 
     # -- R=9 model tests --

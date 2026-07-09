@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Fetch pre-trained models
+description: >
+  Downloads the pre-trained model weights from this repository's
+  permanent-draft release into models/. The weights are not committed to the
+  repo because their license differs from the code license; users get them
+  from Hugging Face (see README), while CI uses the draft-release assets.
+  Draft releases are invisible without push access, so the calling job must
+  grant the token write permission (permissions: contents: write). Draft
+  tags do not exist as git tags, so the release is looked up by tag_name
+  over the release list rather than by the tags API.
+inputs:
+  release-tag:
+    description: tag_name of the permanent-draft release that holds the model assets
+    required: false
+    default: ci-models-v1
+  dest:
+    description: Directory (relative to the workspace) to place the model files in
+    required: false
+    default: models
+  token:
+    description: GitHub token with push access (drafts are invisible otherwise)
+    required: false
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - name: Download model assets from draft release
+      uses: actions/github-script@v7
+      env:
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        DEST_DIR: ${{ inputs.dest }}
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const fs = require('fs');
+          const path = require('path');
+          const tag = process.env.RELEASE_TAG;
+          const dest = process.env.DEST_DIR;
+          const { owner, repo } = context.repo;
+
+          const releases = await github.paginate(github.rest.repos.listReleases,
+                                                 { owner, repo, per_page: 100 });
+          const release = releases.find(r => r.tag_name === tag);
+          if (!release) {
+            core.setFailed(
+              `Release '${tag}' not found. It is a draft release, which is only ` +
+              `visible to tokens with push access — make sure the job sets ` +
+              `'permissions: contents: write' and that the draft still exists.`);
+            return;
+          }
+
+          const assets = release.assets.filter(a => a.name.endsWith('.pt'));
+          if (assets.length === 0) {
+            core.setFailed(`Release '${tag}' has no *.pt assets.`);
+            return;
+          }
+
+          fs.mkdirSync(dest, { recursive: true });
+          for (const asset of assets) {
+            const res = await github.request(
+              'GET /repos/{owner}/{repo}/releases/assets/{asset_id}',
+              { owner, repo, asset_id: asset.id,
+                headers: { accept: 'application/octet-stream' } });
+            const buf = Buffer.from(res.data);
+            if (buf.length !== asset.size) {
+              throw new Error(
+                `Size mismatch for ${asset.name}: got ${buf.length}, expected ${asset.size}`);
+            }
+            fs.writeFileSync(path.join(dest, asset.name), buf);
+            core.info(`Downloaded ${asset.name} (${asset.size} bytes) -> ${dest}/`);
+          }
