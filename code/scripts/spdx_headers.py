@@ -67,7 +67,7 @@ EXCLUDE_FILES = {
 
 # Old proprietary license bodies (year-agnostic, used for replacement)
 _OLD_HASH_BODY = (
-    "# SPDX-License-Identifier: Apache-2.0\n"
+    "# SPDX-License-Identifier: LicenseRef-NvidiaProprietary\n"
     "#\n"
     "# NVIDIA CORPORATION, its affiliates and licensors retain all intellectual\n"
     "# property and proprietary rights in and to this material, related\n"
@@ -226,6 +226,11 @@ def _has_header(content: str) -> bool:
     return "SPDX-FileCopyrightText" in prefix
 
 
+def _has_apache_license(content: str) -> bool:
+    prefix = "\n".join(content.splitlines()[:20])
+    return "SPDX-License-Identifier: Apache-2.0" in prefix
+
+
 def _apply_header(path: Path, header: str, style: str) -> bool:
     raw = path.read_text(encoding="utf-8")
 
@@ -259,7 +264,9 @@ def _apply_header(path: Path, header: str, style: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Add or check SPDX headers.")
     parser.add_argument(
-        "--check", action="store_true", help="Fail if any files are missing headers."
+        "--check",
+        action="store_true",
+        help="Fail if any files are missing headers or use a non-Apache-2.0 license.",
     )
     parser.add_argument(
         "--root",
@@ -271,6 +278,7 @@ def main() -> int:
 
     year = dt.datetime.now().year
     missing = []
+    wrong_license = []
     updated = []
 
     for path in sorted(_iter_files(args.root)):
@@ -282,6 +290,8 @@ def main() -> int:
             raw = path.read_text(encoding="utf-8")
             if not _has_header(raw):
                 missing.append(path.relative_to(args.root))
+            elif not _has_apache_license(raw):
+                wrong_license.append(path.relative_to(args.root))
         else:
             if _apply_header(path, header, style):
                 updated.append(path.relative_to(args.root))
@@ -290,8 +300,12 @@ def main() -> int:
         if missing:
             missing_str = "\n".join(f"- {path}" for path in missing)
             print("Missing SPDX headers:\n" + missing_str)
+        if wrong_license:
+            wrong_str = "\n".join(f"- {path}" for path in wrong_license)
+            print("SPDX headers without 'SPDX-License-Identifier: Apache-2.0':\n" + wrong_str)
+        if missing or wrong_license:
             return 1
-        print("All checked files have SPDX headers.")
+        print("All checked files have Apache-2.0 SPDX headers.")
         return 0
 
     if updated:
