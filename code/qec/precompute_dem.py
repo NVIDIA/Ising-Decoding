@@ -622,6 +622,11 @@ def build_single_p_marginal(
         is_ancilla_meas = is_meas and is_meas_qubit
         is_data_prep = is_prep and is_data
         is_data_meas = (tt == int(t_total) - 1) and is_data and ((r, q) in prep_basis_map)
+        # In the explicit noise model, every non-final stabilizer round has a
+        # data-idle SPAM window after the ancilla measurement/reset step.  Do
+        # not gate this location on prep_basis_map: data qubits are prepared
+        # only in the boundary rounds, but they idle in this window every round.
+        is_data_spam_idle = (tt == int(t_total) - 1) and is_data
 
         if use_nm:
             if is_final_round and not (tt == 0 and is_data):
@@ -673,17 +678,15 @@ def build_single_p_marginal(
                         p_err[eidx] = float(
                             p_prep_X if prep_basis == 0 else p_prep_Z
                         ) if allowed else 0.0
-                elif is_data_meas:
+                elif is_data_spam_idle:
                     if is_final_round:
                         p_err[eidx] = 0.0
                     else:
                         p_err[eidx] = float(_nm_single.get(et, {}).get("idle_spam", 0.0))
                 else:
-                    # Bulk idle: use idle_cnot or idle_spam depending on time step
+                    # Remaining single-qubit locations are bulk/CNOT-layer idles.
                     if is_final_round:
                         p_err[eidx] = 0.0
-                    elif is_prep or is_data_meas:
-                        p_err[eidx] = float(_nm_single.get(et, {}).get("idle_spam", 0.0))
                     else:
                         p_err[eidx] = float(_nm_single.get(et, {}).get("idle_cnot", 0.0))
             else:
