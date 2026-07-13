@@ -33,13 +33,25 @@ from typing import Any
 try:
     from evaluation.logical_error_rate import (
         count_logical_errors_with_errorbar as compute_logical_error_rate_stim,
-        compute_syndrome_density_reduction as compute_syndrome_density_reduction_stim
+        compute_syndrome_density_reduction as compute_syndrome_density_reduction_stim,
     )
     HAS_LER_MODULE = True
 except ImportError:
     HAS_LER_MODULE = False
     compute_logical_error_rate_stim = None
     compute_syndrome_density_reduction_stim = None
+
+# Import color-code LER (Chromobius-based)
+try:
+    from evaluation.logical_error_rate_color import (
+        count_logical_errors_color as compute_logical_error_rate_color,
+        compute_syndrome_density_reduction_color,
+    )
+    HAS_LER_MODULE_COLOR = True
+except ImportError:
+    HAS_LER_MODULE_COLOR = False
+    compute_logical_error_rate_color = None
+    compute_syndrome_density_reduction_color = None
 
 # Active computation functions (set via configure_metrics)
 compute_logical_error_rate = None
@@ -80,22 +92,42 @@ def _first_present_metric(source: Any, keys) -> Any:
     return None
 
 
-def configure_metrics(rank=0):
-    """
-    Configure which metric computation functions to use.
-    
+def configure_metrics(rank: int = 0, code: str = "surface"):
+    """Configure which metric computation functions to use.
+
     Args:
-        rank: Process rank for printing messages
-        
+        rank: Process rank for printing messages.
+        code: Code family ("surface" or "color"). Color code uses the
+              Chromobius-based color LER path; surface code uses the Stim-based path.
+
     Returns:
         Tuple of (compute_logical_error_rate, compute_syndrome_density_reduction)
     """
     global compute_logical_error_rate, compute_syndrome_density_reduction
 
+    code_lower = str(code).lower()
+
+    if code_lower.startswith("color"):
+        if HAS_LER_MODULE_COLOR:
+            compute_logical_error_rate = compute_logical_error_rate_color
+            compute_syndrome_density_reduction = compute_syndrome_density_reduction_color
+            if rank == 0:
+                print("[Evaluation] Using Chromobius-based color-code validation functions")
+        else:
+            if rank == 0:
+                print(
+                    "[Evaluation] Warning: Color-code LER module not available, "
+                    "disabling LER computation"
+                )
+            compute_logical_error_rate = None
+            compute_syndrome_density_reduction = None
+        return compute_logical_error_rate, compute_syndrome_density_reduction
+
+    # Surface code
     compute_logical_error_rate = compute_logical_error_rate_stim
     compute_syndrome_density_reduction = compute_syndrome_density_reduction_stim
     if rank == 0 and HAS_LER_MODULE:
-        print("[Evaluation] Using Stim-based validation functions")
+        print("[Evaluation] Using Stim-based surface-code validation functions")
 
     return compute_logical_error_rate, compute_syndrome_density_reduction
 
@@ -268,13 +300,16 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
             ler_value = _first_present_metric(
                 result,
                 [
-                    'logical_error_rate', 'ler', 'error_rate', 'avg_ler',
-                    'logical error ratio (mean)'
+                    'logical_error_rate', 'logical_error_rate (mean)', 'ler', 'error_rate',
+                    'avg_ler', 'logical error ratio (mean)'
                 ],
             )
 
             if ler_value is None:
-                basis_keys = ['logical error ratio (mean)', 'logical_error_rate', 'ler']
+                basis_keys = [
+                    'logical error ratio (mean)', 'logical_error_rate (mean)', 'logical_error_rate',
+                    'ler'
+                ]
 
                 x_ler = None
                 if 'X' in result and isinstance(result['X'], dict):
@@ -301,10 +336,16 @@ def _compute_single_ler(model, device, dist, cfg, generator, rank):
             x_data, z_data = result['X'], result['Z']
 
             if isinstance(x_data, dict) and isinstance(z_data, dict):
-                x_logical_errors = x_data.get('logical errors')
-                x_pymatch_flips = x_data.get('pymatch flips')
-                z_logical_errors = z_data.get('logical errors')
-                z_pymatch_flips = z_data.get('pymatch flips')
+                x_logical_errors = x_data.get('logical errors', x_data.get('logical_errors'))
+                x_pymatch_flips = x_data.get(
+                    'pymatch flips',
+                    x_data.get('chromobius_errors'),
+                )
+                z_logical_errors = z_data.get('logical errors', z_data.get('logical_errors'))
+                z_pymatch_flips = z_data.get(
+                    'pymatch flips',
+                    z_data.get('chromobius_errors'),
+                )
 
                 if all(
                     v is not None

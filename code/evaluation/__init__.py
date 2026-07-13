@@ -17,7 +17,8 @@ Evaluation and inference modules.
 
 Contains:
 - metrics: Evaluation metrics (LER, syndrome density reduction)
-- logical_error_rate: Stim-based LER computation
-- threshold_plot: Legacy threshold-plot code (kept as reference; not used by public inference)
-- inference: Public single-point inference (no plots; reports LER + PyMatching speedup)
+- logical_error_rate: Stim-based LER computation (surface code)
+- logical_error_rate_color: Chromobius-based LER computation (color code)
+- threshold_plot: Threshold plot generation
+- sampling_sweep: Sampling parameter sweeps
 """

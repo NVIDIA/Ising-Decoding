@@ -28,6 +28,9 @@ The 25 Parameters:
   (IX, IY, IZ, XI, XX, XY, XZ, YI, YX, YY, YZ, ZI, ZX, ZY, ZZ)
 
 Usage:
+    # Create from single p (backwards compatible)
+    noise_model = NoiseModel.from_single_p(p=0.01)
+    
     # Create with explicit parameters
     noise_model = NoiseModel(
         p_prep_X=0.005, p_prep_Z=0.005,
@@ -37,21 +40,25 @@ Usage:
         p_cnot_IX=0.001, ...
     )
     
-    # From config dict (requires all 25 parameters)
+    # From config dict
     noise_model = NoiseModel.from_config_dict(cfg.noise_model)
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import json
 import math
 import numpy as np
 
-# Surface-code training upscale target (below threshold ~7.5e-3). Used when sampling training data.
-SURFACE_CODE_TRAINING_UPSCALE_TARGET = 6e-3
-# Approximate surface code threshold for user-facing warnings.
-SURFACE_CODE_THRESHOLD_APPROX = 7.5e-3
+# Ordered list of CNOT error types (excluding II)
+# Order matches Stim's PAULI_CHANNEL_2: IX, IY, IZ, XI, XX, XY, XZ, YI, YX, YY, YZ, ZI, ZX, ZY, ZZ
+CNOT_ERROR_TYPES = [
+    'IX', 'IY', 'IZ', 'XI', 'XX', 'XY', 'XZ', 'YI', 'YX', 'YY', 'YZ', 'ZI', 'ZX', 'ZY', 'ZZ'
+]
+
+# Mapping from error type string to index (0-14)
+CNOT_ERROR_INDEX = {et: i for i, et in enumerate(CNOT_ERROR_TYPES)}
 
 
 # Internal helper for depolarizing-equivalent 25p mapping (tests/docs).
@@ -81,14 +88,81 @@ def _single_p_mapping(p: float, spam_factor: float = 2.0 / 3.0) -> Dict[str, flo
     }
 
 
-# Ordered list of CNOT error types (excluding II)
-# Order matches Stim's PAULI_CHANNEL_2: IX, IY, IZ, XI, XX, XY, XZ, YI, YX, YY, YZ, ZI, ZX, ZY, ZZ
-CNOT_ERROR_TYPES = [
-    'IX', 'IY', 'IZ', 'XI', 'XX', 'XY', 'XZ', 'YI', 'YX', 'YY', 'YZ', 'ZI', 'ZX', 'ZY', 'ZZ'
-]
+def normalize_noise_mode(noise_mode: Optional[str]) -> str:
+    """
+    Normalize a high-level named noise-mode toggle.
 
-# Mapping from error type string to index (0-14)
-CNOT_ERROR_INDEX = {et: i for i, et in enumerate(CNOT_ERROR_TYPES)}
+    Supported values:
+    - None / legacy / default / single_p / depolarizing / uniform / none -> "legacy"
+    - si1000 -> "si1000"
+    """
+    if noise_mode is None:
+        return "legacy"
+
+    mode = str(noise_mode).strip().lower()
+    if mode in ("", "legacy", "default", "single_p", "depolarizing", "uniform", "none"):
+        return "legacy"
+    if mode == "si1000":
+        return "si1000"
+
+    raise ValueError(
+        f"Invalid noise_mode={noise_mode!r}. Expected one of "
+        f"'legacy' or 'Si1000'."
+    )
+
+
+def normalize_noise_model_family(
+    noise_model_family: Optional[str],
+    *,
+    fallback_noise_mode: Optional[str] = None,
+) -> str:
+    """
+    Normalize the new config axis selecting the channel family.
+
+    Supported values:
+    - ``legacy``: existing scalar-p / explicit-noise-model semantics
+    - ``si1000``: named Si1000 family
+
+    ``fallback_noise_mode`` keeps backward compatibility with the older
+    ``test.noise_mode`` toggle.
+    """
+    if noise_model_family is None:
+        return normalize_noise_mode(fallback_noise_mode)
+
+    family = str(noise_model_family).strip().lower()
+    if family in ("", "legacy", "default", "single_p", "depolarizing", "uniform", "none"):
+        return "legacy"
+    if family == "si1000":
+        return "si1000"
+
+    raise ValueError(
+        f"Invalid noise_model_family={noise_model_family!r}. Expected "
+        f"'legacy' or 'si1000'."
+    )
+
+
+def normalize_noise_instruction_semantics(noise_instruction_semantics: Optional[str]) -> str:
+    """
+    Normalize the config axis selecting how noise instructions are attached to
+    the fixed circuit.
+
+    Supported values:
+    - ``current``: existing MemoryCircuit semantics
+    - ``reference``: new reference-noise semantics
+    """
+    if noise_instruction_semantics is None:
+        return "current"
+
+    semantics = str(noise_instruction_semantics).strip().lower()
+    if semantics in ("", "current", "legacy"):
+        return "current"
+    if semantics in ("reference", "reference_noise"):
+        return "reference"
+
+    raise ValueError(
+        f"Invalid noise_instruction_semantics={noise_instruction_semantics!r}. "
+        f"Expected 'current' or 'reference'."
+    )
 
 
 @dataclass
@@ -96,11 +170,11 @@ class NoiseModel:
     """
     25-Parameter Noise Model for circuit-level noise simulation.
     
-    Attributes (public semantics):
-        p_prep_X: Probability that an X-basis preparation fails (i.e., prepare |+> then apply Z to flip to |->).
-        p_prep_Z: Probability that a Z-basis preparation fails (i.e., prepare |0> then apply X to flip to |1>).
-        p_meas_X: Probability that an X-basis measurement fails (modeled as a pre-measurement Z flip).
-        p_meas_Z: Probability that a Z-basis measurement fails (modeled as a pre-measurement X flip).
+    Attributes:
+        p_prep_X: X error probability after state preparation
+        p_prep_Z: Z error probability after state preparation
+        p_meas_X: X error probability before measurement
+        p_meas_Z: Z error probability before measurement
         p_idle_cnot_X/Y/Z: Idle Pauli errors during bulk/CNOT layers (single-qubit Pauli channel)
         p_idle_spam_X/Y/Z: Idle Pauli errors on data qubits during ancilla prep/reset window.
                            NOTE: In noise-model mode we intentionally do NOT apply data-qubit
@@ -188,10 +262,160 @@ class NoiseModel:
                 f"Total SPAM-window idle error probability ({idle_spam_total}) exceeds 1"
             )
 
+    @classmethod
+    def from_single_p(cls, p: float, spam_factor: float = 2.0 / 3.0) -> 'NoiseModel':
+        """
+        Create a NoiseModel from a single physical error rate using depolarizing defaults.
+        
+        This provides backwards compatibility with the single-p noise model:
+        - SPAM errors: spam_factor * p for X or Z (default 2p/3)
+        - Idle errors: p/3 for each of X, Y, Z
+        - CNOT errors: p/15 for each of 15 two-qubit Paulis
+        
+        Args:
+            p: Single physical error rate
+            spam_factor: Factor to multiply p for SPAM errors (default 2/3)
+            
+        Returns:
+            NoiseModel with depolarizing-equivalent parameters
+        """
+        if p < 0 or p > 1:
+            raise ValueError(f"p must be in [0, 1], got {p}")
+
+        # SPAM: 2p/3 for the error type that flips the prepared/measured basis
+        # In X-basis prep: Z error flips |+> to |->
+        # In Z-basis prep: X error flips |0> to |1>
+        # We use the same probability for both since the circuit handles basis selection
+        p_spam = p * spam_factor
+
+        # Idle during CNOT layers: p/3 for each Pauli (depolarizing channel)
+        p_idle_cnot = p / 3.0
+
+        # SPAM-window data-idle: in the legacy model, data qubits experienced two idle steps
+        # per round (one at ancilla prep, one at ancilla measurement), each with (p/3,p/3,p/3).
+        # In the 25p noise-model semantics, we intentionally APPLY ONLY ONE SPAM-window idle
+        # step (during ancilla prep/reset) and IGNORE the measurement-window data-idle.
+        # To preserve backwards-compatibility for NoiseModel.from_single_p, we therefore set
+        # p_idle_spam_* to the *two-step effective* channel of two consecutive depolarizing idles.
+        #
+        # For per-step: pI=1-p, pX=pY=pZ=p/3
+        # Two-step effective: p2(X)=2 pI pX + 2 pY pZ = 2p/3 - 4p^2/9 (same for Y,Z).
+        p_idle_spam = (2.0 * p / 3.0) - (4.0 * p * p / 9.0)
+        if p_idle_spam < 0:
+            p_idle_spam = 0.0
+
+        # CNOT: p/15 for each of 15 two-qubit Paulis (depolarizing channel)
+        p_cnot = p / 15.0
+
+        return cls(
+            # State preparation
+            p_prep_X=p_spam,
+            p_prep_Z=p_spam,
+
+            # Measurement
+            p_meas_X=p_spam,
+            p_meas_Z=p_spam,
+
+            # Idle during CNOT layers
+            p_idle_cnot_X=p_idle_cnot,
+            p_idle_cnot_Y=p_idle_cnot,
+            p_idle_cnot_Z=p_idle_cnot,
+
+            # SPAM-window data-idle (effective two-step mapped into one step)
+            p_idle_spam_X=p_idle_spam,
+            p_idle_spam_Y=p_idle_spam,
+            p_idle_spam_Z=p_idle_spam,
+
+            # CNOT (all equal for depolarizing)
+            p_cnot_IX=p_cnot,
+            p_cnot_IY=p_cnot,
+            p_cnot_IZ=p_cnot,
+            p_cnot_XI=p_cnot,
+            p_cnot_XX=p_cnot,
+            p_cnot_XY=p_cnot,
+            p_cnot_XZ=p_cnot,
+            p_cnot_YI=p_cnot,
+            p_cnot_YX=p_cnot,
+            p_cnot_YY=p_cnot,
+            p_cnot_YZ=p_cnot,
+            p_cnot_ZI=p_cnot,
+            p_cnot_ZX=p_cnot,
+            p_cnot_ZY=p_cnot,
+            p_cnot_ZZ=p_cnot,
+        )
+
+    @classmethod
+    def from_si1000(cls, p: float) -> 'NoiseModel':
+        """
+        Create a best-effort Si1000-style circuit noise model from a single scale ``p``.
+
+        Mapping taken from the VibeLSD paper's Si1000 table:
+        - 2Q gate:       two-qubit depolarizing with total probability p
+        - 1Q Clifford:   one-qubit depolarizing with total probability p/10
+        - Init:          basis-flip with probability 2p
+        - Measure:       basis-flip with probability 5p
+        - Idle (gates):  one-qubit depolarizing with total probability p/10
+        - Idle (meas/reset): one-qubit depolarizing with total probability 2p
+
+        Notes:
+        - This codebase represents 2Q noise via Stim ``PAULI_CHANNEL_2`` on ``CX``.
+          Full two-qubit depolarizing is Clifford-invariant, so distributing p/15
+          across the 15 non-identity Paulis is the natural mapping here.
+        - The current NoiseModel does not distinguish 1Q Clifford noise from bulk
+          idle noise, so both use the same ``p/10`` depolarizing channel.
+        - The current 25-parameter semantics only apply one ``p_idle_spam`` step
+          per round, while the paper's Si1000 table has a distinct measure/reset
+          idle window in addition to reset/prep timing. To preserve the intended
+          total noise under this one-step representation, ``p_idle_spam_*`` uses
+          the effective composition of *two* identical one-qubit depolarizing
+          channels, each with total probability ``2p``.
+        """
+        if p < 0 or p > 1:
+            raise ValueError(f"p must be in [0, 1], got {p}")
+
+        # One-qubit depolarizing with total probability q => q/3 on X,Y,Z.
+        p_oneq_gate = p / 30.0  # q = p/10
+        p_idle_meas_reset_single = 2.0 * p / 3.0  # q = 2p, so each Pauli gets q/3
+        p_idle_meas_reset = 2.0 * p_idle_meas_reset_single - 4.0 * (p_idle_meas_reset_single**2)
+
+        # Two-qubit depolarizing with total probability p.
+        p_twoq = p / 15.0
+
+        p_prep = 2.0 * p
+        p_meas = 5.0 * p
+
+        return cls(
+            p_prep_X=p_prep,
+            p_prep_Z=p_prep,
+            p_meas_X=p_meas,
+            p_meas_Z=p_meas,
+            p_idle_cnot_X=p_oneq_gate,
+            p_idle_cnot_Y=p_oneq_gate,
+            p_idle_cnot_Z=p_oneq_gate,
+            p_idle_spam_X=p_idle_meas_reset,
+            p_idle_spam_Y=p_idle_meas_reset,
+            p_idle_spam_Z=p_idle_meas_reset,
+            p_cnot_IX=p_twoq,
+            p_cnot_IY=p_twoq,
+            p_cnot_IZ=p_twoq,
+            p_cnot_XI=p_twoq,
+            p_cnot_XX=p_twoq,
+            p_cnot_XY=p_twoq,
+            p_cnot_XZ=p_twoq,
+            p_cnot_YI=p_twoq,
+            p_cnot_YX=p_twoq,
+            p_cnot_YY=p_twoq,
+            p_cnot_YZ=p_twoq,
+            p_cnot_ZI=p_twoq,
+            p_cnot_ZX=p_twoq,
+            p_cnot_ZY=p_twoq,
+            p_cnot_ZZ=p_twoq,
+        )
+
     def to_config_dict(self) -> Dict[str, float]:
         """
         Convert to a configuration dictionary.
-        
+
         Returns:
             Dictionary with all public parameters (25)
         """
@@ -207,7 +431,7 @@ class NoiseModel:
             self.canonical_parameters(),
             sort_keys=True,
             separators=(",", ":"),
-            allow_nan=False,
+            ensure_ascii=False,
         )
 
     def sha256(self) -> str:
@@ -275,7 +499,9 @@ class NoiseModel:
         Create a NoiseModel from a configuration dictionary.
         
         Args:
-            d: Dictionary with noise model parameters (full 25-parameter form).
+            d: Dictionary with noise model parameters. Can contain either:
+               - All 22 individual parameters, or
+               - A single 'p' key (will use from_single_p)
                
         Returns:
             NoiseModel instance
@@ -283,40 +509,31 @@ class NoiseModel:
         if d is None:
             return None
 
-        if 'p' in d or 'spam_factor' in d:
-            raise ValueError(
-                "Single-p noise_model configs are not supported. "
-                "Specify all 25 noise_model parameters instead."
-            )
+        # Check for single-p shorthand
+        if 'p' in d and len(d) == 1:
+            return cls.from_single_p(d['p'])
 
-        legacy_keys = {"p_idle_X", "p_idle_Y", "p_idle_Z"}
-        if any(k in d for k in legacy_keys):
-            raise ValueError(
-                "Legacy p_idle_X/Y/Z keys are not supported. "
-                "Specify p_idle_cnot_* and p_idle_spam_* explicitly."
-            )
+        # Check for single-p with spam_factor
+        if 'p' in d and 'spam_factor' in d and len(d) == 2:
+            return cls.from_single_p(d['p'], d['spam_factor'])
 
-        required_keys = {k for k in asdict(cls()).keys() if not k.startswith("_")}
-        missing = required_keys - set(d.keys())
-        if missing:
-            raise ValueError("Missing noise_model parameters: " + ", ".join(sorted(missing)))
+        # Backwards-compat: allow old 22p keys p_idle_X/Y/Z
+        if "p_idle_X" in d or "p_idle_Y" in d or "p_idle_Z" in d:
+            # If new keys are absent, map old idle_* -> idle_cnot_* and idle_spam_*.
+            if "p_idle_cnot_X" not in d and "p_idle_spam_X" not in d:
+                d = dict(d)
+                d["p_idle_cnot_X"] = d.get("p_idle_X", 0.0)
+                d["p_idle_cnot_Y"] = d.get("p_idle_Y", 0.0)
+                d["p_idle_cnot_Z"] = d.get("p_idle_Z", 0.0)
+                d["p_idle_spam_X"] = d.get("p_idle_X", 0.0)
+                d["p_idle_spam_Y"] = d.get("p_idle_Y", 0.0)
+                d["p_idle_spam_Z"] = d.get("p_idle_Z", 0.0)
+            # Drop legacy keys to avoid __init__ error
+            d.pop("p_idle_X", None)
+            d.pop("p_idle_Y", None)
+            d.pop("p_idle_Z", None)
 
         return cls(**d)
-
-    @classmethod
-    def from_single_p(cls, p: float, *, spam_factor: float = 2.0 / 3.0) -> "NoiseModel":
-        """
-        Create a NoiseModel from a single depolarizing-equivalent error rate.
-
-        Args:
-            p: Single physical error rate in [0, 1].
-            spam_factor: Multiplier for prep/meas errors (default: 2/3).
-
-        Returns:
-            NoiseModel instance with 25-parameter mapping.
-        """
-        mapping = _single_p_mapping(float(p), spam_factor=float(spam_factor))
-        return cls(**mapping)
 
     def get_cnot_probabilities(self) -> np.ndarray:
         """
@@ -351,7 +568,7 @@ class NoiseModel:
         """
         Get the maximum probability across all error types.
         
-        Useful for simulator buffer size calculations.
+        Useful for buffer size calculations in the sampler.
         
         Returns:
             Maximum probability value
@@ -370,6 +587,16 @@ class NoiseModel:
     def get_total_idle_spam_probability(self) -> float:
         """Get total probability of any SPAM-window idle error occurring."""
         return float(np.sum(self.get_idle_spam_probabilities()))
+
+    def to_stim_pauli_channel_1_args(self) -> Tuple[float, float, float]:
+        """
+        Args (p_X, p_Y, p_Z) for generic one-qubit Clifford noise.
+
+        The current 25-parameter model does not separate single-qubit gate noise
+        from bulk/CNOT-layer idle noise, so 1Q Clifford gates reuse the same
+        channel as ``p_idle_cnot_*``.
+        """
+        return self.to_stim_pauli_channel_1_args_cnot()
 
     def to_stim_pauli_channel_1_args_cnot(self) -> Tuple[float, float, float]:
         """Args (p_X,p_Y,p_Z) for PAULI_CHANNEL_1 during bulk/CNOT-layer idle."""
@@ -419,17 +646,10 @@ class NoiseModel:
 
 
 def get_grouped_totals(nm: NoiseModel) -> Dict[str, float]:
-    """
-    Compute effective fault-channel totals (capital P's) for 25-p training scaling.
+    """Compute effective fault-channel totals (capital P's) for 25-p training scaling.
 
     Returns:
         Dict with separate prep/meas channels, idle/cnot totals, and max_group.
-
-    Notes:
-        - X/Z prep and measurement are separate one-Pauli fault channels; summing
-          them would double-count the effective channel probability.
-        - p_idle_spam_* models a two-step SPAM window, so the scaling decision uses
-          half the raw total while still reporting the raw configured total.
     """
     p_prep_X = float(nm.p_prep_X)
     p_prep_Z = float(nm.p_prep_Z)
@@ -463,46 +683,41 @@ def get_grouped_totals(nm: NoiseModel) -> Dict[str, float]:
     }
 
 
+SURFACE_CODE_TRAINING_UPSCALE_TARGET = 6e-3
+COLOR_CODE_TRAINING_UPSCALE_TARGET = 4e-3
+SURFACE_CODE_THRESHOLD_APPROX = 7.5e-3
+
+
+def get_training_upscale_target(code_type: str) -> Optional[float]:
+    """Return the code-family training-noise target, if one is defined."""
+    code = str(code_type or "surface_code").strip().lower()
+    if code in ("surface", "surface_code", "surface_partition"):
+        return SURFACE_CODE_TRAINING_UPSCALE_TARGET
+    if code in ("color", "color_code"):
+        return COLOR_CODE_TRAINING_UPSCALE_TARGET
+    return None
+
+
 def get_training_upscaled_noise_model(
     noise_model: NoiseModel,
     code_type: str = "surface_code",
     skip_upscale: bool = False,
 ) -> Tuple[NoiseModel, Dict[str, Any]]:
+    """Optionally upscale the noise model for training to the code-family target.
+
+    Training data sampling should use the returned model; evaluation should use
+    the original user-specified model.
     """
-    For surface code only: optionally upscale the noise model for training so that
-    max(P's) = SURFACE_CODE_TRAINING_UPSCALE_TARGET (6e-3). Training data sampling
-    should use the returned model; evaluation should use the original user-specified model.
-
-    - Upscaling (max_group < target): scale all 25 p's by target/max_group; info contains details.
-    - Downscaling (max_group > target): do NOT change parameters; info contains a clear warning.
-    - If max_group > target: info indicates the user may be above threshold / have made an error.
-
-    For code_type != "surface_code", returns (noise_model unchanged, info with applied=False).
-
-    Args:
-        noise_model: The user-specified NoiseModel.
-        code_type: Code type string (upscaling only for "surface_code").
-        skip_upscale: If True, skip upscaling entirely and return the original model unchanged.
-            Useful for training with exact user-specified noise parameters (e.g. benchmarking).
-
-    Returns:
-        (training_noise_model, info_dict) where info_dict has:
-        - applied_upscale: bool
-        - scale_factor: float (only if upscaling applied)
-        - max_group: float
-        - group_totals: dict (p_prep_X, p_prep_Z, p_meas_X, p_meas_Z, ...)
-        - above_target_warning: bool (max_group > UPSCALE_TARGET)
-        - downscale_skipped: bool (max_group > target, params not modified)
-        - skipped_by_user: bool (skip_upscale was True)
-    """
-    target = SURFACE_CODE_TRAINING_UPSCALE_TARGET
+    target = get_training_upscale_target(code_type)
     totals = get_grouped_totals(noise_model)
     max_group = totals["max_group"]
 
     info: Dict[str, Any] = {
+        "code_type": code_type,
+        "target": target,
         "max_group": max_group,
         "group_totals": totals,
-        "above_target_warning": max_group > target,
+        "above_target_warning": bool(target is not None and max_group > target),
         "downscale_skipped": False,
         "applied_upscale": False,
         "skipped_by_user": skip_upscale,
@@ -515,9 +730,11 @@ def get_training_upscaled_noise_model(
         )
         return (noise_model, info)
 
-    if code_type != "surface_code":
-        info["message"
-            ] = f"Noise upscaling is not applied for code_type={code_type!r} (surface_code only)."
+    if target is None:
+        info["message"] = (
+            f"Noise upscaling is not applied for code_type={code_type!r} "
+            "(no training target is defined)."
+        )
         return (noise_model, info)
 
     if max_group <= 0.0:
@@ -533,11 +750,13 @@ def get_training_upscaled_noise_model(
     scale_factor = target / max_group
 
     if scale_factor >= 1.0:
-        # Upscaling: apply scale to all 25 parameters
         params = noise_model.to_config_dict()
         scaled_params = {k: float(v) * scale_factor for k, v in params.items()}
         training_nm = NoiseModel.from_config_dict(scaled_params)
-        training_nm._reference = dict(noise_model._reference)
+        try:
+            training_nm._reference = dict(noise_model._reference)
+        except AttributeError:
+            pass
         info["applied_upscale"] = True
         info["scale_factor"] = scale_factor
         info["message"] = (
@@ -546,7 +765,6 @@ def get_training_upscaled_noise_model(
         )
         return (training_nm, info)
 
-    # Downscaling: do not modify parameters
     info["downscale_skipped"] = True
     info["scale_factor"] = scale_factor
     info["message"] = (
@@ -554,6 +772,63 @@ def get_training_upscaled_noise_model(
         "Parameters unchanged. If you intended a lower noise regime, check your noise model values."
     )
     return (noise_model, info)
+
+
+def resolve_test_noise_model(cfg) -> tuple:
+    """
+    Resolve the test-time noise model from config.
+
+    cfg.test.noise_model can be:
+      - "train" (default): reuse cfg.data.noise_model
+      - "none": no noise model, fall back to cfg.test.p_error
+      - A dict of noise model parameters (same format as cfg.data.noise_model,
+        including the {p: <value>} shorthand for depolarizing)
+
+    Returns:
+        (noise_model_obj, mode_str) where noise_model_obj is a NoiseModel or
+        None, and mode_str is one of "train", "none", or "custom".
+    """
+    test_cfg = getattr(cfg, "test", None)
+    noise_model_family = normalize_noise_model_family(
+        getattr(test_cfg, "noise_model_family", None),
+        fallback_noise_mode=getattr(test_cfg, "noise_mode", None),
+    )
+    if noise_model_family == "si1000":
+        p = float(getattr(test_cfg, "p_error", 0.0))
+        return NoiseModel.from_si1000(p), "si1000"
+
+    test_nm_cfg = getattr(test_cfg, "noise_model", None)
+
+    if test_nm_cfg is None:
+        test_nm_mode = "train"
+    elif hasattr(test_nm_cfg, "items") or isinstance(test_nm_cfg, dict):
+        from omegaconf import OmegaConf
+        nm_dict = (
+            OmegaConf.to_container(test_nm_cfg, resolve=True)
+            if hasattr(test_nm_cfg, "items") else test_nm_cfg
+        )
+        return NoiseModel.from_config_dict(dict(nm_dict)), "custom"
+    else:
+        test_nm_mode = str(test_nm_cfg).lower()
+
+    if test_nm_mode == "train":
+        nm_cfg = getattr(getattr(cfg, "data", None), "noise_model", None)
+        if nm_cfg is not None:
+            from omegaconf import OmegaConf
+            nm_dict = (
+                OmegaConf.to_container(nm_cfg, resolve=True) if hasattr(nm_cfg, "items") else nm_cfg
+            )
+            if nm_dict is not None:
+                return NoiseModel.from_config_dict(dict(nm_dict)), "train"
+        return None, "train"
+    elif test_nm_mode == "none":
+        return None, "none"
+    else:
+        raise ValueError(
+            f"Invalid cfg.test.noise_model={test_nm_cfg!r}. "
+            f"Expected 'train', 'none', or a dict of noise model parameters "
+            f"(e.g. {{p: 0.001}} or {{p_prep_X: 0.002, p_prep_Z: 0.002, ...}})"
+        )
 
 
 def noise_model_from_config(cfg) -> Optional[NoiseModel]:
@@ -583,19 +858,18 @@ if __name__ == "__main__":
     # Test the NoiseModel
     print("Testing NoiseModel...")
 
-    # Test 1: Create from explicit 25-parameter config
+    # Test 1: Create from single p
     p = 0.01
-    mapping = _single_p_mapping(p)
-    nm = NoiseModel(**mapping)
-    print(f"\nFrom explicit p={p} mapping:")
+    nm = NoiseModel.from_single_p(p)
+    print(f"\nFrom single p={p}:")
     print(f"  {nm}")
-    print(f"  p_prep_X = {nm.p_prep_X} (expected: {mapping['p_prep_X']})")
-    print(f"  p_idle_cnot_X = {nm.p_idle_cnot_X} (expected: {mapping['p_idle_cnot_X']})")
-    print(f"  p_cnot_IX = {nm.p_cnot_IX} (expected: {mapping['p_cnot_IX']})")
+    print(f"  p_prep_X = {nm.p_prep_X} (expected: {2*p/3})")
+    print(f"  p_idle_X = {nm.p_idle_X} (expected: {p/3})")
+    print(f"  p_cnot_IX = {nm.p_cnot_IX} (expected: {p/15})")
 
-    # Test 2: Verify depolarizing equivalence (CNOT-layer idle + CNOT total)
+    # Test 2: Verify depolarizing equivalence
     print(f"\nDepolarizing equivalence check:")
-    print(f"  Total idle CNOT-layer prob = {nm.get_total_idle_cnot_probability()} (expected: {p})")
+    print(f"  Total idle prob = {nm.get_total_idle_probability()} (expected: {p})")
     print(f"  Total CNOT prob = {nm.get_total_cnot_probability()} (expected: {p})")
 
     # Test 3: Config dict round-trip
@@ -604,8 +878,7 @@ if __name__ == "__main__":
     print(f"\nConfig dict round-trip: {nm == nm2}")
 
     # Test 4: Stim instruction arguments
-    print(f"\nStim PAULI_CHANNEL_1 (CNOT-layer) args: {nm.to_stim_pauli_channel_1_args_cnot()}")
-    print(f"Stim PAULI_CHANNEL_1 (SPAM-window) args: {nm.to_stim_pauli_channel_1_args_spam()}")
+    print(f"\nStim PAULI_CHANNEL_1 args: {nm.to_stim_pauli_channel_1_args()}")
     print(f"Stim PAULI_CHANNEL_2 args (first 5): {nm.to_stim_pauli_channel_2_args()[:5]}...")
 
     # Test 5: Validation

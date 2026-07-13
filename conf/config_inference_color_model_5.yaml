@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# =============================================================================
+# Color-code inference with a pre-trained Model-5-shaped checkpoint.
+#
+# Loads the checkpoint at `model_checkpoint_file` and runs the color-code
+# inference path (`run_color` -> `count_logical_errors_color`).
+#
+# Usage:
+#   PYTHONPATH=code python -m workflows.run \
+#       --config-name=config_inference_color_model_5 \
+#       model_checkpoint_file=/path/to/your/checkpoint.pt \
+#       test.num_samples=1024 test.p_error=0.001 test.meas_basis_test=X
+# =============================================================================
+
+exp_tag: inference_color_model_5
+output: ${oc.env:PREDECODER_BASE_OUTPUT_DIR,outputs}/${exp_tag}
+resume_dir: ${output}/models
+
+hydra:
+  run:
+    dir: ${output}
+  output_subdir: hydra
+
+# Direct file override: skip the find_best_model search and load this file
+# (repo-relative by default; point it at your trained checkpoint).
+model_checkpoint_file: models/Ising-Decoder-ColorCode-5.pt
+
+enable_fp16: false
+enable_bf16: false
+enable_matmul_tf32: true
+enable_cudnn_tf32: true
+enable_cudnn_benchmark: false
+torch_compile: false
+torch_compile_mode: default
+load_checkpoint: false
+
+code: color
+distance: 13
+n_rounds: 13
+meas_basis: both
+
+workflow:
+  task: inference
+
+data:
+  superdense: true
+  schedule: nearest-neighbor
+  enable_z_feedforward: true
+  timelike_he: false
+  num_he_cycles: 1
+  use_weight2_timelike: false
+  use_weight3_timelike: false
+  max_passes_w1: 8
+  max_passes_w2: 4
+  max_passes_w3: 4
+  decompose_y: false
+
+  p_error: null
+  p_min: 0.0009
+  p_max: 0.0011
+  error_mode: circuit_level_color_code
+  precomputed_frames_dir: null
+
+# Architecture must match the checkpoint being loaded (Model 5 shape):
+#   PreDecoderModelMemory_v1, 6 conv layers [256, 256, 256, 256, 256, 4],
+#   kernel 3, input_channels=4, out_channels=4.
+model:
+  version: predecoder_memory_v1
+  dropout_p: 0.01
+  activation: gelu
+  num_filters: [256, 256, 256, 256, 256, 4]
+  kernel_size: [3, 3, 3, 3, 3, 3]
+  input_channels: 4
+  out_channels: 4
+
+test:
+  num_samples: 65536
+  trials: 1
+  distance: 9
+  n_rounds: 9
+  noise_model_family: legacy
+  noise_instruction_semantics: current
+  noise_mode: legacy
+  gidney_style_noise: false
+  noise_model: none
+  p_error: 0.001
+  meas_basis_test: both
+  use_model_checkpoint: -1
+  th_data: 0.0
+  th_syn: 0.0
+  sampling_mode: threshold
+  temperature: 1.0
+  dataloader:
+    batch_size: 512
+    num_workers: 2
+    persistent_workers: true
+    prefetch_factor: 1
+    pin_memory: true
+
+datapipe: memory
+data_method: test

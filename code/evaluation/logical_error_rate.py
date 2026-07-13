@@ -702,6 +702,10 @@ class PreDecoderMemoryEvalModule(nn.Module):
         device_type = next(self.parameters()).device.type if next(
             self.parameters()
         ).device.type in ("cuda", "cpu") else "cpu"
+        # Match the eval input layout to a channels_last_3d model so half-precision
+        # Conv3D stays on the fast Tensor-Core kernel (no-op for contiguous models).
+        from training.precision import match_input_to_model_memory_format
+        trainX = match_input_to_model_memory_format(trainX, self.model)
         # ── trt_L3–L6: four Conv3D blocks (inside self.model) ──
         with torch.amp.autocast(device_type=device_type, enabled=self.enable_fp16):
             logits = self.model(trainX)
@@ -1811,6 +1815,10 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
             raise ValueError(f"Unsupported measurement basis: {cfg.meas_basis}")
 
         # === Model forward ===
+        # Match the eval input layout to a channels_last_3d model so half-precision
+        # Conv3D stays on the fast Tensor-Core kernel (no-op for contiguous models).
+        from training.precision import match_input_to_model_memory_format
+        trainX = match_input_to_model_memory_format(trainX, model)
         autocast_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
             logits = model(trainX)

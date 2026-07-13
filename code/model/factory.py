@@ -23,16 +23,32 @@ class ModelFactory:
 
     @staticmethod
     def create_model(cfg):
-        if cfg.code == "surface":
+        # Phase A: allow training the same predecoder model on either surface or color data.
+        # The architectures are grid-based Conv3D and don't inherently require a square (d x d) lattice.
+        code_name = str(getattr(cfg, "code", "surface")).lower()
+        if code_name == "surface" or code_name == "surface_partition" or code_name.startswith(
+            "color"
+        ):
             return ModelFactory._create_surface_model(cfg)
-        else:
-            raise ValueError("Invalid model name")
+        raise ValueError(f"Invalid cfg.code={cfg.code!r} for model creation")
 
     @staticmethod
     def _create_surface_model(cfg):
         if cfg.model.version == "predecoder_memory_v1":
             from model.predecoder import PreDecoderModelMemory_v1
             model = PreDecoderModelMemory_v1(cfg)
+            return model
+        elif cfg.model.version == "predecoder_memory_v2":
+            from model.predecoder import PreDecoderModelMemory_v2
+            model = PreDecoderModelMemory_v2(cfg)
+            return model
+        elif cfg.model.version == "predecoder_memory_v3_natten":
+            from model.predecoder import PreDecoderModelMemory_v3
+            model = PreDecoderModelMemory_v3(cfg)
+            return model
+        elif cfg.model.version == "predecoder_memory_cascade":
+            from model.predecoder import PreDecoderModelMemory_Cascade
+            model = PreDecoderModelMemory_Cascade(cfg)
             return model
         else:
             raise ValueError(f"Invalid model version: {cfg.model.version}")

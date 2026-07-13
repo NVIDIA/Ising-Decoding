@@ -176,7 +176,7 @@ class MemoryCircuitTorch:
                 raise FileNotFoundError(
                     f"Missing DEM artifacts for this basis in {str(d)!r}. Expected:\n"
                     f"  - {hx_path.name}\n  - {hz_path.name}\n  - {p_path.name}\n"
-                    f"(Generate via precompute_frames.py with --dem_output_dir {str(d)!r}.)"
+                    f"(Generate via `python -m qec.precompute_dem --dem_output_dir {str(d)!r}`.)"
                 )
             if not A_path.exists():
                 A_path = None

@@ -17,6 +17,9 @@ Data generation and loading modules.
 
 Contains:
 - factory: Factory for creating data loaders and datapipes
+- generator_torch: Torch on-the-fly surface-code data generator (QCDataGeneratorTorch)
+- generator_torch_color: Torch on-the-fly color-code data generator
+- generator_torch_multi: Multi-pair (distance, n_rounds) round-robin Torch generator
 - datapipe_stim: Stim-based datapipe for inference
 """
 from data.factory import DatapipeFactory

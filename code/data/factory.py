@@ -21,22 +21,22 @@ import os
 
 import torch
 
-_STIM_INFERENCE_DATAPIPE_PRINTED = False
-
 
 class DatapipeFactory:
     """
     Factory for creating datapipes.
     
-    Training: Uses on-the-fly generation (train.py creates generators directly)
-    Inference: Uses Stim-based QCDataPipePreDecoder_Memory_inference
+    Training: Uses Torch on-the-fly generation in training.train
+    Inference: Uses Stim-based datapipes
     """
 
     @staticmethod
     def create_datapipe(cfg):
-        """Create datapipe for training - returns None to signal generator mode."""
+        """Create datapipe for training - always returns None for on-the-fly mode."""
         if cfg.code == "surface":
             return DatapipeFactory._create_surface_datapipe(cfg)
+        elif cfg.code == "color":
+            return DatapipeFactory._create_color_datapipe(cfg)
         else:
             raise ValueError("Invalid datapipe code")
 
@@ -45,6 +45,8 @@ class DatapipeFactory:
         """Create datapipe for inference using Stim."""
         if cfg.code == "surface":
             return DatapipeFactory._create_surface_datapipe_inference(cfg)
+        elif cfg.code == "color":
+            return DatapipeFactory._create_color_datapipe_inference(cfg)
         else:
             raise ValueError("Invalid datapipe code")
 
@@ -53,11 +55,20 @@ class DatapipeFactory:
         """
         Datapipe for training - on-the-fly generation only.
         
-        Returns (None, None) to signal generator mode - train.py will create
-        generators directly.
+        Returns (None, None) to signal on-the-fly mode - train.py will create
+        the generators directly.
         """
         if cfg.datapipe == "memory":
+            # On-the-fly data generation
             # No datasets needed - will create generators directly in train.py
+            return None, None
+        else:
+            raise ValueError(f"Datapipe not implemented: {cfg.datapipe}")
+
+    @staticmethod
+    def _create_color_datapipe(cfg):
+        """Color training data is generated directly by training.train."""
+        if cfg.datapipe == "memory":
             return None, None
         else:
             raise ValueError(f"Datapipe not implemented: {cfg.datapipe}")
@@ -72,46 +83,28 @@ class DatapipeFactory:
                 QCDataPipePreDecoder_Memory_from_stim_file,
                 QCDataPipePreDecoder_Memory_inference,
             )
-            from qec.noise_model import NoiseModel
+            from qec.noise_model import resolve_test_noise_model
 
             error_mode_value = getattr(cfg.data, 'error_mode', 'circuit_level_surface_custom')
             code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
-            # Test-time noise model selection:
-            # - cfg.test.noise_model='train': use cfg.data.noise_model (if present)
-            # - cfg.test.noise_model='none': ignore cfg.data.noise_model, use cfg.test.p_error (single-p)
-            # Takes priority over cfg.test.p_error.
-            test_nm_mode = getattr(getattr(cfg, "test", None), "noise_model", None)
-            if test_nm_mode is None:
-                # Backwards-compat default: use training noise model if specified, else none.
-                test_nm_mode = "train"
-            test_nm_mode = str(test_nm_mode).lower()
+            noise_model_obj, test_nm_mode = resolve_test_noise_model(cfg)
 
-            noise_model_obj = None
-            if test_nm_mode == "train":
-                noise_model_cfg = getattr(cfg.data, "noise_model", None)
-                if noise_model_cfg is not None:
-                    from omegaconf import OmegaConf
-                    nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True) if hasattr(
-                        noise_model_cfg, "items"
-                    ) else noise_model_cfg
-                    if nm_dict is not None:
-                        noise_model_obj = NoiseModel.from_config_dict(dict(nm_dict))
-            elif test_nm_mode == "none":
-                noise_model_obj = None
-            else:
-                raise ValueError(
-                    f"Invalid cfg.test.noise_model={test_nm_mode!r} (expected 'train' or 'none')"
-                )
+            # Only print from rank 0 in distributed settings
+            try:
+                import torch.distributed as dist
+                rank = dist.get_rank() if dist.is_initialized() else 0
+            except:
+                rank = 0
 
-            # Fail fast: if the user provided an explicit 25p noise model and asked to use it,
-            # do not silently fall back to p_error-based generation.
-            if test_nm_mode == "train" and getattr(
-                cfg.data, "noise_model", None
-            ) is not None and noise_model_obj is None:
-                raise ValueError(
-                    "cfg.test.noise_model='train' but failed to construct NoiseModel from cfg.data.noise_model. "
-                    "Refusing to fall back to cfg.test.p_error."
+            if rank == 0:
+                print(
+                    f"Creating Stim inference datapipe: d={cfg.distance}, n_rounds={cfg.n_rounds}, "
+                    f"num_samples={cfg.test.num_samples}, error_mode={error_mode_value}, "
+                    f"test.noise_model={test_nm_mode}, p_error={cfg.test.p_error}, "
+                    f"measure_basis={cfg.test.meas_basis_test}, code_rotation={code_rotation}"
                 )
+                if noise_model_obj is not None:
+                    print(f"[Inference] Using explicit noise_model (25p): {noise_model_obj!r}")
 
             stim_samples_dir = os.environ.get("PREDECODER_STIM_SAMPLES_DIR", "").strip()
             if not stim_samples_dir:
@@ -150,3 +143,117 @@ class DatapipeFactory:
             return test_dataset
         else:
             raise ValueError(f"Datapipe not implemented: {cfg.datapipe}")
+
+    @staticmethod
+    def _create_color_datapipe_inference(cfg):
+        """Datapipe for color-code inference/testing using Stim + Chromobius-compatible circuits."""
+        if cfg.datapipe == "memory":
+            from data.datapipe_stim_color import QCDataPipePreDecoder_ColorCode_inference
+            from qec.noise_model import (
+                normalize_noise_instruction_semantics,
+                normalize_noise_model_family,
+                resolve_test_noise_model,
+            )
+
+            test_cfg = getattr(cfg, "test", None)
+            family = normalize_noise_model_family(
+                getattr(test_cfg, "noise_model_family", None),
+                fallback_noise_mode=getattr(test_cfg, "noise_mode", None),
+            )
+            semantics = normalize_noise_instruction_semantics(
+                getattr(test_cfg, "noise_instruction_semantics", None)
+            )
+            gidney_style_noise = bool(getattr(test_cfg, "gidney_style_noise", False))
+            if semantics == "reference":
+                noise_model_obj = None
+                test_nm_mode = "reference"
+            else:
+                noise_model_obj, test_nm_mode = resolve_test_noise_model(cfg)
+
+            schedule = getattr(cfg.data, "schedule", "nearest-neighbor")
+            error_mode_value = getattr(cfg.data, 'error_mode', 'circuit_level_color_code')
+
+            try:
+                import torch.distributed as dist
+                rank = dist.get_rank() if dist.is_initialized() else 0
+            except:
+                rank = 0
+
+            if rank == 0:
+                print(
+                    f"Creating color Stim inference datapipe: d={cfg.distance}, "
+                    f"n_rounds={cfg.n_rounds}, num_samples={cfg.test.num_samples}, "
+                    f"error_mode={error_mode_value}, test.noise_model={test_nm_mode}, "
+                    f"p_error={cfg.test.p_error}, measure_basis={cfg.test.meas_basis_test}, "
+                    f"schedule={schedule}, noise_family={family}, semantics={semantics}"
+                )
+                if noise_model_obj is not None:
+                    print(
+                        f"[Color Inference] Using explicit noise_model (25p): "
+                        f"{noise_model_obj!r}"
+                    )
+
+            return QCDataPipePreDecoder_ColorCode_inference(
+                distance=cfg.distance,
+                n_rounds=cfg.n_rounds,
+                num_samples=cfg.test.num_samples,
+                error_mode=error_mode_value,
+                p_error=cfg.test.p_error,
+                measure_basis=cfg.test.meas_basis_test,
+                noise_model=noise_model_obj,
+                gidney_style_noise=gidney_style_noise,
+                noise_model_family=family,
+                noise_instruction_semantics=semantics,
+                schedule=schedule,
+            )
+        else:
+            raise ValueError(f"Datapipe not implemented: {cfg.datapipe}")
+
+
+# Utility function for debugging
+def inspect_sample(sample, label: str):
+    """
+    Inspect a sample from the datapipe for debugging.
+    
+    Args:
+        sample: dict from the datapipe with keys 'x_syn_diff', 'z_syn_diff', 'trainX'
+        label: "X" or "Z" (what we expect for this sample)
+    """
+    x_syn_diff = sample["x_syn_diff"]  # (Sx, T) int32
+    z_syn_diff = sample["z_syn_diff"]  # (Sz, T) int32
+    trainX = sample["trainX"]  # (4, T, D, D) float32
+
+    assert trainX.ndim == 4 and trainX.shape[0] == 4, f"Unexpected trainX shape: {trainX.shape}"
+    assert trainX.dtype == torch.float32, f"Unexpected dtype for trainX: {trainX.dtype}"
+    C, T, D, _ = trainX.shape
+
+    # Channels: [0]=x_type, [1]=z_type, [2]=x_present, [3]=z_present
+    x_type = trainX[0]
+    z_type = trainX[1]
+    x_pres = trainX[2]
+    z_pres = trainX[3]
+
+    # Basis masks for sanity
+    mask_is_X = (z_pres[-1] == 0).all().item()
+    mask_is_Z = (x_pres[-1] == 0).all().item()
+
+    print(f"\n=== Sample ({label}) ===")
+    print(f"trainX: shape={tuple(trainX.shape)}, dtype={trainX.dtype}")
+    print(f"x_syn_diff (Sx,T) shape={tuple(x_syn_diff.shape)}, dtype={x_syn_diff.dtype}")
+    print(f"z_syn_diff (Sz,T) shape={tuple(z_syn_diff.shape)}, dtype={z_syn_diff.dtype}")
+
+    # Sanity checks against expected basis
+    if label == "X":
+        assert mask_is_X and not mask_is_Z, "Expected X-basis sample: z_present last round should be zeros."
+    else:
+        assert mask_is_Z and not mask_is_X, "Expected Z-basis sample: x_present last round should be zeros."
+
+    # Basic shape expectations
+    Sx, T_x = x_syn_diff.shape
+    Sz, T_z = z_syn_diff.shape
+    assert T_x == T_z == T, "Time dimension mismatch between syn diffs and trainX."
+    expected_half = (D * D - 1) // 2
+    assert Sx == expected_half and Sz == expected_half, \
+        f"Unexpected stabilizer count: Sx={Sx}, Sz={Sz}, expected={expected_half}"
+
+    print("OK ✓")

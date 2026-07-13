@@ -489,6 +489,80 @@ class TestHEKernelGPU(unittest.TestCase):
             "compiled parallel X output diverged from eager parallel",
         )
 
+    def test_parallel_spacelike_compiled_off_thread(self):
+        """Regression: the compiled HE must run when first invoked from a
+        background (non-main) thread.
+
+        In training the HE runs inside the data generator's prefetch thread (a
+        ``ThreadPoolExecutor`` in ``train_epoch``). CUDA-graph compile modes
+        (``reduce-overhead`` / cudagraphs) keep their tree manager in
+        thread-local storage and assert that TLS key is present
+        (``torch/_inductor/cudagraph_trees.py``), which fails off the main
+        thread -> ``data.use_compile=True`` crashed. The HE compiles use a
+        non-cudagraph mode so the first compiled call is safe off-thread.
+        """
+        import concurrent.futures as cf
+        from qec.surface_code import homological_equivalence_torch as he
+        from qec.surface_code.memory_circuit import SurfaceCode
+        from qec.surface_code.homological_equivalence_torch import (
+            apply_homological_equivalence_torch_vmap,
+            build_spacelike_he_cache,
+        )
+
+        # Lock in the cudagraph-free compile mode (the actual fix).
+        self.assertNotIn(
+            he._HE_COMPILE_MODE,
+            ("reduce-overhead", "max-autotune"),
+            "HE compile mode must stay cudagraph-free so it is safe in the "
+            "data-generator prefetch thread",
+        )
+        # Force the first compile to happen inside the worker thread below.
+        for _name in dir(he):
+            if _name.startswith("_compiled_") and _name.endswith("_cache"):
+                getattr(he, _name).clear()
+
+        code = SurfaceCode(self.distance, first_bulk_syndrome_type="X", rotated_type="V")
+        parity_X = torch.tensor(code.hx, dtype=torch.uint8, device=self.device)
+        parity_Z = torch.tensor(code.hz, dtype=torch.uint8, device=self.device)
+        cache_X = build_spacelike_he_cache(
+            parity_X, distance=self.distance, basis="X", device=self.device
+        )
+        cache_Z = build_spacelike_he_cache(
+            parity_Z, distance=self.distance, basis="Z", device=self.device
+        )
+
+        B, D2, R = 2, self.distance**2, self.n_rounds
+        torch.manual_seed(2027)
+        z_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+        x_in = torch.randint(0, 2, (B, R, D2), dtype=torch.uint8, device=self.device)
+
+        def _run(use_compile):
+            return apply_homological_equivalence_torch_vmap(
+                z_in,
+                x_in,
+                parity_Z,
+                parity_X,
+                self.distance,
+                cache_Z=cache_Z,
+                cache_X=cache_X,
+                use_compile=use_compile,
+                use_parallel_spacelike=True,
+            )
+
+        z_eager, x_eager = _run(False)
+        # First compiled call runs in a worker thread (mirrors the prefetch path).
+        with cf.ThreadPoolExecutor(max_workers=1) as ex:
+            z_out, x_out = ex.submit(_run, True).result()
+
+        self.assertTrue(
+            torch.equal(z_eager, z_out),
+            "compiled-in-thread Z output diverged from eager parallel",
+        )
+        self.assertTrue(
+            torch.equal(x_eager, x_out),
+            "compiled-in-thread X output diverged from eager parallel",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Oracle predecoder residuals on GPU

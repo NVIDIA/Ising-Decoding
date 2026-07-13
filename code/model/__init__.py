@@ -17,13 +17,12 @@ Neural network model definitions.
 
 Contains:
 - factory: Factory for creating models from config
-- predecoder: Pre-decoder model architectures (PreDecoderModelMemory_v1)
+- predecoder: Pre-decoder model architectures
 """
 from model.factory import ModelFactory
-
-# Import predecoder models lazily to avoid hard dependency on optional training
-# stacks (e.g., physicsnemo) during lightweight config validation.
-try:
-    from model.predecoder import PreDecoderModelMemory_v1
-except ModuleNotFoundError:
-    PreDecoderModelMemory_v1 = None
+from model.predecoder import (
+    PreDecoderModelMemory_Cascade,
+    PreDecoderModelMemory_v1,
+    PreDecoderModelMemory_v2,
+    PreDecoderModelMemory_v3,
+)

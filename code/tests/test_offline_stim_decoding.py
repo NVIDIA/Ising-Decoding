@@ -431,9 +431,9 @@ class TestStimSampleFileContract(unittest.TestCase):
         """The in-memory datapipe computes its tensors from the raw
         measurement record, but Stim's m2d converter is supposed to give the
         same syndromes after XOR'ing. Round-trip its `dets_and_obs` through
-        the canonical helper and assert numerical equality with its own
-        precomputed tensors. Catches any drift between the in-memory pipe and
-        the file pipe.
+        the canonical helper and assert numerical equality with the per-sample
+        examples the pipe yields from `__getitem__`. Catches any drift between
+        the in-memory pipe (SurfaceDetectorInputTransform) and the file pipe.
         """
         for basis in ("X", "Z"):
             with self.subTest(basis=basis):
@@ -456,9 +456,15 @@ class TestStimSampleFileContract(unittest.TestCase):
                     basis=basis,
                     code_rotation="XV",
                 )
-                self.assertTrue(torch.equal(x_syn, pipe.x_syn_diff_all))
-                self.assertTrue(torch.equal(z_syn, pipe.z_syn_diff_all))
-                self.assertTrue(torch.equal(train_x, pipe.trainX_all))
+                # The refactored in-memory pipe builds examples lazily in
+                # __getitem__ rather than exposing precomputed batch tensors,
+                # so stack the per-sample outputs back into batched form.
+                pipe_x = torch.stack([pipe[i]["x_syn_diff"] for i in range(len(pipe))])
+                pipe_z = torch.stack([pipe[i]["z_syn_diff"] for i in range(len(pipe))])
+                pipe_train_x = torch.stack([pipe[i]["trainX"] for i in range(len(pipe))])
+                self.assertTrue(torch.equal(x_syn, pipe_x.to(x_syn.dtype)))
+                self.assertTrue(torch.equal(z_syn, pipe_z.to(z_syn.dtype)))
+                self.assertTrue(torch.equal(train_x, pipe_train_x.to(train_x.dtype)))
 
     def test_metadata_mismatches_are_explicit(self):
         with tempfile.TemporaryDirectory() as tmp:

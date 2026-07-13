@@ -25,12 +25,16 @@ Outputs (in --dem_output_dir):
   - surface_d{d}_r{r}_{basis}_frame_predecoder.Z.npz  : HZ (num_detectors, num_errors) uint8
   - surface_d{d}_r{r}_{basis}_frame_predecoder.p.npz  : p  (num_errors,) float32 (single-p marginal)
   - surface_d{d}_r{r}_{basis}_frame_predecoder.A.npz  : A  (n_rounds*num_meas, 2*num_detectors) uint8
+
+For `--code color`, this exports an augmented DEM bundle with rows for
+predecoder data frames, physical measurements, and s1/s2 measurements.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
@@ -997,12 +1001,1136 @@ def precompute_dem_bundle_surface_code(
     return Path(".")
 
 
+# =============================================================================
+# Color-code augmented DEM export (Torch recurrence)
+# =============================================================================
+
+COLOR_AUGMENTED_DEM_METADATA_VERSION = 1
+COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES = 2 * 1024**3
+
+
+@dataclass(frozen=True)
+class ColorAugmentedDemBundle:
+    """Dense augmented color-code response matrix and row layout metadata."""
+
+    H: torch.Tensor
+    n_rounds: int
+    num_local_errors: int
+    num_data: int
+    num_meas: int
+    num_z: int
+    num_x: int
+    frame_rows: int
+    meas_old_rows: int
+    meas_new_rows: int
+    use_decomposed_errors: bool
+
+    @property
+    def num_rows(self) -> int:
+        return int(self.H.shape[0])
+
+    @property
+    def num_cols(self) -> int:
+        return int(self.H.shape[1])
+
+
+def color_augmented_dem_prefix(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+) -> str:
+    """Stable artifact prefix for color-code augmented DEM bundles."""
+    schedule_tag = str(schedule).replace("/", "_").replace(" ", "_")
+    return f"color_d{int(distance)}_r{int(n_rounds)}_{str(basis).upper()}_{schedule_tag}_augmented_dem"
+
+
+def get_color_augmented_dem_paths(
+    dem_dir: str | Path,
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+) -> dict[str, Path]:
+    """Return H/p artifact paths for a color-code augmented DEM bundle."""
+    base = Path(dem_dir)
+    prefix = color_augmented_dem_prefix(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+    )
+    return {
+        "H": base / f"{prefix}.H.npz",
+        "p": base / f"{prefix}.p.npz",
+    }
+
+
+def color_augmented_dem_artifacts_exist(
+    dem_dir: str | Path,
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+) -> bool:
+    paths = get_color_augmented_dem_paths(
+        dem_dir,
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+    )
+    return all(path.exists() for path in paths.values())
+
+
+def build_color_augmented_dem_metadata(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+    p_scalar: float,
+    enable_z_feedforward: bool,
+    apply_data_x_override: bool,
+    use_decomposed_errors: bool,
+    noise_model=None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "schema_version": COLOR_AUGMENTED_DEM_METADATA_VERSION,
+        "code": "color",
+        "distance": int(distance),
+        "n_rounds": int(n_rounds),
+        "basis": str(basis).upper(),
+        "schedule": str(schedule),
+        "enable_z_feedforward": bool(enable_z_feedforward),
+        "apply_data_x_override": bool(apply_data_x_override),
+        "use_decomposed_errors": bool(use_decomposed_errors),
+    }
+    if noise_model is None:
+        metadata.update({
+            "noise_mode": "scalar",
+            "p_scalar": float(p_scalar),
+        })
+    else:
+        metadata.update(
+            {
+                "noise_mode": "noise_model",
+                "p_scalar_placeholder": float(p_scalar),
+                "noise_model_sha256": noise_model.sha256(),
+                "noise_model": noise_model.canonical_parameters(),
+            }
+        )
+    return metadata
+
+
+def _color_metadata_matches(
+    metadata: dict[str, Any] | None,
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+    enable_z_feedforward: bool,
+    apply_data_x_override: bool,
+    use_decomposed_errors: bool,
+) -> tuple[bool, str]:
+    if metadata is None:
+        return False, "missing color augmented DEM metadata"
+    # Structural keys identify whether cached H artifacts can be reused; the
+    # probability vector encodes its own noise mode separately, so we don't
+    # require noise_mode to match here.
+    expected = build_color_augmented_dem_metadata(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+        p_scalar=float(metadata.get("p_scalar", 0.0)),
+        enable_z_feedforward=enable_z_feedforward,
+        apply_data_x_override=apply_data_x_override,
+        use_decomposed_errors=use_decomposed_errors,
+    )
+    for key in (
+        "schema_version",
+        "code",
+        "distance",
+        "n_rounds",
+        "basis",
+        "schedule",
+        "enable_z_feedforward",
+        "apply_data_x_override",
+        "use_decomposed_errors",
+    ):
+        if metadata.get(key) != expected.get(key):
+            return False, f"metadata {key}={metadata.get(key)!r} != expected {expected.get(key)!r}"
+    return True, "color augmented DEM metadata matches"
+
+
+def _color_global_col(round_idx: int, local_error_idx: int, num_local_errors: int) -> int:
+    if int(local_error_idx) <= 0:
+        return 0
+    return 1 + int(round_idx) * (int(num_local_errors) - 1) + (int(local_error_idx) - 1)
+
+
+def _flatten_color_augmented_rows(
+    frame_data: torch.Tensor,
+    meas_old: torch.Tensor,
+    meas_new: torch.Tensor,
+) -> torch.Tensor:
+    """Flatten Torch raw outputs from (batch, rounds, ...) into (batch, rows)."""
+    batch = int(frame_data.shape[0])
+    return torch.cat(
+        [
+            frame_data.reshape(batch, -1),
+            meas_old.reshape(batch, -1),
+            meas_new.reshape(batch, -1),
+        ],
+        dim=1,
+    ).to(dtype=torch.uint8)
+
+
+def build_circuit_z_ancilla_connectivity_matrix(
+    *,
+    controls: np.ndarray,
+    targets: np.ndarray,
+    data_qubits: np.ndarray,
+    zcheck_qubits: np.ndarray,
+    nq: int,
+) -> np.ndarray:
+    """Build the Z-check ancilla to data-qubit feedforward matrix."""
+    zcheck_np = np.array(zcheck_qubits, dtype=np.int32).reshape(-1)
+    data_np = np.array(data_qubits, dtype=np.int32).reshape(-1)
+    mat = np.zeros((zcheck_np.size, int(nq)), dtype=np.uint8)
+    if zcheck_np.size == 0 or data_np.size == 0:
+        return mat
+
+    z_to_row = {int(z): i for i, z in enumerate(zcheck_np.tolist())}
+    data_set = set(int(q) for q in data_np.tolist())
+
+    c = np.array(controls, dtype=np.int32).reshape(-1)
+    t = np.array(targets, dtype=np.int32).reshape(-1)
+    valid = (c >= 0) & (t >= 0)
+    c = c[valid]
+    t = t[valid]
+
+    for cq, tq in zip(c.tolist(), t.tolist()):
+        cq = int(cq)
+        tq = int(tq)
+        if cq in z_to_row and tq in data_set:
+            mat[z_to_row[cq], tq] = 1
+        elif tq in z_to_row and cq in data_set:
+            mat[z_to_row[tq], cq] = 1
+
+    return mat
+
+
+def _torch_zero_qubits(frame: torch.Tensor, qubits: np.ndarray | torch.Tensor) -> torch.Tensor:
+    out = frame.clone()
+    q = torch.as_tensor(qubits, dtype=torch.long, device=frame.device).reshape(-1)
+    if q.numel() > 0:
+        out[:, q, :] = 0
+    return out
+
+
+def _torch_apply_data_x_override(
+    frame_total: torch.Tensor,
+    sampled_frame_full: torch.Tensor,
+    rep_carry_data_x: torch.Tensor,
+    x_flip_sampled: torch.Tensor,
+    data_qubits: np.ndarray | torch.Tensor,
+) -> torch.Tensor:
+    data_q = torch.as_tensor(data_qubits, dtype=torch.long, device=frame_total.device).reshape(-1)
+    sampled_x = sampled_frame_full.index_select(1, data_q)[:, :, 0].to(torch.uint8)
+    data_x = rep_carry_data_x.to(torch.uint8) ^ sampled_x ^ x_flip_sampled.to(torch.uint8)
+    out = frame_total.clone()
+    out[:, data_q, 0] = data_x
+    return out
+
+
+@torch.no_grad()
+def _torch_run_batched_shots_with_injected_errors(
+    sampled_indices_per_shot: torch.Tensor | np.ndarray,
+    frame: torch.Tensor,
+    keep: torch.Tensor,
+    *,
+    buffer_size: int = 64,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Aggregate explicit local error indices into predecoder/out frames."""
+    dev = frame.device
+    idx = torch.as_tensor(sampled_indices_per_shot, dtype=torch.long, device=dev)
+    if idx.ndim == 1:
+        idx = idx[:, None]
+    if idx.ndim != 2:
+        raise ValueError("sampled_indices_per_shot must have shape (batch, slots)")
+
+    buffer_size = max(1, int(buffer_size))
+    if int(idx.shape[1]) > buffer_size:
+        raise ValueError(
+            f"sampled_indices_per_shot has {int(idx.shape[1])} slots, "
+            f"but buffer_size={buffer_size}; increase buffer_size rather than truncating faults"
+        )
+
+    active = idx > 0
+    safe_idx = torch.where(active, idx, torch.zeros_like(idx))
+    batch, slots = int(safe_idx.shape[0]), int(safe_idx.shape[1])
+
+    shot_frames = frame.index_select(0, safe_idx.reshape(-1)
+                                    ).reshape(batch, slots, int(frame.shape[1]), 2)
+    active_w = active.to(torch.uint8).view(batch, slots, 1, 1)
+    keep_w = keep.index_select(0, safe_idx.reshape(-1)).reshape(batch, slots)
+    keep_w = keep_w.to(torch.uint8).view(batch, slots, 1, 1)
+
+    predecoder_frame = torch.remainder(
+        (shot_frames * active_w * keep_w).sum(dim=1, dtype=torch.int32),
+        2,
+    ).to(torch.uint8)
+    out_frame = torch.remainder(
+        (shot_frames * active_w).sum(dim=1, dtype=torch.int32),
+        2,
+    ).to(torch.uint8)
+    return predecoder_frame, out_frame
+
+
+@torch.no_grad()
+def _torch_run_color_rounds_with_injected_errors(
+    sampled_indices_per_round: torch.Tensor | np.ndarray,
+    frame: torch.Tensor,
+    keep: torch.Tensor,
+    data_qubits: np.ndarray,
+    meas_qubits_per_round: np.ndarray,
+    meas_bases_per_round: np.ndarray,
+    controls: np.ndarray,
+    targets: np.ndarray,
+    *,
+    buffer_size: int = 64,
+    feedforward_mask: np.ndarray | None = None,
+    apply_data_x_override: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Torch port of the color-code injected-error multi-round recurrence."""
+    dev = frame.device
+    sampled = torch.as_tensor(sampled_indices_per_round, dtype=torch.long, device=dev)
+    if sampled.ndim != 3:
+        raise ValueError("sampled_indices_per_round must have shape (rounds, batch, slots)")
+
+    n_rounds = int(sampled.shape[0])
+    num_shots = int(sampled.shape[1])
+    num_qubits = int(frame.shape[1])
+
+    data_q = torch.as_tensor(data_qubits, dtype=torch.long, device=dev).reshape(-1)
+    controls_t = torch.as_tensor(controls, dtype=torch.long, device=dev)
+    targets_t = torch.as_tensor(targets, dtype=torch.long, device=dev)
+
+    has_feedforward = feedforward_mask is not None
+    ff_parity_data = None
+    num_z = 0
+    if has_feedforward:
+        ff_mask = torch.as_tensor(feedforward_mask, dtype=torch.uint8, device=dev)
+        num_z = int(ff_mask.shape[0])
+        num_data = int(data_q.numel())
+        if int(ff_mask.shape[1]) == num_qubits:
+            ff_parity_data = ff_mask.index_select(1, data_q)
+        elif int(ff_mask.shape[1]) == num_data:
+            ff_parity_data = ff_mask
+        else:
+            raise ValueError(
+                f"feedforward_mask shape {tuple(ff_mask.shape)} unsupported; "
+                f"expected ({num_z},{num_qubits}) or ({num_z},{num_data})"
+            )
+
+    meas_qubits_per_round = np.asarray(meas_qubits_per_round, dtype=np.int32)
+    meas_bases_per_round = np.asarray(meas_bases_per_round, dtype=np.int32)
+
+    physical_carry = torch.zeros((num_shots, num_qubits, 2), dtype=torch.uint8, device=dev)
+    rep_carry_data_x = torch.zeros((num_shots, int(data_q.numel())), dtype=torch.uint8, device=dev)
+
+    frame_outputs: list[torch.Tensor] = []
+    meas_old_outputs: list[torch.Tensor] = []
+    meas_new_outputs: list[torch.Tensor] = []
+
+    for round_idx in range(n_rounds):
+        meas_q_np = meas_qubits_per_round[round_idx].reshape(-1)
+        meas_b_np = meas_bases_per_round[round_idx].reshape(-1)
+
+        accumulated_frame = propagate_frame_one_round_torch(
+            physical_carry.clone(),
+            controls_t,
+            targets_t,
+        )
+        predecoder_frame_full, out_frame_full = _torch_run_batched_shots_with_injected_errors(
+            sampled[round_idx],
+            frame,
+            keep,
+            buffer_size=buffer_size,
+        )
+
+        predecoder_frame_total = predecoder_frame_full ^ accumulated_frame
+        out_frame_total = out_frame_full ^ accumulated_frame
+
+        out_m = _torch_measure(out_frame_total, meas_q_np, meas_b_np)
+
+        x_flip_sampled = torch.zeros_like(rep_carry_data_x, dtype=torch.uint8)
+        if has_feedforward and num_z > 0 and ff_parity_data is not None:
+            out_m_z = _torch_measure(out_frame_total, meas_q_np[:num_z], meas_b_np[:num_z])
+            x_flip_counts = (out_m_z.to(torch.float32) @ ff_parity_data.to(torch.float32))
+            x_flip_data = torch.remainder(x_flip_counts.to(torch.int64), 2).to(torch.uint8)
+
+            if apply_data_x_override:
+                out_m_z_sampled = _torch_measure(
+                    predecoder_frame_full,
+                    meas_q_np[:num_z],
+                    meas_b_np[:num_z],
+                )
+                x_flip_sampled_counts = (
+                    out_m_z_sampled.to(torch.float32) @ ff_parity_data.to(torch.float32)
+                )
+                x_flip_sampled = torch.remainder(x_flip_sampled_counts.to(torch.int64),
+                                                 2).to(torch.uint8)
+
+            x_flip_full = torch.zeros((num_shots, num_qubits), dtype=torch.uint8, device=dev)
+            x_flip_full[:, data_q] = x_flip_data
+            predecoder_frame_total = predecoder_frame_total.clone()
+            out_frame_total = out_frame_total.clone()
+            predecoder_frame_total[:, :, 0] ^= x_flip_full
+            out_frame_total[:, :, 0] ^= x_flip_full
+
+        out_frame_total_physical = out_frame_total
+
+        out_m_kept = _torch_measure(predecoder_frame_total, meas_q_np, meas_b_np)
+        predecoder_carry = _torch_zero_qubits(predecoder_frame_total, meas_q_np)
+        predecoder_carry_propagated = propagate_frame_one_round_torch(
+            predecoder_carry,
+            controls_t,
+            targets_t,
+        )
+        new_out_m_kept = _torch_measure(predecoder_carry_propagated, meas_q_np, meas_b_np)
+        new_out_m = new_out_m_kept ^ out_m_kept
+
+        if apply_data_x_override:
+            predecoder_frame_total = _torch_apply_data_x_override(
+                predecoder_frame_total,
+                predecoder_frame_full,
+                rep_carry_data_x,
+                x_flip_sampled,
+                data_q,
+            )
+            out_frame_total = _torch_apply_data_x_override(
+                out_frame_total,
+                out_frame_full,
+                rep_carry_data_x,
+                x_flip_sampled,
+                data_q,
+            )
+
+        frame_outputs.append(predecoder_frame_total.index_select(1, data_q))
+        meas_old_outputs.append(out_m)
+        meas_new_outputs.append(new_out_m)
+
+        if apply_data_x_override:
+            physical_carry = _torch_zero_qubits(out_frame_total_physical, meas_q_np)
+            rep_carry_data_x = out_frame_total.index_select(1, data_q)[:, :, 0].to(torch.uint8)
+        else:
+            physical_carry = _torch_zero_qubits(out_frame_total, meas_q_np)
+            rep_carry_data_x = torch.zeros_like(rep_carry_data_x, dtype=torch.uint8)
+
+    return (
+        torch.stack(frame_outputs, dim=1).to(torch.uint8),
+        torch.stack(meas_old_outputs, dim=1).to(torch.uint8),
+        torch.stack(meas_new_outputs, dim=1).to(torch.uint8),
+    )
+
+
+def _build_color_sampled_indices_for_columns(
+    *,
+    columns: list[tuple[int, int]],
+    n_rounds: int,
+    buffer_size: int,
+) -> np.ndarray:
+    sampled = np.zeros(
+        (int(n_rounds), len(columns), max(1, int(buffer_size))),
+        dtype=np.int32,
+    )
+    for shot_idx, (round_idx, local_error_idx) in enumerate(columns):
+        if int(local_error_idx) > 0:
+            sampled[int(round_idx), shot_idx, 0] = int(local_error_idx)
+    return sampled
+
+
+def _build_color_memory_circuit(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+    p_scalar: float,
+):
+    from qec.color_code.memory_circuit import MemoryCircuit
+
+    return MemoryCircuit(
+        distance=int(distance),
+        idle_error=float(p_scalar),
+        sqgate_error=float(p_scalar),
+        tqgate_error=float(p_scalar),
+        spam_error=(2.0 / 3.0) * float(p_scalar),
+        n_rounds=int(n_rounds),
+        basis=str(basis).upper(),
+        add_tick=True,
+        add_detectors=False,
+        noise_model=None,
+        schedule=str(schedule),
+    )
+
+
+def _extract_color_round_layout(
+    *,
+    circ,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str,
+) -> dict[str, Any]:
+    circuit_text = str(circ.circuit)
+    if "REPEAT" not in circuit_text:
+        tmp_circ = _build_color_memory_circuit(
+            distance=distance,
+            n_rounds=3,
+            basis=basis,
+            schedule=schedule,
+            p_scalar=0.0,
+        )
+        circuit_text = str(tmp_circ.circuit)
+
+    cnot_circuit, cx_times = extract_cnot_structure_from_stim_text(circuit_text)
+    t_total = int(len(cx_times) + 2)
+    nq = int(np.asarray(circ.code.all_qubits).size)
+
+    data_qubits = np.array(circ.code.data_qubits, dtype=np.int32).reshape(-1)
+    xcheck_qubits = np.array(circ.code.xcheck_qubits, dtype=np.int32).reshape(-1)
+    zcheck_qubits = np.array(circ.code.zcheck_qubits, dtype=np.int32).reshape(-1)
+    meas_qubits = np.concatenate([zcheck_qubits, xcheck_qubits]).astype(np.int32)
+    meas_bases = np.concatenate(
+        [
+            np.ones(len(zcheck_qubits), dtype=np.int32),
+            np.zeros(len(xcheck_qubits), dtype=np.int32),
+        ]
+    ).astype(np.int32)
+
+    return {
+        "cnot_circuit": cnot_circuit,
+        "cx_times": cx_times,
+        "t_total": t_total,
+        "nq": nq,
+        "data_qubits": data_qubits,
+        "xcheck_qubits": xcheck_qubits,
+        "zcheck_qubits": zcheck_qubits,
+        "meas_qubits": meas_qubits,
+        "meas_bases": meas_bases,
+        "meas_qubits_per_round": np.tile(meas_qubits, (int(n_rounds), 1)).astype(np.int32),
+        "meas_bases_per_round": np.tile(meas_bases, (int(n_rounds), 1)).astype(np.int32),
+    }
+
+
+def build_single_p_marginal_color_code(
+    *,
+    error_metadata_global: list[tuple[int, int, int, int, str, int]],
+    t_total: int,
+    n_rounds: int,
+    data_qubits: np.ndarray,
+    xcheck_qubits: np.ndarray,
+    zcheck_qubits: np.ndarray,
+    basis: str,
+    p_scalar: float,
+    noise_model=None,
+) -> np.ndarray:
+    """Build color-code single-p marginals matching the injected-error sampler.
+
+    When ``noise_model`` is provided, per-fault-type rates from the 25p model are
+    assigned directly per entry (mirroring the surface-code 25p path); otherwise
+    the legacy scalar-p iid path is used.
+    """
+    use_nm = noise_model is not None
+
+    if use_nm:
+        nm = noise_model
+        nm_idle_cnot = {
+            "X": float(nm.p_idle_cnot_X),
+            "Y": float(nm.p_idle_cnot_Y),
+            "Z": float(nm.p_idle_cnot_Z),
+        }
+        nm_idle_spam = {
+            "X": float(nm.p_idle_spam_X),
+            "Y": float(nm.p_idle_spam_Y),
+            "Z": float(nm.p_idle_spam_Z),
+        }
+        nm_cnot = {
+            ab: float(getattr(nm, f"p_cnot_{ab}")) for ab in [
+                "IX", "IY", "IZ", "XI", "XX", "XY", "XZ", "YI", "YX", "YY", "YZ", "ZI", "ZX", "ZY",
+                "ZZ"
+            ]
+        }
+        p_prep_X_nm = float(nm.p_prep_X)
+        p_prep_Z_nm = float(nm.p_prep_Z)
+        p_meas_X_nm = float(nm.p_meas_X)
+        p_meas_Z_nm = float(nm.p_meas_Z)
+    else:
+        p_scalar = float(p_scalar)
+        spam_error = p_scalar * 2.0 / 3.0
+
+    data_set = set(int(q) for q in np.array(data_qubits).reshape(-1).tolist())
+    xcheck_set = set(int(q) for q in np.array(xcheck_qubits).reshape(-1).tolist())
+    zcheck_set = set(int(q) for q in np.array(zcheck_qubits).reshape(-1).tolist())
+    meas_set = zcheck_set | xcheck_set
+
+    data_basis = 0 if str(basis).upper() == "X" else 1
+    prep_basis_map: dict[tuple[int, int], int] = {}
+    meas_basis_map: dict[tuple[int, int], int] = {}
+    for round_idx in range(int(n_rounds)):
+        if round_idx == 0 or round_idx == int(n_rounds) - 1:
+            for q in data_set:
+                prep_basis_map[(round_idx, q)] = int(data_basis)
+        for q in zcheck_set:
+            prep_basis_map[(round_idx, q)] = 1
+            meas_basis_map[(round_idx, q)] = 1
+        for q in xcheck_set:
+            prep_basis_map[(round_idx, q)] = 0
+            meas_basis_map[(round_idx, q)] = 0
+
+    num_errors = int(max(e for (e, *_rest) in error_metadata_global)) + 1
+    p_err = np.zeros((num_errors,), dtype=np.float32)
+
+    groups: dict[tuple[int, int, int, int], list[tuple[int, str]]] = {}
+    for eidx, round_idx, tt, q, err_type, q2 in error_metadata_global:
+        eidx = int(eidx)
+        if eidx == 0:
+            continue
+        groups.setdefault(
+            (int(round_idx), int(tt), int(q), int(q2)),
+            [],
+        ).append((eidx, str(err_type)))
+
+    for (round_idx, tt, q, _q2), entries in groups.items():
+        is_final_round = round_idx == int(n_rounds) - 1
+        is_prep = tt == 0 and (round_idx, q) in prep_basis_map
+        is_meas = tt == int(t_total) - 1 and (round_idx, q) in meas_basis_map
+        is_data = q in data_set
+        is_meas_qubit = q in meas_set
+
+        valid_entries: list[tuple[int, str]] = []
+        for eidx, err_type in entries:
+            valid = True
+            if len(err_type) == 1:
+                if is_prep:
+                    prep_basis = int(prep_basis_map[(round_idx, q)])
+                    valid = err_type == ("Z" if prep_basis == 0 else "X")
+                elif is_meas:
+                    meas_basis = int(meas_basis_map[(round_idx, q)])
+                    valid = err_type == ("Z" if meas_basis == 0 else "X")
+            if valid:
+                valid_entries.append((eidx, err_type))
+
+        if not valid_entries:
+            continue
+
+        is_ancilla_prep = is_prep and is_meas_qubit and not is_data
+        is_ancilla_meas = is_meas and is_meas_qubit and not is_data
+        is_data_prep = is_prep and is_data
+        is_data_meas = is_meas and is_data
+        is_data_prep_final = tt == 0 and is_data and (round_idx, q) in prep_basis_map
+
+        if use_nm:
+            for eidx, err_type in valid_entries:
+                if is_final_round and not is_data_prep_final:
+                    p_err[int(eidx)] = 0.0
+                    continue
+                if len(err_type) == 2:
+                    p_err[int(eidx)] = nm_cnot.get(err_type, 0.0)
+                elif len(err_type) == 1:
+                    if is_ancilla_prep:
+                        prep_basis = int(prep_basis_map[(round_idx, q)])
+                        p_err[int(eidx)] = p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm
+                    elif is_ancilla_meas:
+                        meas_basis = int(meas_basis_map[(round_idx, q)])
+                        p_err[int(eidx)] = p_meas_X_nm if meas_basis == 0 else p_meas_Z_nm
+                    elif is_data_prep:
+                        prep_basis = int(prep_basis_map[(round_idx, q)])
+                        p_err[int(eidx)] = p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm
+                    elif is_data_meas:
+                        p_err[int(eidx)] = nm_idle_spam.get(err_type, 0.0)
+                    else:
+                        p_err[int(eidx)] = nm_idle_cnot.get(err_type, 0.0)
+                else:
+                    p_err[int(eidx)] = 0.0
+        else:
+            p_non_final = (
+                spam_error if
+                (is_ancilla_prep or is_ancilla_meas or is_data_prep or is_data_meas) else p_scalar
+            )
+            if is_final_round:
+                p_adjusted = spam_error if is_data_prep_final else 0.0
+            else:
+                p_adjusted = p_non_final
+
+            per_error_prob = float(p_adjusted) / float(len(valid_entries))
+            for eidx, _err_type in valid_entries:
+                p_err[int(eidx)] = per_error_prob
+
+    return p_err
+
+
+def build_probability_vector_color_code(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str = "nearest-neighbor",
+    p_scalar: float,
+    noise_model=None,
+) -> np.ndarray:
+    """Build the global color-code augmented DEM probability vector."""
+    circ = _build_color_memory_circuit(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+        p_scalar=p_scalar,
+    )
+    layout = _extract_color_round_layout(
+        circ=circ,
+        distance=int(distance),
+        n_rounds=int(n_rounds),
+        basis=str(basis).upper(),
+        schedule=str(schedule),
+    )
+    _errors_local, metadata_local = generate_all_errors_local(
+        t_total=int(layout["t_total"]),
+        nq=int(layout["nq"]),
+        controls_by_layer=layout["cnot_circuit"],
+        cx_times=layout["cx_times"],
+    )
+    metadata_global = replicate_metadata_across_rounds(
+        metadata_local=metadata_local,
+        n_rounds=int(n_rounds),
+    )
+    return build_single_p_marginal_color_code(
+        error_metadata_global=metadata_global,
+        t_total=int(layout["t_total"]),
+        n_rounds=int(n_rounds),
+        data_qubits=layout["data_qubits"],
+        xcheck_qubits=layout["xcheck_qubits"],
+        zcheck_qubits=layout["zcheck_qubits"],
+        basis=str(basis).upper(),
+        p_scalar=float(p_scalar),
+        noise_model=noise_model,
+    ).astype(np.float32)
+
+
+@torch.no_grad()
+def build_color_augmented_dem_bundle_torch(
+    *,
+    frame: torch.Tensor,
+    keep: torch.Tensor,
+    n_rounds: int,
+    data_qubits: np.ndarray,
+    zcheck_qubits: np.ndarray,
+    xcheck_qubits: np.ndarray,
+    meas_qubits_per_round: np.ndarray,
+    meas_bases_per_round: np.ndarray,
+    controls: np.ndarray,
+    targets: np.ndarray,
+    feedforward_mask: np.ndarray | None,
+    apply_data_x_override: bool,
+    use_decomposed_errors: bool = False,
+    chunk_size: int = 256,
+    buffer_size: int = 1,
+) -> ColorAugmentedDemBundle:
+    """Build the dense color-code augmented DEM response matrix using Torch only."""
+    if use_decomposed_errors:
+        raise NotImplementedError("Torch color augmented DEM does not yet support Y decomposition")
+
+    n_rounds = int(n_rounds)
+    chunk_size = max(1, int(chunk_size))
+    buffer_size = max(1, int(buffer_size))
+    num_local_errors = int(frame.shape[0])
+    num_data = int(np.array(data_qubits).reshape(-1).shape[0])
+    num_z = int(np.array(zcheck_qubits).reshape(-1).shape[0])
+    num_x = int(np.array(xcheck_qubits).reshape(-1).shape[0])
+    num_meas = num_z + num_x
+    frame_rows = n_rounds * num_data * 2
+    meas_old_rows = n_rounds * num_meas
+    meas_new_rows = n_rounds * num_meas
+    num_rows = frame_rows + meas_old_rows + meas_new_rows
+    num_cols = 1 + n_rounds * (num_local_errors - 1)
+    dense_bytes = int(num_rows) * int(num_cols) * np.dtype(np.uint8).itemsize
+    if dense_bytes > COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES:
+        max_gib = COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES / float(1024**3)
+        got_gib = dense_bytes / float(1024**3)
+        raise MemoryError(
+            "Dense color augmented DEM precompute is intended for PID-scale "
+            f"configs up to about d=r=13. Requested H shape=({num_rows}, {num_cols}) "
+            f"would require {got_gib:.2f} GiB, above the {max_gib:.2f} GiB guard."
+        )
+
+    H = torch.zeros((num_rows, num_cols), dtype=torch.uint8)
+    columns = [
+        (round_idx, local_idx)
+        for round_idx in range(n_rounds)
+        for local_idx in range(1, num_local_errors)
+    ]
+
+    for start in range(0, len(columns), chunk_size):
+        chunk = columns[start:start + chunk_size]
+        sampled = _build_color_sampled_indices_for_columns(
+            columns=chunk,
+            n_rounds=n_rounds,
+            buffer_size=buffer_size,
+        )
+        frame_data, meas_old, meas_new = _torch_run_color_rounds_with_injected_errors(
+            sampled,
+            frame,
+            keep,
+            np.array(data_qubits, dtype=np.int32),
+            meas_qubits_per_round,
+            meas_bases_per_round,
+            controls,
+            targets,
+            buffer_size=buffer_size,
+            feedforward_mask=feedforward_mask,
+            apply_data_x_override=bool(apply_data_x_override),
+        )
+        rows = _flatten_color_augmented_rows(frame_data, meas_old, meas_new).cpu()
+        cols = torch.tensor(
+            [
+                _color_global_col(round_idx, local_idx, num_local_errors)
+                for round_idx, local_idx in chunk
+            ],
+            dtype=torch.long,
+        )
+        H[:, cols] = rows.T.contiguous()
+
+    return ColorAugmentedDemBundle(
+        H=H,
+        n_rounds=n_rounds,
+        num_local_errors=num_local_errors,
+        num_data=num_data,
+        num_meas=num_meas,
+        num_z=num_z,
+        num_x=num_x,
+        frame_rows=frame_rows,
+        meas_old_rows=meas_old_rows,
+        meas_new_rows=meas_new_rows,
+        use_decomposed_errors=bool(use_decomposed_errors),
+    )
+
+
+@torch.no_grad()
+def precompute_dem_bundle_color_code(
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str = "nearest-neighbor",
+    p_scalar: float,
+    dem_output_dir: str | None,
+    device: torch.device | None = None,
+    export: bool = True,
+    return_artifacts: bool = False,
+    enable_z_feedforward: bool = True,
+    apply_data_x_override: bool = True,
+    use_decomposed_errors: bool = False,
+    chunk_size: int = 256,
+    buffer_size: int = 1,
+    noise_model=None,
+) -> Path | dict[str, torch.Tensor | int | float]:
+    """Precompute a Torch-native color-code augmented DEM bundle."""
+    if use_decomposed_errors:
+        raise NotImplementedError("Torch color augmented DEM does not yet support Y decomposition")
+    if not enable_z_feedforward or not apply_data_x_override:
+        raise ValueError(
+            "Color augmented DEM precompute requires enable_z_feedforward=True and "
+            "apply_data_x_override=True for production training."
+        )
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    distance = int(distance)
+    n_rounds = int(n_rounds)
+    basis = str(basis).upper()
+    p_scalar = float(p_scalar)
+    schedule = str(schedule)
+
+    circ = _build_color_memory_circuit(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+        p_scalar=p_scalar,
+    )
+    layout = _extract_color_round_layout(
+        circ=circ,
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+    )
+
+    cnot_circuit = layout["cnot_circuit"]
+    cx_times = layout["cx_times"]
+    errors_local_np, metadata_local = generate_all_errors_local(
+        t_total=int(layout["t_total"]),
+        nq=int(layout["nq"]),
+        controls_by_layer=cnot_circuit,
+        cx_times=cx_times,
+    )
+    errors_local = torch.from_numpy(errors_local_np).to(device=device, dtype=torch.int8)
+
+    frame_single = presample_frame_single_round_torch(
+        t_total=int(layout["t_total"]),
+        nq=int(layout["nq"]),
+        controls_by_layer=cnot_circuit,
+        cx_times=cx_times,
+        errors=errors_local,
+    )
+    m_local = _torch_measure(frame_single, layout["meas_qubits"], layout["meas_bases"])
+    keep_local = _torch_keep_idx(m_local, frame_single, layout["data_qubits"])
+
+    feedforward_mask = None
+    if enable_z_feedforward:
+        feedforward_mask = build_circuit_z_ancilla_connectivity_matrix(
+            controls=cnot_circuit[:, :, 0],
+            targets=cnot_circuit[:, :, 1],
+            data_qubits=layout["data_qubits"],
+            zcheck_qubits=layout["zcheck_qubits"],
+            nq=int(layout["nq"]),
+        )
+
+    bundle = build_color_augmented_dem_bundle_torch(
+        frame=frame_single,
+        keep=keep_local,
+        n_rounds=n_rounds,
+        data_qubits=layout["data_qubits"],
+        zcheck_qubits=layout["zcheck_qubits"],
+        xcheck_qubits=layout["xcheck_qubits"],
+        meas_qubits_per_round=layout["meas_qubits_per_round"],
+        meas_bases_per_round=layout["meas_bases_per_round"],
+        controls=cnot_circuit[:, :, 0],
+        targets=cnot_circuit[:, :, 1],
+        feedforward_mask=feedforward_mask,
+        apply_data_x_override=bool(apply_data_x_override),
+        use_decomposed_errors=bool(use_decomposed_errors),
+        chunk_size=int(chunk_size),
+        buffer_size=int(buffer_size),
+    )
+
+    metadata_global = replicate_metadata_across_rounds(
+        metadata_local=metadata_local,
+        n_rounds=n_rounds,
+    )
+    p_vec_np = build_single_p_marginal_color_code(
+        error_metadata_global=metadata_global,
+        t_total=int(layout["t_total"]),
+        n_rounds=n_rounds,
+        data_qubits=layout["data_qubits"],
+        xcheck_qubits=layout["xcheck_qubits"],
+        zcheck_qubits=layout["zcheck_qubits"],
+        basis=basis,
+        p_scalar=p_scalar,
+        noise_model=noise_model,
+    ).astype(np.float32)
+    p_vec = torch.from_numpy(p_vec_np)
+
+    metadata = build_color_augmented_dem_metadata(
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+        p_scalar=p_scalar,
+        enable_z_feedforward=bool(enable_z_feedforward),
+        apply_data_x_override=bool(apply_data_x_override),
+        use_decomposed_errors=bool(use_decomposed_errors),
+        noise_model=noise_model,
+    )
+
+    if return_artifacts:
+        return {
+            "H": bundle.H.to(device=device, dtype=torch.uint8),
+            "p": p_vec.to(device=device, dtype=torch.float32),
+            "p_nominal": float(p_scalar),
+            "n_rounds": int(bundle.n_rounds),
+            "num_local_errors": int(bundle.num_local_errors),
+            "num_data": int(bundle.num_data),
+            "num_meas": int(bundle.num_meas),
+            "num_z": int(bundle.num_z),
+            "num_x": int(bundle.num_x),
+            "frame_rows": int(bundle.frame_rows),
+            "meas_old_rows": int(bundle.meas_old_rows),
+            "meas_new_rows": int(bundle.meas_new_rows),
+        }
+
+    if export:
+        if dem_output_dir is None:
+            raise ValueError("dem_output_dir must be provided when export=True")
+        dem_dir = Path(dem_output_dir)
+        dem_dir.mkdir(parents=True, exist_ok=True)
+        paths = get_color_augmented_dem_paths(
+            dem_dir,
+            distance=distance,
+            n_rounds=n_rounds,
+            basis=basis,
+            schedule=schedule,
+        )
+        metadata_json = np.array(encode_dem_artifact_metadata(metadata))
+        np.savez_compressed(
+            paths["H"],
+            H=bundle.H.cpu().numpy().astype(np.uint8),
+            n_rounds=np.array(bundle.n_rounds, dtype=np.int64),
+            num_local_errors=np.array(bundle.num_local_errors, dtype=np.int64),
+            num_data=np.array(bundle.num_data, dtype=np.int64),
+            num_meas=np.array(bundle.num_meas, dtype=np.int64),
+            num_z=np.array(bundle.num_z, dtype=np.int64),
+            num_x=np.array(bundle.num_x, dtype=np.int64),
+            frame_rows=np.array(bundle.frame_rows, dtype=np.int64),
+            meas_old_rows=np.array(bundle.meas_old_rows, dtype=np.int64),
+            meas_new_rows=np.array(bundle.meas_new_rows, dtype=np.int64),
+            use_decomposed_errors=np.array(bool(use_decomposed_errors), dtype=np.bool_),
+            **{DEM_ARTIFACT_METADATA_KEY: metadata_json},
+        )
+        np.savez_compressed(
+            paths["p"],
+            p=p_vec_np.astype(np.float32),
+            p_nominal=np.array(p_scalar, dtype=np.float32),
+            **{DEM_ARTIFACT_METADATA_KEY: metadata_json},
+        )
+        return dem_dir
+
+    return Path(".")
+
+
+def load_color_augmented_dem_bundle(
+    dem_dir: str | Path,
+    *,
+    distance: int,
+    n_rounds: int,
+    basis: str,
+    schedule: str = "nearest-neighbor",
+    device: torch.device | None = None,
+    enable_z_feedforward: bool = True,
+    apply_data_x_override: bool = True,
+    use_decomposed_errors: bool = False,
+    strict_metadata: bool = True,
+) -> dict[str, Any]:
+    """Load a precomputed color-code augmented DEM bundle."""
+    paths = get_color_augmented_dem_paths(
+        dem_dir,
+        distance=distance,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule=schedule,
+    )
+    if not paths["H"].exists() or not paths["p"].exists():
+        raise FileNotFoundError(
+            f"Missing color augmented DEM artifacts: {paths['H']} and/or {paths['p']}"
+        )
+
+    with np.load(paths["H"], allow_pickle=False) as z:
+        metadata = (
+            decode_dem_artifact_metadata(z[DEM_ARTIFACT_METADATA_KEY])
+            if DEM_ARTIFACT_METADATA_KEY in z.files else None
+        )
+        ok, reason = _color_metadata_matches(
+            metadata,
+            distance=distance,
+            n_rounds=n_rounds,
+            basis=basis,
+            schedule=schedule,
+            enable_z_feedforward=enable_z_feedforward,
+            apply_data_x_override=apply_data_x_override,
+            use_decomposed_errors=use_decomposed_errors,
+        )
+        if strict_metadata and not ok:
+            raise ValueError(f"Color augmented DEM metadata mismatch: {reason}")
+        bundle = ColorAugmentedDemBundle(
+            H=torch.from_numpy(np.asarray(z["H"], dtype=np.uint8)),
+            n_rounds=int(np.asarray(z["n_rounds"]).reshape(())),
+            num_local_errors=int(np.asarray(z["num_local_errors"]).reshape(())),
+            num_data=int(np.asarray(z["num_data"]).reshape(())),
+            num_meas=int(np.asarray(z["num_meas"]).reshape(())),
+            num_z=int(np.asarray(z["num_z"]).reshape(())),
+            num_x=int(np.asarray(z["num_x"]).reshape(())),
+            frame_rows=int(np.asarray(z["frame_rows"]).reshape(())),
+            meas_old_rows=int(np.asarray(z["meas_old_rows"]).reshape(())),
+            meas_new_rows=int(np.asarray(z["meas_new_rows"]).reshape(())),
+            use_decomposed_errors=bool(np.asarray(z["use_decomposed_errors"]).reshape(())),
+        )
+
+    with np.load(paths["p"], allow_pickle=False) as z:
+        p = torch.from_numpy(np.asarray(z["p"], dtype=np.float32))
+        p_nominal = float(np.asarray(z["p_nominal"]).reshape(()))
+
+    if device is not None:
+        bundle = ColorAugmentedDemBundle(
+            H=bundle.H.to(device=device, dtype=torch.uint8),
+            n_rounds=bundle.n_rounds,
+            num_local_errors=bundle.num_local_errors,
+            num_data=bundle.num_data,
+            num_meas=bundle.num_meas,
+            num_z=bundle.num_z,
+            num_x=bundle.num_x,
+            frame_rows=bundle.frame_rows,
+            meas_old_rows=bundle.meas_old_rows,
+            meas_new_rows=bundle.meas_new_rows,
+            use_decomposed_errors=bundle.use_decomposed_errors,
+        )
+        p = p.to(device=device, dtype=torch.float32)
+
+    return {
+        "bundle": bundle,
+        "p": p,
+        "p_nominal": p_nominal,
+        "metadata": metadata,
+        "paths": paths,
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--code", type=str, default="surface", choices=["surface", "color"])
     ap.add_argument("--distance", "-d", type=int, required=True)
     ap.add_argument("--n_rounds", "-r", type=int, default=None)
     ap.add_argument("--basis", "-b", type=str, choices=["X", "Z"], required=True)
-    ap.add_argument("--rotation", "--rot", type=str, default="XV", choices=["XV", "XH", "ZV", "ZH"])
+    ap.add_argument(
+        "--rotation",
+        "--rot",
+        type=str,
+        default=None,
+        choices=["XV", "XH", "ZV", "ZH"],
+        help="(--code surface) Rotation orientation; not supported with --code color.",
+    )
+    ap.add_argument("--schedule", type=str, default="nearest-neighbor")
+    ap.add_argument(
+        "--enable_z_feedforward",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="(--code color) Apply Z-ancilla feedforward to data qubits.",
+    )
+    ap.add_argument(
+        "--apply_data_x_override",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="(--code color) Override data-qubit X frame with per-shot sampled X frame.",
+    )
+    ap.add_argument(
+        "--chunk_size",
+        type=int,
+        default=256,
+        help="(--code color) Column chunk size when building the augmented DEM.",
+    )
+    ap.add_argument(
+        "--buffer_size",
+        type=int,
+        default=1,
+        help="(--code color) Per-shot slot count for injected errors during DEM build.",
+    )
     ap.add_argument(
         "--p", type=float, default=0.01, help="Scalar p for exporting single-p marginals"
     )
@@ -1043,17 +2171,42 @@ def main() -> None:
         torch.device(args.device) if args.device is not None else
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
-    precompute_dem_bundle_surface_code(
-        distance=d,
-        n_rounds=r,
-        basis=str(args.basis),
-        code_rotation=str(args.rotation),
-        p_scalar=float(args.p),
-        dem_output_dir=(str(args.dem_output_dir) if args.dem_output_dir is not None else None),
-        device=dev,
-        export=(not bool(args.no_save)),
-        noise_model=noise_model,
-    )
+    if str(args.code).lower() == "color":
+        if args.rotation is not None:
+            ap.error("--rotation is not supported with --code color")
+        if not bool(args.enable_z_feedforward) or not bool(args.apply_data_x_override):
+            ap.error(
+                "--code color requires --enable_z_feedforward and --apply_data_x_override "
+                "for production DEM precompute"
+            )
+        precompute_dem_bundle_color_code(
+            distance=d,
+            n_rounds=r,
+            basis=str(args.basis),
+            schedule=str(args.schedule),
+            p_scalar=float(args.p),
+            dem_output_dir=(str(args.dem_output_dir) if args.dem_output_dir is not None else None),
+            device=dev,
+            export=(not bool(args.no_save)),
+            enable_z_feedforward=bool(args.enable_z_feedforward),
+            apply_data_x_override=bool(args.apply_data_x_override),
+            use_decomposed_errors=False,
+            chunk_size=int(args.chunk_size),
+            buffer_size=int(args.buffer_size),
+            noise_model=noise_model,
+        )
+    else:
+        precompute_dem_bundle_surface_code(
+            distance=d,
+            n_rounds=r,
+            basis=str(args.basis),
+            code_rotation=str(args.rotation) if args.rotation is not None else "XV",
+            p_scalar=float(args.p),
+            dem_output_dir=(str(args.dem_output_dir) if args.dem_output_dir is not None else None),
+            device=dev,
+            export=(not bool(args.no_save)),
+            noise_model=noise_model,
+        )
 
 
 if __name__ == "__main__":

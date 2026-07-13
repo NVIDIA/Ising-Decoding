@@ -18,7 +18,12 @@ Quantum Error Correction modules.
 Contains:
 - surface_code/: Surface code specific modules
   - memory_circuit: Stim-based circuit generation (MemoryCircuit, SurfaceCode)
+  - memory_circuit_torch: Torch + cuStabilizer circuit simulator
   - homological_equivalence: Error simplification via homological equivalence
+  - homological_equivalence_torch: Torch HE
   - data_mapping: Stabilizer-to-data qubit mappings
   - stim_utils: Stim circuit utilities
+- color_code/: Triangular color code modules (analogous structure)
+- precompute_dem: Augmented DEM bundle precompute for Torch generators
+- dem_sampling: cuStabilizer-backed bit-matrix sampling
 """

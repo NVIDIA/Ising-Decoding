@@ -20,7 +20,15 @@
 # from internal defaults (and validated to prevent unsupported overrides).
 
 # === Model selection (required) ===
-model_id: 1  # Choose 1, 2, 3, 4, or 5
+model_id: 1  # Surface: choose 1, 2, 3, 4, or 5. Color: choose 1, 2, 4, 5, or B (cascade/bottleneck).
+
+# === Code family ===
+# Set this to `surface` (PyMatching global decoder) or `color` (Chromobius
+# global decoder). It defaults to `surface`; change it to `color` to run the
+# color-code path — the code-specific circuit/data defaults are filled in
+# automatically for whichever you pick. Color training additionally needs the
+# augmented-DEM precompute step (see "Color code support" in README.md).
+code: surface  # surface or color
 
 # === Values for evaluation. Training window is hardcoded to model receptive field. ===
 distance: 7
@@ -31,16 +39,19 @@ workflow:
   task: train  # train, inference
   # simplify logs of inference to have only pymatching b4 and after predecoding. TODO: batch_size=1
 
-# === Data (public surface only) ===
+# === Data ===
 data:
-  # Surface code orientation (public naming): O1, O2, O3, O4
+  # Surface code orientation (public naming): O1, O2, O3, O4. Ignored for color code.
   code_rotation: O1
-  # Optional HE acceleration flag, surfaced here for discoverability (other HE
+  # Optional surface-code HE acceleration flag, surfaced here for discoverability (other HE
   # knobs live in the internal defaults). Enables the 2-partition parallel
   # spacelike homological-equivalence path; see the "HE acceleration (advanced):
   # parallel spacelike" section in README.md for the pros/cons and constraints.
+  # Ignored for color code, which uses its own spacelike-only HE defaults.
   use_compile: False # Required to see the speedup from use_parallel_spacelike=True.
   use_parallel_spacelike: False
+  # Disable training-time noise upscaling. Usually leave this false.
+  skip_noise_upscaling: False
   # Circuit-level noise model (25-parameter). This is the default public noise specification.
   # The defaults are chosen for p=0.003.
   noise_model:
@@ -75,4 +86,3 @@ data:
     p_cnot_ZX: 0.0002
     p_cnot_ZY: 0.0002
     p_cnot_ZZ: 0.0002
-

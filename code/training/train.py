@@ -13,45 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Training module for quantum error correction pre-decoder.
+Training module for the quantum error correction pre-decoder.
 
 This module provides training functionality with on-the-fly data generation.
 All file-based dataset and epoch-config paths have been removed.
-
-V3 Training Configuration Reference
-====================================
-
-Noise model scaling:
-  Surface-code training noise upscaling via get_training_upscaled_noise_model.
-  cfg.data.skip_noise_upscaling  (bool, default: false)
-  PREDECODER_SKIP_NOISE_UPSCALING  (0/1, default: 0)
-      Skips upscaling entirely; training uses exact user-specified parameters.
-  Evaluation/inference always uses the user-specified noise model as-is.
-
-Performance:
-  cfg.torch_compile          (bool, default: true)  -- torch.compile on model
-  PREDECODER_TORCH_COMPILE   (0/1/auto)             -- env override
-  PREDECODER_TORCH_COMPILE_MODE                     -- compile mode override
-  Faster EMA via torch._foreach_mul_/_foreach_add_ (auto-fallback on old PyTorch).
-  gc.collect()/empty_cache() removed (100-400ms stall per epoch).
-
-SDR threshold gate (early stopping requires minimum SDR):
-  cfg.syndrome_density_threshold  (float, default: 1.5x or 33.3%)
-  cfg.sdr_as_percent              (bool, default: false)
-      false = threshold is a factor (e.g. 1.5 means 1.5x reduction)
-      true  = threshold is a percentage (e.g. 33.3 means 33.3% reduction)
-  When SDR is not computed, the gate is bypassed (original behavior).
-
-HE acceleration (forwarded to QCDataGeneratorTorch):
-  cfg.data.use_compile, cfg.data.compile_chunk_size, cfg.data.compute_dtype,
-  cfg.data.use_weight2, cfg.data.max_passes_w2, cfg.data.use_coset_search,
-  cfg.data.coset_max_generators, cfg.data.use_dense_overlap,
-  cfg.data.use_parallel_spacelike
-
-Logging:
-  Compact epoch summary: loss | LER | SDR | wall time | throughput
-  TensorBoard scalars: Speed/throughput_samp_per_s, Speed/ms_per_batch,
-  Speed/epoch_wall_s
 """
 import time
 import sys
@@ -59,6 +24,7 @@ import os
 import re
 import gc
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from copy import deepcopy
@@ -66,7 +32,7 @@ from copy import deepcopy
 import torch
 try:
     import torchinfo
-except Exception:  # pragma: no cover - optional dependency for summaries
+except ImportError:
     torchinfo = None
 import numpy as np
 import hydra
@@ -74,11 +40,18 @@ from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
 from torch.cuda.amp import GradScaler
-from torch.amp import autocast
+from training.precision import (
+    autocast_for_precision,
+    should_use_grad_scaler,
+    should_use_channels_last_3d,
+    module_to_channels_last_3d,
+    input_to_channels_last_3d,
+    targets_for_bce,
+)
 from torch.nn.parallel import DistributedDataParallel as DDP
 try:
     from torch.utils.tensorboard import SummaryWriter
-except Exception:  # pragma: no cover - optional for training logs
+except Exception:
     SummaryWriter = None
 
 from training.distributed import DistributedManager
@@ -108,6 +81,19 @@ from qec.surface_code.data_mapping import (
 )
 
 
+def _sync_cuda_if_needed(device=None):
+    if torch.cuda.is_available():
+        torch.cuda.synchronize(device=device)
+
+
+def _accumulate_numeric_timing(accumulator, sample):
+    if sample is None:
+        return
+    for key, value in sample.items():
+        if isinstance(value, (int, float, np.floating)) and not isinstance(value, bool):
+            accumulator[key] = accumulator.get(key, 0.0) + float(value)
+
+
 def _missing_dem_artifacts(frames_dir, distance, n_rounds, bases):
     if frames_dir is None:
         return False
@@ -125,8 +111,9 @@ def _missing_dem_artifacts(frames_dir, distance, n_rounds, bases):
 
 
 def resolve_precomputed_frames_dir(precomputed_frames_dir, distance, n_rounds, meas_basis, rank):
-    bases_needed = ["X", "Z"
-                   ] if str(meas_basis).lower() in ("both", "mixed") else [str(meas_basis).upper()]
+    bases_needed = (
+        ["X", "Z"] if str(meas_basis).lower() in ("both", "mixed") else [str(meas_basis).upper()]
+    )
     if _missing_dem_artifacts(precomputed_frames_dir, distance, n_rounds, bases_needed):
         if int(rank) == 0:
             print(
@@ -248,13 +235,19 @@ def calculate_curriculum_steps_per_epoch(batch_sizes, num_samples, world_size):
 
 
 def validation_step(
-    generator, model, num_samples, batch_size, device, enable_fp16, enable_bf16=False, rank=0
+    generator,
+    model,
+    num_samples,
+    batch_size,
+    device,
+    enable_fp16,
+    enable_bf16=False,
+    rank=0,
+    use_channels_last_3d=False,
 ):
-    """Validation using on-the-fly data generation."""
+    """Validation using the configured on-the-fly data generator."""
     loss_fn = torch.nn.BCEWithLogitsLoss()
     running_vloss = 0.0
-    data_gen_s = 0.0
-    model_s = 0.0
 
     if isinstance(batch_size, (list, tuple)):
         num_batches, samples_per_cycle, num_cycles = calculate_curriculum_steps_per_epoch(
@@ -269,67 +262,54 @@ def validation_step(
     if rank == 0:
         if curriculum_mode:
             print(
-                f"[Validation] Starting validation with generator, {num_batches} batches (curriculum mode)..."
+                f"[Validation] Starting validation with data generator, {num_batches} batches (curriculum mode)..."
             )
         else:
-            print(f"[Validation] Starting validation with generator, {num_batches} batches...")
+            print(f"[Validation] Starting validation with data generator, {num_batches} batches...")
         # Explicitly state whether the validation generator is using a noise model.
-        # Even with a noise_model, the simulator may still have a fixed scalar p placeholder
-        # (used for buffer sizing), so we detect noise_model by the presence of the object itself.
-        use_nm = False
         try:
             sim_x = getattr(generator, "sim_X", None)
             sim_z = getattr(generator, "sim_Z", None)
             sim = getattr(generator, "sim", None)
             sims = [s for s in (sim_x, sim_z, sim) if s is not None]
-            use_nm = bool(getattr(generator, "noise_model", None)
-                         ) or any(getattr(s, "noise_model", None) is not None for s in sims)
+            use_nm = any(getattr(s, "use_noise_model", False) for s in sims)
             if use_nm:
-                nm = None
-                for s in sims:
-                    nm = getattr(s, "noise_model", None)
-                    if nm is not None:
-                        break
-                if nm is None:
-                    nm = getattr(generator, "noise_model", None)
+                nm = getattr(sims[0], "noise_model", None)
                 if nm is not None:
                     print(f"[Validation] Using explicit noise_model (25p): {nm!r}")
+                    print(
+                        "[Validation] noise_model idle semantics: "
+                        "bulk/CNOT-layer idles use p_idle_cnot_*, "
+                        "data-idle during ancilla prep/reset uses p_idle_spam_*, "
+                        "data-idle during ancilla measurement is ignored."
+                    )
         except Exception as e:
             print(f"[Validation] (noise_model log skipped due to error: {e})")
 
-        # Only print legacy scalar-p settings when no explicit noise_model is active.
+        # Suppress legacy scalar-p prints when using an explicit noise model.
+        # The Torch surface generator's MemoryCircuitTorch doesn't carry the
+        # legacy fixed_p / p_min / p_max attributes, so guard each access.
+        def _print_p_settings(label, s):
+            if not all(hasattr(s, a) for a in ("fixed_p", "p_min", "p_max")):
+                return
+            print(f"[Validation] Generator p settings{label}: ", end='')
+            if s.fixed_p:
+                print(f"p={s.p_min:.6f} (fixed)")
+            else:
+                print(f"p∈[{s.p_min:.6f}, {s.p_max:.6f}]")
+
         if not use_nm:
-            if hasattr(generator, 'sim_X') and hasattr(generator, 'sim_Z'):
-                # Check if it's a Torch generator (no fixed_p attribute)
-                if hasattr(generator.sim_X, 'fixed_p'):
-                    print(f"[Validation] Generator p settings - X: ", end='')
-                    if generator.sim_X.fixed_p:
-                        print(f"p={generator.sim_X.p_min:.6f} (fixed)")
-                    else:
-                        print(f"p∈[{generator.sim_X.p_min:.6f}, {generator.sim_X.p_max:.6f}]")
-                    print(f"[Validation] Generator p settings - Z: ", end='')
-                    if generator.sim_Z.fixed_p:
-                        print(f"p={generator.sim_Z.p_min:.6f} (fixed)")
-                    else:
-                        print(f"p∈[{generator.sim_Z.p_min:.6f}, {generator.sim_Z.p_max:.6f}]")
-                else:
-                    print(f"[Validation] Using Torch generator (p from precomputed DEM)")
-            elif hasattr(generator, 'sim'):
-                if hasattr(generator.sim, 'fixed_p'):
-                    print(f"[Validation] Generator p settings: ", end='')
-                    if generator.sim.fixed_p:
-                        print(f"p={generator.sim.p_min:.6f} (fixed)")
-                    else:
-                        print(f"p∈[{generator.sim.p_min:.6f}, {generator.sim.p_max:.6f}]")
-                else:
-                    print(f"[Validation] Using Torch generator (p from precomputed DEM)")
+            if hasattr(generator, 'sim_X') and hasattr(generator, 'sim_Z') \
+                    and generator.sim_X is not None and generator.sim_Z is not None:
+                _print_p_settings(" - X", generator.sim_X)
+                _print_p_settings(" - Z", generator.sim_Z)
+            elif hasattr(generator, 'sim') and generator.sim is not None:
+                _print_p_settings("", generator.sim)
 
     with torch.no_grad():
         for step in range(num_batches):
             val_step = 10000 + step
-            t_gen_start = time.perf_counter()
             trainX, trainY = generator.generate_batch(step=val_step, batch_size=batch_size)
-            data_gen_s += time.perf_counter() - t_gen_start
 
             if step < 8 and rank == 0 and hasattr(generator, 'get_current_pair'):
                 d, r = generator.get_current_pair(val_step)
@@ -338,27 +318,15 @@ def validation_step(
                     f"[Val Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
                 )
 
-            if enable_fp16:
-                trainX = trainX.half()
-                trainY = trainY.half()
-            elif enable_bf16:
-                trainX = trainX.to(torch.bfloat16)
-                trainY = trainY.to(torch.bfloat16)
-            trainX = trainX.to(device, non_blocking=True)
-            trainY = trainY.to(device, non_blocking=True)
+            # Keep BCE targets in fp32; never .half() the model or labels.
+            trainY = targets_for_bce(trainY)
+            # Leave trainX fp32 (autocast casts it); only fix its memory layout
+            # so half-precision Conv3D hits the fast Tensor-Core kernel.
+            trainX = input_to_channels_last_3d(trainX, use_channels_last_3d)
 
-            if enable_fp16:
-                autocast_dtype = torch.float16
-            elif enable_bf16:
-                autocast_dtype = torch.bfloat16
-            else:
-                autocast_dtype = torch.float32
-
-            t_model_start = time.perf_counter()
-            with autocast(device_type='cuda', dtype=autocast_dtype):
+            with autocast_for_precision(device, enable_fp16, enable_bf16):
                 outputs = model(trainX)
                 loss = loss_fn(outputs, trainY)
-            model_s += time.perf_counter() - t_model_start
 
             running_vloss += loss.item()
 
@@ -371,14 +339,29 @@ def validation_step(
             f"[Validation] Completed {num_batches} batches in {val_time:.1f}s "
             f"({time_per_batch*1000:.1f}ms/batch), avg_vloss={avg_vloss:.5f}"
         )
-        print(f"[Validation Timing] data_gen={data_gen_s:.2f}s, model={model_s:.2f}s")
 
-    return avg_vloss, {
-        "data_gen_s": data_gen_s,
-        "model_s": model_s,
-        "num_batches": num_batches,
-        "total_s": val_time
-    }
+    return avg_vloss
+
+
+def _generator_uses_compiled_generation(generator) -> bool:
+    """True if the generator runs torch.compile'd HE during batch generation.
+
+    Compiled HE artifacts must not be compiled on one thread and re-entered from
+    another (Dynamo raises "FX to symbolically trace a dynamo-optimized
+    function"), so when this is True the outer batch prefetch -- which runs
+    ``generate_batch`` in a worker thread -- must be disabled and generation kept
+    on the main thread.
+    """
+    for attr in ("sim", "sim_X", "sim_Z"):
+        sim = getattr(generator, attr, None)
+        if sim is not None and bool(getattr(sim, "use_compile", False)):
+            return True
+    return False
+
+
+def _should_use_outer_batch_prefetch(generator) -> bool:
+    """Outer ThreadPoolExecutor batch prefetch is safe only with eager generation."""
+    return not _generator_uses_compiled_generation(generator)
 
 
 def train_epoch(
@@ -395,170 +378,330 @@ def train_epoch(
     device,
     enable_fp16,
     enable_bf16=False,
+    use_channels_last_3d=False,
     rank=0,
     use_ema=False,
     ema_model=None,
     ema_decay=0.0,
     global_step=0,
     accumulate_steps=1,
+    profile_enabled=False,
+    profile_log_every=50,
+    profile_warmup_steps=2,
+    profile_generator_subphases=False,
 ):
-    """Training epoch using on-the-fly data generation."""
+    """Training epoch using the configured on-the-fly data generator."""
     loss_fn = torch.nn.BCEWithLogitsLoss(reduction='sum')
     gradient_clipping_counter = 0
 
     epoch_start_time = time.time()
     last_log_time = epoch_start_time
-    data_gen_s = 0.0
-    model_s = 0.0
 
     if rank == 0:
-        print(f"train_epoch: Starting {steps_per_epoch} batches...")
+        print(f"train_epoch_generator: Starting {steps_per_epoch} batches...")
 
     running_loss = 0.0
     last_loss = 0.0
     epoch_total_loss = 0.0
     accumulated_samples = 0
+    profile_sums = {}
+    profile_count = 0
 
-    for step in range(steps_per_epoch):
-        if rank == 0 and (step < 2 or step % 200 == 0):
-            current_time = time.time()
-            elapsed = current_time - epoch_start_time
-            if step > 0:
-                time_per_batch = (current_time - last_log_time) / min(step, 200)
-                remaining = time_per_batch * (steps_per_epoch - step)
-                display_loss = epoch_total_loss / step if step > 0 else 0.0
-                warmup_note = " (warmup; ETA overestimated)" if step == 1 else ""
-                print(
-                    f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | "
-                    f"Loss: {display_loss:.5f} | "
-                    f"Elapsed: {elapsed:.1f}s | Per-batch: {time_per_batch*1000:.1f}ms | "
-                    f"ETA: {remaining:.1f}s{warmup_note}"
-                )
+    # Pre-generate first batch before loop
+    global_step_for_gen = cumulative_steps_before_epoch
+    next_data = generator.generate_batch(
+        step=global_step_for_gen,
+        batch_size=batch_size,
+        return_timing=profile_enabled,
+        profile_generator_subphases=profile_generator_subphases,
+    )
+
+    # Compiled HE generation must stay on the main thread: it is compiled there
+    # (warmup + batch 0) and re-entering it from a prefetch worker triggers a
+    # Dynamo FX re-trace error. Only overlap generation via the prefetch worker
+    # when generation is eager.
+    use_outer_prefetch = _should_use_outer_batch_prefetch(generator)
+    if rank == 0 and not use_outer_prefetch:
+        print(
+            "[Train] Compiled data generation detected; disabling outer batch "
+            "prefetch (generation runs on the main thread)."
+        )
+
+    with ThreadPoolExecutor(max_workers=1) as prefetch_pool:
+        for step in range(steps_per_epoch):
+            if rank == 0 and (step < 2 or step % 200 == 0):
+                current_time = time.time()
+                elapsed = current_time - epoch_start_time
+                if step > 0:
+                    time_per_batch = (current_time - last_log_time) / min(step, 200)
+                    remaining = time_per_batch * (steps_per_epoch - step)
+                    display_loss = epoch_total_loss / step if step > 0 else 0.0
+                    print(
+                        f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | "
+                        f"Loss: {display_loss:.5f} | "
+                        f"Elapsed: {elapsed:.1f}s | Per-batch: {time_per_batch*1000:.1f}ms | "
+                        f"ETA: {remaining:.1f}s"
+                    )
+                else:
+                    print(
+                        f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | Elapsed: {elapsed:.1f}s"
+                    )
+                if step % 200 == 0 and step > 0:
+                    last_log_time = current_time
+
+            global_step_for_gen = cumulative_steps_before_epoch + step
+            if profile_enabled:
+                trainX, trainY, batch_timing = next_data
             else:
-                print(
-                    f"[Epoch {epoch_number}] Batch {step}/{steps_per_epoch} | Elapsed: {elapsed:.1f}s"
+                trainX, trainY = next_data
+                batch_timing = None
+
+            # Submit next batch generation in background (overlaps with training below)
+            prefetch_submit_s = 0.0
+            if step + 1 < steps_per_epoch and use_outer_prefetch:
+                next_gen_step = cumulative_steps_before_epoch + step + 1
+                submit_t0 = time.perf_counter()
+                future = prefetch_pool.submit(
+                    generator.generate_batch,
+                    step=next_gen_step,
+                    batch_size=batch_size,
+                    return_timing=profile_enabled,
+                    profile_generator_subphases=profile_generator_subphases,
                 )
-            if step % 200 == 0 and step > 0:
-                last_log_time = current_time
+                prefetch_submit_s = time.perf_counter() - submit_t0
 
-        global_step_for_gen = cumulative_steps_before_epoch + step
-        t_gen_start = time.perf_counter()
-        trainX, trainY = generator.generate_batch(step=global_step_for_gen, batch_size=batch_size)
-        data_gen_s += time.perf_counter() - t_gen_start
-
-        if step < 8 and rank == 0 and hasattr(generator, 'get_current_pair'):
-            d, r = generator.get_current_pair(global_step_for_gen)
-            basis = 'X' if (global_step_for_gen % 2 == 0) else 'Z'
-            print(
-                f"[Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
-            )
-
-        trainX = trainX.to(device, non_blocking=True)
-        trainY = trainY.to(device, non_blocking=True)
-
-        if (enable_fp16 or enable_bf16) and step < 2:
-            if rank == 0:
-                dtype_name = "float16" if enable_fp16 else "bfloat16"
+            if step < 8 and rank == 0 and hasattr(generator, 'get_current_pair'):
+                d, r = generator.get_current_pair(global_step_for_gen)
+                basis = 'X' if (global_step_for_gen % 2 == 0) else 'Z'
                 print(
-                    f"[Precision Check] trainX dtype: {trainX.dtype}, trainY dtype: {trainY.dtype}"
+                    f"[Batch {step}] Using (d={d}, r={r}, basis={basis}) | trainX shape: {trainX.shape}"
                 )
 
-        if enable_fp16:
-            autocast_dtype = torch.float16
-        elif enable_bf16:
-            autocast_dtype = torch.bfloat16
-        else:
-            autocast_dtype = torch.float32
+            # Keep BCE targets in fp32; never .half() the model or labels.
+            trainY = targets_for_bce(trainY)
+            # Leave trainX fp32 (autocast casts it); only fix its memory layout
+            # so half-precision Conv3D hits the fast Tensor-Core kernel.
+            trainX = input_to_channels_last_3d(trainX, use_channels_last_3d)
+            optimizer_step_skipped = False
 
-        current_batch_size = trainX.shape[0]
+            current_batch_size = trainX.shape[0]
+            model_fwd_bwd_s = 0.0
+            optimizer_step_s = 0.0
 
-        t_model_start = time.perf_counter()
-        with autocast(device_type='cuda', dtype=autocast_dtype):
-            outputs = model(trainX)
-            loss = loss_fn(outputs, trainY)
+            if profile_enabled:
+                _sync_cuda_if_needed(device)
+                model_t0 = time.perf_counter()
 
-        scaler.scale(loss).backward()
-        accumulated_samples += current_batch_size
+            with autocast_for_precision(device, enable_fp16, enable_bf16):
+                outputs = model(trainX)
+                loss = loss_fn(outputs, trainY)
 
-        if (step + 1) % accumulate_steps == 0:
-            scaler.unscale_(optimizer)
+            scaler.scale(loss).backward()
+            if profile_enabled:
+                _sync_cuda_if_needed(device)
+                model_fwd_bwd_s = time.perf_counter() - model_t0
+            accumulated_samples += current_batch_size
 
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.grad.div_(accumulated_samples)
+            if (step + 1) % accumulate_steps == 0:
+                if profile_enabled:
+                    _sync_cuda_if_needed(device)
+                    opt_t0 = time.perf_counter()
+                scaler.unscale_(optimizer)
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            if grad_norm > 1.0:
-                gradient_clipping_counter += 1
+                for param in model.parameters():
+                    if param.grad is not None:
+                        param.grad.div_(accumulated_samples)
 
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-            scheduler.step()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if grad_norm > 1.0:
+                    gradient_clipping_counter += 1
 
-            if use_ema and ema_model is not None:
-                with torch.no_grad():
-                    try:
-                        ema_params = [
-                            p.data for p in ema_model.parameters() if p.dtype.is_floating_point
-                        ]
-                        model_params = [
-                            p.data.to(ep.dtype)
-                            for p, ep in zip(model.parameters(), ema_model.parameters())
-                            if ep.dtype.is_floating_point
-                        ]
-                        torch._foreach_mul_(ema_params, ema_decay)
-                        torch._foreach_add_(ema_params, model_params, alpha=1.0 - ema_decay)
-                    except AttributeError:
+                scale_before_step = scaler.get_scale() if scaler.is_enabled() else None
+                scaler.step(optimizer)
+                scaler.update()
+                # On a skipped step (fp16 grad overflow) the scaler lowers the
+                # scale and does NOT apply the optimizer update; don't advance
+                # scheduler/EMA/global_step in that case.
+                optimizer_step_skipped = (
+                    scaler.is_enabled() and scaler.get_scale() < scale_before_step
+                )
+                optimizer.zero_grad()
+
+                if not optimizer_step_skipped:
+                    scheduler.step()
+
+                if not optimizer_step_skipped and use_ema and ema_model is not None:
+                    with torch.no_grad():
                         for ema_param, param in zip(ema_model.parameters(), model.parameters()):
                             if ema_param.dtype.is_floating_point:
                                 ema_param.data.mul_(ema_decay).add_(
                                     param.data.to(ema_param.dtype), alpha=1.0 - ema_decay
                                 )
+                        # Copy buffers (BatchNorm running_mean/running_var) from the
+                        # training model to the EMA model.  Without this, the EMA model
+                        # (which is always in eval mode) keeps its initial BN stats and
+                        # produces garbage during validation/inference.
+                        for ema_buf, model_buf in zip(ema_model.buffers(), model.buffers()):
+                            ema_buf.data.copy_(model_buf.data)
 
-            global_step += 1
-            accumulated_samples = 0
-        model_s += time.perf_counter() - t_model_start
+                if not optimizer_step_skipped:
+                    global_step += 1
+                accumulated_samples = 0
+                if profile_enabled:
+                    _sync_cuda_if_needed(device)
+                    optimizer_step_s = time.perf_counter() - opt_t0
 
-        num_elements = outputs.numel()
-        batch_loss_mean = loss.item() / num_elements
-        running_loss += batch_loss_mean
-        epoch_total_loss += batch_loss_mean
+            num_elements = outputs.numel()
+            batch_loss_mean = loss.item() / num_elements
+            running_loss += batch_loss_mean
+            epoch_total_loss += batch_loss_mean
 
-        if (step + 1) % accumulate_steps == 0:
-            last_loss = running_loss / accumulate_steps
-            if rank == 0:
-                if tb_writer is not None:
+            if (step + 1) % accumulate_steps == 0:
+                last_loss = running_loss / accumulate_steps
+                if rank == 0:
                     tb_writer.add_scalar('Loss/train_step', last_loss, global_step)
                     tb_writer.add_scalar(
                         'LearningRate/train',
                         scheduler.get_last_lr()[0], global_step
                     )
-            running_loss = 0.0
+                running_loss = 0.0
+
+            # Get the next batch: from the prefetch worker (eager generation) or
+            # synchronously on the main thread (compiled generation).
+            future_wait_s = 0.0
+            if step + 1 < steps_per_epoch:
+                wait_t0 = time.perf_counter()
+                if use_outer_prefetch:
+                    next_data = future.result()
+                else:
+                    next_data = generator.generate_batch(
+                        step=cumulative_steps_before_epoch + step + 1,
+                        batch_size=batch_size,
+                        return_timing=profile_enabled,
+                        profile_generator_subphases=profile_generator_subphases,
+                    )
+                future_wait_s = time.perf_counter() - wait_t0
+
+            if profile_enabled and step >= profile_warmup_steps:
+                step_profile = {
+                    "prefetch_submit_s": prefetch_submit_s,
+                    "future_wait_s": future_wait_s,
+                    "model_fwd_bwd_s": model_fwd_bwd_s,
+                    "optimizer_step_s": optimizer_step_s,
+                }
+                if batch_timing is not None:
+                    step_profile.update(batch_timing)
+                _accumulate_numeric_timing(profile_sums, step_profile)
+                profile_count += 1
+
+                if (
+                    rank == 0 and profile_log_every > 0 and
+                    profile_count % int(profile_log_every) == 0
+                ):
+                    avg = {k: v / profile_count for k, v in profile_sums.items()}
+                    print(
+                        f"[Epoch {epoch_number}] Timing avg over {profile_count} batches | "
+                        f"gen={avg.get('generator_total_s', 0.0) * 1000:.1f}ms | "
+                        f"wait={avg.get('future_wait_s', 0.0) * 1000:.1f}ms | "
+                        f"model={avg.get('model_fwd_bwd_s', 0.0) * 1000:.1f}ms | "
+                        f"opt={avg.get('optimizer_step_s', 0.0) * 1000:.1f}ms"
+                    )
+                    if "raw_sample_s" in avg:
+                        print(
+                            f"  raw: sample={avg.get('raw_sample_s', 0.0) * 1000:.1f}ms | "
+                            f"agg={avg.get('raw_aggregate_s', 0.0) * 1000:.1f}ms | "
+                            f"he={avg.get('he_total_s', 0.0) * 1000:.1f}ms | "
+                            f"format={avg.get('format_s', 0.0) * 1000:.1f}ms"
+                        )
 
     avg_loss = epoch_total_loss / steps_per_epoch
 
-    total_time = time.time() - epoch_start_time
     if rank == 0:
+        total_time = time.time() - epoch_start_time
         time_per_batch = total_time / steps_per_epoch
         print(
-            f"train_epoch: Completed {steps_per_epoch} batches in {total_time:.1f}s "
+            f"train_epoch_generator: Completed {steps_per_epoch} batches in {total_time:.1f}s "
             f"({time_per_batch*1000:.1f}ms/batch), avg_loss={avg_loss:.5f}"
         )
-        print(f"[Train Timing] data_gen={data_gen_s:.2f}s, model={model_s:.2f}s")
+        if profile_enabled and profile_count > 0:
+            avg = {k: v / profile_count for k, v in profile_sums.items()}
+            print(
+                f"train_epoch_generator timing summary ({profile_count} profiled batches, "
+                f"after warmup={profile_warmup_steps})"
+            )
+            print(
+                f"  generator={avg.get('generator_total_s', 0.0) * 1000:.1f}ms | "
+                f"wait={avg.get('future_wait_s', 0.0) * 1000:.1f}ms | "
+                f"model={avg.get('model_fwd_bwd_s', 0.0) * 1000:.1f}ms | "
+                f"opt={avg.get('optimizer_step_s', 0.0) * 1000:.1f}ms | "
+                f"submit={avg.get('prefetch_submit_s', 0.0) * 1000:.3f}ms"
+            )
+            if "raw_sample_s" in avg:
+                print(
+                    f"  raw breakdown: carry={avg.get('raw_propagate_carry_s', 0.0) * 1000:.1f}ms | "
+                    f"sample={avg.get('raw_sample_s', 0.0) * 1000:.1f}ms | "
+                    f"y={avg.get('raw_decompose_y_s', 0.0) * 1000:.1f}ms | "
+                    f"agg={avg.get('raw_aggregate_s', 0.0) * 1000:.1f}ms | "
+                    f"ff/meas={avg.get('raw_measure_ff_s', 0.0) * 1000:.1f}ms | "
+                    f"s1s2={avg.get('raw_s1s2_propagate_s', 0.0) * 1000:.1f}ms"
+                )
+                print(
+                    f"  post-raw: he={avg.get('he_total_s', 0.0) * 1000:.1f}ms | "
+                    f"dlpack={avg.get('dlpack_s', 0.0) * 1000:.1f}ms | "
+                    f"format={avg.get('format_s', 0.0) * 1000:.1f}ms"
+                )
+            tb_writer.add_scalar(
+                'Timing/generator_total_ms',
+                avg.get('generator_total_s', 0.0) * 1000, epoch_number
+            )
+            tb_writer.add_scalar(
+                'Timing/future_wait_ms',
+                avg.get('future_wait_s', 0.0) * 1000, epoch_number
+            )
+            tb_writer.add_scalar(
+                'Timing/model_fwd_bwd_ms',
+                avg.get('model_fwd_bwd_s', 0.0) * 1000, epoch_number
+            )
+            tb_writer.add_scalar(
+                'Timing/optimizer_step_ms',
+                avg.get('optimizer_step_s', 0.0) * 1000, epoch_number
+            )
 
-    return avg_loss, global_step, {
-        "data_gen_s": data_gen_s,
-        "model_s": model_s,
-        "steps": steps_per_epoch,
-        "total_s": total_time
-    }
+    return avg_loss, global_step
 
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Main training function using on-the-fly data generation."""
     OmegaConf.set_struct(cfg, False)
+
+    # Env-based overrides for samples and epochs. These apply unconditionally so
+    # CI smoke jobs and quick local runs can shrink the workload without needing
+    # to edit the YAML. Mirrors public/main's train.py behaviour.
+    _train_samples_env = os.environ.get("PREDECODER_TRAIN_SAMPLES")
+    _val_samples_env = os.environ.get("PREDECODER_VAL_SAMPLES")
+    _test_samples_env = os.environ.get("PREDECODER_TEST_SAMPLES")
+    _epochs_env = os.environ.get("PREDECODER_TRAIN_EPOCHS")
+    try:
+        if _train_samples_env:
+            cfg.train.num_samples = int(_train_samples_env)
+    except Exception:
+        pass
+    try:
+        if _val_samples_env:
+            cfg.val.num_samples = int(_val_samples_env)
+    except Exception:
+        pass
+    try:
+        if _test_samples_env:
+            cfg.test.num_samples = int(_test_samples_env)
+    except Exception:
+        pass
+    try:
+        if _epochs_env:
+            cfg.train.epochs = int(_epochs_env)
+    except Exception:
+        pass
 
     # Suppress torch.compile verbose output
     import logging
@@ -606,18 +749,6 @@ def main(cfg: DictConfig) -> None:
         print(f"⚠️  Could not apply custom timeout: {e}")
         DistributedManager.initialize()
         dist = DistributedManager()
-
-    # Training is not supported without a GPU; fail fast instead of silently using CPU.
-    if dist.rank == 0 and not torch.cuda.is_available():
-        print("ERROR: Training requires a GPU. CUDA is not available.")
-        print("  - Check: python3 -c \"import torch; print(torch.cuda.is_available())\"")
-        print(
-            "  - Ensure PyTorch is installed with CUDA (e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121)"
-        )
-        print(
-            "  - Free GPU: run code/scripts/free_gpu.sh to list or kill other processes using the GPU."
-        )
-        raise RuntimeError("Training requires a GPU; CUDA is not available.")
 
     # Job timing broadcast
     job_start_timestamp = None
@@ -668,87 +799,25 @@ def main(cfg: DictConfig) -> None:
         cfg.job_start_datetime = job_start_datetime
         cfg.job_time_limit_seconds = job_time_limit_seconds
 
-    # === Public-release training defaults (runtime) ===
-    # Auto-scale shots / epoch based on detected world size to keep epochs reasonably fast
-    # across different user machines, while preserving production-like behavior.
-    #
-    # Production reference: train.num_samples is interpreted as "shots / epoch at world_size=8".
-    # This allows temporarily reducing train.num_samples in config_validator.py for faster iteration.
-    try:
-        ws = int(getattr(dist, "world_size", 1) or 1)
-    except Exception:
-        ws = 1
-    ws_eff = max(1, min(ws, 8))
-    base_samples_8gpu = int(getattr(getattr(cfg, "train", None), "num_samples", 2**26))
-    scaled_samples = int(base_samples_8gpu * (ws_eff / 8.0))
-    # Make sure it's positive and at least one effective batch worth of samples.
-    scaled_samples = max(int(scaled_samples), 1)
-    cfg.train.num_samples = scaled_samples
-    # Epoch count defaults to production value; allow explicit overrides for quick runs.
-    if getattr(cfg.train, "epochs", None) is None:
-        cfg.train.epochs = 100
-
-    # Env-based overrides for samples, epochs, and LR milestones.
-    # These apply unconditionally so that CI jobs and quick local runs can
-    # override config values without needing PREDECODER_TIMING_RUN=1.
-    train_samples_env = os.environ.get("PREDECODER_TRAIN_SAMPLES")
-    val_samples_env = os.environ.get("PREDECODER_VAL_SAMPLES")
-    test_samples_env = os.environ.get("PREDECODER_TEST_SAMPLES")
-    epochs_env = os.environ.get("PREDECODER_TRAIN_EPOCHS")
-    try:
-        if train_samples_env:
-            cfg.train.num_samples = int(train_samples_env)
-    except Exception:
-        pass
-    try:
-        if val_samples_env:
-            cfg.val.num_samples = int(val_samples_env)
-    except Exception:
-        pass
-    try:
-        if test_samples_env:
-            cfg.test.num_samples = int(test_samples_env)
-    except Exception:
-        pass
-    try:
-        if epochs_env:
-            cfg.train.epochs = int(epochs_env)
-    except Exception:
-        pass
-    milestones_env = os.environ.get("PREDECODER_LR_MILESTONES")
-    try:
-        if milestones_env:
-            cfg.lr_scheduler.milestones = [float(x) for x in milestones_env.split(",")]
-    except Exception:
-        pass
-
     if dist.rank == 0:
         print(f"Effective workflow.task: {cfg.workflow.task}")
         print(f"Using LR scheduler type: {cfg.lr_scheduler.type}")
-        print(
-            f"[Train] Auto-scaled train.num_samples={int(cfg.train.num_samples):,} "
-            f"(base={base_samples_8gpu:,} @ world_size=8; detected world_size={ws}, using {ws_eff})"
-        )
         print(f"Config summary:\n{OmegaConf.to_yaml(cfg, sort_keys=True)}")
 
     print(f"Rank {dist.rank} running on {dist.device}")
-    if torch.cuda.is_available() and dist.rank == 0:
-        mem_alloc = torch.cuda.memory_allocated(dist.device) / 2**20
-        mem_reserved = torch.cuda.memory_reserved(dist.device) / 2**20
-        print(
-            f"[GPU] {dist.device} in use (allocated: {mem_alloc:.1f} MiB, reserved: {mem_reserved:.1f} MiB)"
-        )
 
-    # Configure QEC metrics (LER, syndrome density)
-    configure_metrics(rank=dist.rank)
+    # Configure QEC metrics (LER, syndrome density) based on code family.
+    #
+    # Color code uses Chromobius-based LER via logical_error_rate_color.py
+    # Surface code uses Stim-based LER via logical_error_rate.py
+    code_name = str(getattr(cfg, "code", "surface")).lower()
+    configure_metrics(rank=dist.rank, code=code_name)
 
-    # === Torch Generator Setup ===
+    # === Data Generator Setup ===
     if dist.rank == 0:
         print("=" * 80)
-        print("🚀 Using Torch Generator for on-the-fly data generation")
+        print("🚀 Setting up on-the-fly data generation")
         print("=" * 80)
-
-    from data.generator_torch import QCDataGeneratorTorch
 
     # Generate random base seed on rank 0, broadcast to all
     import random
@@ -772,110 +841,51 @@ def main(cfg: DictConfig) -> None:
 
     # Optional explicit circuit-level noise model (overrides p_error/p_min/p_max when provided)
     noise_model_cfg = getattr(cfg.data, "noise_model", None)
-    noise_model_user_obj = None
-    noise_model_train_obj = None
+    noise_model_obj = None
     if noise_model_cfg is not None:
-        from qec.noise_model import NoiseModel
+        from qec.noise_model import (
+            NoiseModel,
+            get_grouped_totals,
+            get_training_upscaled_noise_model,
+        )
         nm_dict = OmegaConf.to_container(noise_model_cfg, resolve=True
                                         ) if hasattr(noise_model_cfg, "items") else noise_model_cfg
         # Allow configs to specify `noise_model: null`
         if nm_dict is not None:
-            noise_model_user_obj = NoiseModel.from_config_dict(dict(nm_dict))
-
-            # Surface-code training upscaling: bring max(P's) to target for training
-            # data only. Evaluation uses the user-specified noise model as-is.
-            from qec.noise_model import (
-                get_grouped_totals,
-                get_training_upscaled_noise_model,
-                SURFACE_CODE_TRAINING_UPSCALE_TARGET,
-                SURFACE_CODE_THRESHOLD_APPROX,
-            )
-            group_totals = get_grouped_totals(noise_model_user_obj)
-            max_group = float(group_totals["max_group"])
-            if max_group <= 0.0:
-                raise ValueError(
-                    "Invalid noise_model: all grouped totals are <= 0 "
-                    f"(prep_X={group_totals['p_prep_X']}, prep_Z={group_totals['p_prep_Z']}, "
-                    f"meas_X={group_totals['p_meas_X']}, meas_Z={group_totals['p_meas_Z']}, "
-                    f"idle_cnot={group_totals['p_idle_cnot']}, "
-                    f"idle_spam_effective={group_totals['p_idle_spam_effective']}, "
-                    f"cnot={group_totals['p_cnot']})."
-                )
-            code_type = getattr(cfg.data, "code_type", "surface_code")
-            skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False))
-            if os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "0") == "1":
-                skip_upscale = True
-            noise_model_train_obj, upscale_info = get_training_upscaled_noise_model(
-                noise_model_user_obj,
-                code_type=code_type,
+            user_noise_model_obj = NoiseModel.from_config_dict(dict(nm_dict))
+            skip_upscale = bool(getattr(cfg.data, "skip_noise_upscaling", False)) or str(
+                os.environ.get("PREDECODER_SKIP_NOISE_UPSCALING", "")
+            ).strip().lower() in ("1", "true", "yes", "on")
+            noise_model_obj, upscale_info = get_training_upscaled_noise_model(
+                user_noise_model_obj,
+                code_type=code_name,
                 skip_upscale=skip_upscale,
             )
-
             # Force fixed-p mode with a conservative scalar placeholder when using noise_model.
-            # IMPORTANT: during training we apply drift (±2%) around the *training* noise model reference, so we
-            # size buffers using 1.25× the maximum reference probability to avoid overflow.
-            p_error_value = float(1.25 * noise_model_train_obj.get_max_probability())
+            # The actual sampling probabilities come from `noise_model_obj`.
+            # IMPORTANT: during training we may apply drift (±25%) around the reference noise model,
+            # so buffer sizing uses 1.25× the maximum active reference probability.
+            p_error_value = float(1.25 * noise_model_obj.get_max_probability())
             p_min_value = p_error_value
             p_max_value = p_error_value
             if dist.rank == 0:
-                group_totals = upscale_info["group_totals"]
-                max_group = float(upscale_info["max_group"])
-                # Always print the grouped totals + decision to make verification easy from logs.
                 print(
-                    "[Train] noise_model grouped totals: "
-                    f"prep_X={group_totals['p_prep_X']:.6g}, "
-                    f"prep_Z={group_totals['p_prep_Z']:.6g}, "
-                    f"meas_X={group_totals['p_meas_X']:.6g}, "
-                    f"meas_Z={group_totals['p_meas_Z']:.6g}, "
-                    f"idle_cnot={group_totals['p_idle_cnot']:.6g}, "
-                    f"idle_spam_raw={group_totals['p_idle_spam_raw']:.6g}, "
-                    f"idle_spam_effective={group_totals['p_idle_spam_effective']:.6g}, "
-                    f"cnot={group_totals['p_cnot']:.6g}; "
-                    f"max_group={max_group:.6g}"
+                    "[Train] Using explicit noise_model from config (25p). "
+                    f"p_error/p_min/p_max sizing placeholder -> {p_error_value:.6g}"
                 )
-                print(f"[Train] {upscale_info['message']}")
-                if upscale_info.get("skipped_by_user"):
-                    print(
-                        "[Train] noise_model upscaling SKIPPED (skip_noise_upscaling=true or "
-                        "PREDECODER_SKIP_NOISE_UPSCALING=1). Training uses exact user-specified parameters."
-                    )
-                if upscale_info.get("applied_upscale"):
-                    print(
-                        f"[Train] noise_model upscaling (surface code): scale_factor={upscale_info['scale_factor']:.6g}, "
-                        f"target={SURFACE_CODE_TRAINING_UPSCALE_TARGET:.1e}. "
-                        "Evaluation uses user-specified noise model as-is."
-                    )
-                    print(
-                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
-                    )
-                if upscale_info.get("downscale_skipped"):
-                    print(
-                        "\n" + "!" * 80 + "\n" +
-                        "[Train] WARNING: Noise model DOWNSCALE was NOT applied (max_group > target). "
-                        "Parameters are unchanged. If you intended a lower noise regime, check your noise model "
-                        "parameter values (e.g. a typo may have set a single p too high).\n" +
-                        "!" * 80
-                    )
-                if upscale_info.get("above_target_warning"):
-                    print(
-                        "\n" + "#" * 80 + "\n" +
-                        "[Train] WARNING: Your noise model max_group ({:.6g}) is ABOVE the surface-code training "
-                        "target ({:.1e}). Surface code threshold is approximately {:.1e}. "
-                        "You may be above threshold or have introduced a noise model that is not the one you intended "
-                        "(e.g. a typo in one of the 25 p's). Please verify your noise_model configuration.\n"
-                        .format(
-                            max_group, SURFACE_CODE_TRAINING_UPSCALE_TARGET,
-                            SURFACE_CODE_THRESHOLD_APPROX
-                        ) + "#" * 80
-                    )
+                print(f"[Train] configured noise_model summary: {user_noise_model_obj!r}")
+                print(f"[Train] training noise_model summary: {noise_model_obj!r}")
+                print(f"[Train] training noise upscaling: {upscale_info['message']}")
+                totals = get_grouped_totals(noise_model_obj)
                 print(
-                    f"[Train] Using explicit noise_model from config (25p). Overriding p_error/p_min/p_max -> {p_error_value:.6g}"
+                    "[Train] training noise grouped totals: "
+                    f"max_group={totals['max_group']:.6g}, "
+                    f"prep_X={totals['p_prep_X']:.6g}, prep_Z={totals['p_prep_Z']:.6g}, "
+                    f"meas_X={totals['p_meas_X']:.6g}, meas_Z={totals['p_meas_Z']:.6g}, "
+                    f"idle_cnot={totals['p_idle_cnot']:.6g}, "
+                    f"idle_spam_effective={totals['p_idle_spam_effective']:.6g}, "
+                    f"cnot={totals['p_cnot']:.6g}"
                 )
-                print(f"[Train] noise_model (user) summary: {noise_model_user_obj!r}")
-                if upscale_info.get("applied_upscale"):
-                    print(
-                        f"[Train] noise_model (training, upscaled) summary: {noise_model_train_obj!r}"
-                    )
                 print(
                     "[Train] noise_model idle semantics: "
                     "bulk/CNOT-layer idles use p_idle_cnot_*, "
@@ -884,12 +894,9 @@ def main(cfg: DictConfig) -> None:
                 )
                 print(
                     "[Train] noise_model totals: "
-                    f"prep_total={group_totals['p_prep_total']:.6g}, "
-                    f"meas_total={group_totals['p_meas_total']:.6g}, "
-                    f"idle_cnot_total={group_totals['p_idle_cnot']:.6g}, "
-                    f"idle_spam_total={group_totals['p_idle_spam_raw']:.6g}, "
-                    f"idle_spam_effective={group_totals['p_idle_spam_effective']:.6g}, "
-                    f"cnot_total={group_totals['p_cnot']:.6g}"
+                    f"idle_cnot_total={noise_model_obj.get_total_idle_cnot_probability():.6g}, "
+                    f"idle_spam_total={noise_model_obj.get_total_idle_spam_probability():.6g}, "
+                    f"cnot_total={noise_model_obj.get_total_cnot_probability():.6g}"
                 )
         elif dist.rank == 0:
             print("[Train] noise_model: null (using legacy single-p / p-range sampling)")
@@ -912,23 +919,35 @@ def main(cfg: DictConfig) -> None:
     # Get HE settings
     timelike_he = getattr(cfg.data, 'timelike_he', False)
     num_he_cycles = getattr(cfg.data, 'num_he_cycles', 1)
-    max_passes = getattr(cfg.data, 'max_passes_w1', 32)
+    use_weight2_timelike = getattr(cfg.data, 'use_weight2_timelike', False)
+    max_passes_w1 = getattr(cfg.data, 'max_passes_w1', 32)
+    max_passes_w2 = getattr(cfg.data, 'max_passes_w2', 32)
     decompose_y = getattr(cfg.data, 'decompose_y', True)
+    # Color-code specific: superdense schedule toggle influences Y-decomposition ruleset.
+    # Default to surface-code rules unless we are explicitly training a (superdense) color-code circuit.
+    code_name = str(getattr(cfg, "code", "surface")).lower()
+    superdense = bool(getattr(cfg.data, "superdense", True))
+    y_decomposition_ruleset = "superdense_color_code" if (
+        code_name.startswith("color") and superdense
+    ) else "surface_code"
     precomputed_frames_dir = getattr(cfg.data, 'precomputed_frames_dir', None)
     code_rotation = getattr(cfg.data, 'code_rotation', 'XV')
-    precomputed_frames_dir = resolve_precomputed_frames_dir(
-        precomputed_frames_dir, cfg.distance, cfg.n_rounds, cfg.meas_basis, dist.rank
-    )
-    if dist.rank == 0:
-        if noise_model_train_obj is not None:
-            print(f"[Train] active noise_model_sha256={noise_model_train_obj.sha256()}")
-        if precomputed_frames_dir is None:
-            print("[Train] DEM artifacts: building in memory")
-        else:
-            print(
-                "[Train] DEM artifacts: using disk request "
-                f"{precomputed_frames_dir} with noise metadata validation"
-            )
+
+    # Code-family toggle: surface vs color code.
+    gen_code = str(getattr(cfg, "code", "surface")).lower()
+    schedule = getattr(cfg.data, "schedule", "nearest-neighbor")
+    enable_z_feedforward = bool(getattr(cfg.data, "enable_z_feedforward", True))
+    # Default on: the sampled-only FF override is a strict trainY-label
+    # improvement on the color-code path (validated exhaustively against
+    # fake r1->r2 diffs at d=5/7/9) and a no-op on the surface-code path
+    # (the surface-code memory circuit does not accept this flag, and
+    # the generator only forwards it on the color-code branch).
+    apply_data_x_override = bool(getattr(cfg.data, "apply_data_x_override", True))
+
+    # Color-code spacelike HE knobs for the Torch+cuStabilizer generator.
+    color_apply_spacelike_he = bool(getattr(cfg.data, "apply_spacelike_he", True))
+    color_he_max_iterations = int(getattr(cfg.data, "he_max_iterations", 16))
+    color_use_coset_search = bool(getattr(cfg.data, "use_coset_search", False))
 
     _compute_dtype_raw = getattr(cfg.data, 'compute_dtype', None)
     _compute_dtype = None
@@ -953,63 +972,149 @@ def main(cfg: DictConfig) -> None:
     )
 
     if use_multi_pairs:
-        # Torch-only: no multi-pair support yet; fall back to single pair
-        if dist.rank == 0:
-            print(
-                "[Train] Note: multi_pairs not yet supported in Torch generator; using single pair mode"
-            )
-        train_generator = None
-        val_generator = None
-    else:
-        train_generator = QCDataGeneratorTorch(
-            distance=cfg.distance,
-            n_rounds=cfg.n_rounds,
+        from data.generator_torch_multi import MultiQCDataGeneratorTorch
+        _multi_common = dict(
+            distances=[int(d) for d in multi_d],
+            rounds=[int(r) for r in multi_r],
+            code=gen_code,
             p_error=p_error_value,
             p_min=p_min_value,
             p_max=p_max_value,
             measure_basis=cfg.meas_basis,
             rank=dist.local_rank,
             global_rank=dist.rank,
+            timelike_he=timelike_he,
+            num_he_cycles=num_he_cycles,
+            use_weight2_timelike=use_weight2_timelike,
+            max_passes_w1=max_passes_w1,
+            max_passes_w2=max_passes_w2,
+            decompose_y=False,
+            precomputed_frames_dir=precomputed_frames_dir,
+            code_rotation=code_rotation,
+            noise_model=noise_model_obj,
+            schedule=schedule,
+            enable_z_feedforward=enable_z_feedforward,
+            apply_data_x_override=apply_data_x_override,
+            apply_spacelike_he=color_apply_spacelike_he,
+            he_max_iterations=color_he_max_iterations,
+            use_coset_search=color_use_coset_search,
+            use_compile=bool(getattr(cfg.data, "use_compile", False)),
+            compile_chunk_size=int(getattr(cfg.data, "compile_chunk_size", 2)),
+            compute_dtype=_compute_dtype,
+            use_dense_overlap=bool(getattr(cfg.data, "use_dense_overlap", False)),
+            use_parallel_spacelike=bool(getattr(cfg.data, "use_parallel_spacelike", False)),
+        )
+        train_generator = MultiQCDataGeneratorTorch(
             mode='train',
             verbose=(dist.rank == 0),
             base_seed=base_seed,
-            timelike_he=timelike_he,
-            num_he_cycles=num_he_cycles,
-            max_passes_w1=max_passes,
-            decompose_y=False,
-            precomputed_frames_dir=precomputed_frames_dir,
-            code_rotation=code_rotation,
-            noise_model=noise_model_train_obj,
-            **_he_accel_kwargs,
+            **_multi_common,
         )
-        val_generator = QCDataGeneratorTorch(
-            distance=cfg.distance,
-            n_rounds=cfg.n_rounds,
-            p_error=p_error_value,
-            p_min=p_min_value,
-            p_max=p_max_value,
-            measure_basis=cfg.meas_basis,
-            rank=dist.local_rank,
-            global_rank=dist.rank,
+        val_generator = MultiQCDataGeneratorTorch(
             mode='test',
             verbose=False,
             base_seed=base_seed + 100_000_000,
-            timelike_he=timelike_he,
-            num_he_cycles=num_he_cycles,
-            max_passes_w1=max_passes,
-            decompose_y=False,
-            precomputed_frames_dir=precomputed_frames_dir,
-            code_rotation=code_rotation,
-            noise_model=noise_model_train_obj,
-            **_he_accel_kwargs,
+            **_multi_common,
         )
+    else:
+        if code_name.startswith("color"):
+            if precomputed_frames_dir is None:
+                raise ValueError(
+                    "code=color requires data.precomputed_frames_dir to point at a color "
+                    "augmented DEM bundle (see qec.precompute_dem --code color)."
+                )
+            from data.generator_torch_color import ColorQCDataGeneratorTorch
+            train_generator = ColorQCDataGeneratorTorch(
+                distance=cfg.distance,
+                n_rounds=cfg.n_rounds,
+                schedule=schedule,
+                measure_basis=cfg.meas_basis,
+                precomputed_frames_dir=precomputed_frames_dir,
+                enable_z_feedforward=enable_z_feedforward,
+                apply_data_x_override=apply_data_x_override,
+                apply_spacelike_he=color_apply_spacelike_he,
+                he_max_iterations=color_he_max_iterations,
+                use_coset_search=color_use_coset_search,
+                rank=dist.local_rank,
+                global_rank=dist.rank,
+                base_seed=base_seed,
+                verbose=(dist.rank == 0),
+                noise_model=noise_model_obj,
+                p_error=p_error_value,
+                p_min=p_min_value,
+                p_max=p_max_value,
+            )
+            val_generator = ColorQCDataGeneratorTorch(
+                distance=cfg.distance,
+                n_rounds=cfg.n_rounds,
+                schedule=schedule,
+                measure_basis=cfg.meas_basis,
+                precomputed_frames_dir=precomputed_frames_dir,
+                enable_z_feedforward=enable_z_feedforward,
+                apply_data_x_override=apply_data_x_override,
+                apply_spacelike_he=color_apply_spacelike_he,
+                he_max_iterations=color_he_max_iterations,
+                use_coset_search=color_use_coset_search,
+                rank=dist.local_rank,
+                global_rank=dist.rank,
+                base_seed=base_seed + 100_000_000,
+                verbose=False,
+                noise_model=noise_model_obj,
+                p_error=p_error_value,
+                p_min=p_min_value,
+                p_max=p_max_value,
+            )
+        else:
+            # Surface code: Torch-only path (matches public/main).
+            from data.generator_torch import QCDataGeneratorTorch
+            _gen_torch_common = dict(
+                distance=cfg.distance,
+                n_rounds=cfg.n_rounds,
+                p_error=p_error_value,
+                p_min=p_min_value,
+                p_max=p_max_value,
+                measure_basis=cfg.meas_basis,
+                rank=dist.local_rank,
+                global_rank=dist.rank,
+                timelike_he=timelike_he,
+                num_he_cycles=num_he_cycles,
+                use_weight2=bool(getattr(cfg.data, "use_weight2", use_weight2_timelike)),
+                max_passes_w1=max_passes_w1,
+                max_passes_w2=max_passes_w2,
+                decompose_y=False,
+                precomputed_frames_dir=precomputed_frames_dir,
+                code_rotation=code_rotation,
+                noise_model=noise_model_obj,
+                use_compile=bool(getattr(cfg.data, "use_compile", False)),
+                compile_chunk_size=int(getattr(cfg.data, "compile_chunk_size", 2)),
+                compute_dtype=_compute_dtype,
+                use_coset_search=bool(getattr(cfg.data, "use_coset_search", False)),
+                coset_max_generators=int(getattr(cfg.data, "coset_max_generators", 20)),
+                use_dense_overlap=bool(getattr(cfg.data, "use_dense_overlap", False)),
+                use_parallel_spacelike=bool(getattr(cfg.data, "use_parallel_spacelike", False)),
+            )
+            train_generator = QCDataGeneratorTorch(
+                mode="train",
+                verbose=(dist.rank == 0),
+                base_seed=base_seed,
+                **_gen_torch_common,
+            )
+            val_generator = QCDataGeneratorTorch(
+                mode="test",
+                verbose=False,
+                base_seed=base_seed,
+                seed_offset=100_000_000,
+                **_gen_torch_common,
+            )
 
     # Create test generator
     test_distance_override = getattr(cfg.test, 'distance', None)
     test_rounds_override = getattr(cfg.test, 'n_rounds', None)
     test_timelike_he = getattr(cfg.test, 'timelike_he', timelike_he)
     test_num_he_cycles = getattr(cfg.test, 'num_he_cycles', num_he_cycles)
-    test_max_passes = getattr(cfg.test, 'max_passes_w1', max_passes)
+    test_use_weight2_timelike = getattr(cfg.test, 'use_weight2_timelike', use_weight2_timelike)
+    test_max_passes_w1 = getattr(cfg.test, 'max_passes_w1', max_passes_w1)
+    test_max_passes_w2 = getattr(cfg.test, 'max_passes_w2', max_passes_w2)
 
     if test_distance_override is not None and test_rounds_override is not None:
         test_d, test_r = int(test_distance_override), int(test_rounds_override)
@@ -1019,43 +1124,65 @@ def main(cfg: DictConfig) -> None:
     else:
         test_d, test_r = cfg.distance, cfg.n_rounds
 
-    # Determine if we can reuse val_generator for testing
-    test_matches_training = False
-    if not use_multi_pairs and test_d == cfg.distance and test_r == cfg.n_rounds:
-        test_matches_training = True
-    elif use_multi_pairs:
-        for d, r in zip(multi_d, multi_r):
-            if int(d) == test_d and int(r) == test_r:
-                test_matches_training = True
-                break
+    def _build_test_generator():
+        if code_name.startswith("color"):
+            from data.generator_torch_color import ColorQCDataGeneratorTorch
+            return ColorQCDataGeneratorTorch(
+                distance=test_d,
+                n_rounds=test_r,
+                schedule=schedule,
+                measure_basis=cfg.meas_basis,
+                precomputed_frames_dir=precomputed_frames_dir,
+                enable_z_feedforward=enable_z_feedforward,
+                apply_data_x_override=apply_data_x_override,
+                apply_spacelike_he=color_apply_spacelike_he,
+                he_max_iterations=color_he_max_iterations,
+                use_coset_search=color_use_coset_search,
+                rank=dist.local_rank,
+                global_rank=dist.rank,
+                base_seed=base_seed + 200_000_000,
+                verbose=False,
+                noise_model=noise_model_obj,
+                p_error=p_error_value,
+                p_min=p_min_value,
+                p_max=p_max_value,
+            )
+        from data.generator_torch import QCDataGeneratorTorch
+        return QCDataGeneratorTorch(
+            distance=test_d,
+            n_rounds=test_r,
+            p_error=p_error_value,
+            p_min=p_min_value,
+            p_max=p_max_value,
+            measure_basis=cfg.meas_basis,
+            rank=dist.local_rank,
+            global_rank=dist.rank,
+            mode="test",
+            verbose=(dist.rank == 0),
+            timelike_he=test_timelike_he,
+            num_he_cycles=test_num_he_cycles,
+            use_weight2=bool(getattr(cfg.data, "use_weight2", test_use_weight2_timelike)),
+            max_passes_w1=test_max_passes_w1,
+            max_passes_w2=test_max_passes_w2,
+            decompose_y=False,
+            precomputed_frames_dir=precomputed_frames_dir,
+            code_rotation=code_rotation,
+            noise_model=noise_model_obj,
+            base_seed=base_seed,
+            seed_offset=200_000_000,
+            use_compile=bool(getattr(cfg.data, "use_compile", False)),
+            compile_chunk_size=int(getattr(cfg.data, "compile_chunk_size", 2)),
+            compute_dtype=_compute_dtype,
+        )
 
-    # Test generator (Stim-based evaluation path)
+    # The Torch validation/LER path always passes generator=None to compute_*
+    # helpers, so an explicit test_generator is no longer needed. Keep the
+    # `_build_test_generator` helper in scope for any future Torch-side reuse.
+    _ = _build_test_generator  # keep reference; harmless no-op
     test_generator = None
 
     if dist.rank == 0:
-        print("✅ Torch generator initialized successfully (Stim simulation + PyMatching decoding)")
-
-        def _print_gen(name, g):
-            if g is None:
-                print(f"[Train] {name}: <none>")
-                return
-            # Basic shape config
-            d = getattr(g, "distance", None)
-            r = getattr(g, "n_rounds", None)
-            mode = getattr(g, "mode", None)
-            # Noise model usage
-            nm = getattr(g, "noise_model", None)
-            has_nm = nm is not None
-            drift_en = bool(getattr(g, "_noise_model_drift_enabled", False))
-            drift_frac = getattr(g, "_noise_model_drift_frac", None)
-            drift_s = f", drift=±{float(drift_frac):.3f}" if drift_en and drift_frac is not None else ""
-            print(
-                f"[Train] {name}: d={d}, n_rounds={r}, mode={mode}, noise_model={'yes' if has_nm else 'no'}{drift_s}"
-            )
-
-        _print_gen("train_generator", train_generator)
-        _print_gen("val_generator", val_generator)
-        _print_gen(f"test_generator (target d={test_d}, r={test_r})", test_generator)
+        print("✅ Data generator initialized successfully")
         print("=" * 80)
 
     # Generate sample batch for shape info
@@ -1063,17 +1190,31 @@ def main(cfg: DictConfig) -> None:
     cfg.model.input_channels = sample_trainX.shape[1]
     cfg.model.out_channels = sample_trainY.shape[1]
 
+    profile_enabled = bool(OmegaConf.select(cfg, "profiling.enabled", default=False))
+    profile_log_every = int(OmegaConf.select(cfg, "profiling.log_every", default=50) or 50)
+    profile_warmup_steps = int(OmegaConf.select(cfg, "profiling.warmup_steps", default=2) or 2)
+    profile_generator_subphases = bool(
+        OmegaConf.select(cfg, "profiling.generator_subphases", default=False)
+    )
+
     # Create model
     base_model = ModelFactory.create_model(cfg).to(dist.device)
 
-    if cfg.enable_fp16:
-        base_model = base_model.half()
-    elif getattr(cfg, 'enable_bf16', False):
-        base_model = base_model.to(torch.bfloat16)
+    # Mixed precision is handled by autocast in the train/val steps; keep
+    # parameters, BatchNorm state, and optimizer state in fp32. Only switch the
+    # 5D Conv3D stack to channels_last_3d (NDHWC) under AMP for fast kernels.
+    use_channels_last_3d = (
+        should_use_channels_last_3d(
+            cfg.enable_fp16, getattr(cfg, 'enable_bf16', False), dist.device
+        ) and bool(
+            getattr(cfg, 'amp', {}).get('channels_last_3d', True) if hasattr(cfg, 'amp') else True
+        )
+    )
+    if use_channels_last_3d:
+        base_model = module_to_channels_last_3d(base_model, True)
 
-    ema_model = deepcopy(base_model).to(dist.device).eval()
-
-    # Load checkpoint before compiling
+    # Load checkpoint before creating EMA model, so EMA starts from checkpoint weights
+    # (and correct BatchNorm running stats) rather than random initialization.
     init_epoch_temp = 0
     global_step_temp = 0
     if cfg.load_checkpoint:
@@ -1093,27 +1234,18 @@ def main(cfg: DictConfig) -> None:
             rank=dist.rank
         )
 
-    # Optional torch.compile (with graceful fallback on failure)
-    env_compile = os.environ.get("PREDECODER_TORCH_COMPILE")
-    env_compile_mode = os.environ.get("PREDECODER_TORCH_COMPILE_MODE")
-    compile_mode = str(env_compile_mode or getattr(cfg, "torch_compile_mode", "max-autotune"))
-    should_compile = bool(getattr(cfg, "torch_compile", True))
-    if env_compile is not None:
-        env_val = str(env_compile).strip().lower()
-        if env_val == "auto":
-            should_compile = True
-        elif env_val in ("0", "false", "no", "off"):
-            should_compile = False
-        elif env_val in ("1", "true", "yes", "on"):
-            should_compile = True
-    if should_compile:
+    # Create EMA model AFTER checkpoint load so it inherits trained weights AND
+    # correct BatchNorm running statistics from the checkpoint.
+    ema_model = deepcopy(base_model).to(dist.device).eval()
+    if use_channels_last_3d:
+        ema_model = module_to_channels_last_3d(ema_model, True)
+
+    # Optional torch.compile
+    if getattr(cfg, "torch_compile", False):
+        compile_mode = getattr(cfg, "torch_compile_mode", "max-autotune")
         if dist.rank == 0:
             print(f"Compiling model with torch.compile(mode='{compile_mode}')...")
-        try:
-            base_model = torch.compile(base_model, mode=compile_mode)
-        except Exception as exc:
-            if dist.rank == 0:
-                print(f"[Train] torch.compile failed ({exc}); continuing without compile.")
+        base_model = torch.compile(base_model, mode=compile_mode)
 
     # Wrap for DDP
     model = base_model
@@ -1130,25 +1262,19 @@ def main(cfg: DictConfig) -> None:
 
     ema_decay = cfg.ema.decay if cfg.ema.use_ema else 0.0
 
-    # Print model summary
-    if dist.rank == 0:
+    # Print model summary (skipped if torchinfo isn't installed)
+    if dist.rank == 0 and torchinfo is not None:
         summary_input = sample_trainX.to(dist.device)
-        if cfg.enable_fp16:
-            summary_input = summary_input.half()
-        elif getattr(cfg, 'enable_bf16', False):
-            summary_input = summary_input.to(torch.bfloat16)
+        # Leave summary_input fp32; autocast handles precision. Match layout only.
+        summary_input = input_to_channels_last_3d(summary_input, use_channels_last_3d)
 
-        if torchinfo is None:
-            if dist.rank == 0:
-                print("Model summary skipped (torchinfo not installed).")
-        else:
-            summary = torchinfo.summary(
-                ema_model if cfg.ema.use_ema else base_model,
-                input_data=summary_input,
-                verbose=0,
-                depth=2,
-            )
-            print(f"Model summary:\n{summary}\n")
+        summary = torchinfo.summary(
+            ema_model if cfg.ema.use_ema else base_model,
+            input_data=summary_input,
+            verbose=0,
+            depth=2,
+        )
+        print(f"Model summary:\n{summary}\n")
 
     # Create optimizer
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
@@ -1185,7 +1311,7 @@ def main(cfg: DictConfig) -> None:
         total_steps += steps
 
     # Quick-validation guard: keep short runs from tripping scheduler constraints.
-    # Full training runs should keep the default warmup.
+    # Full training runs keep the default warmup.
     if cfg.lr_scheduler.warmup_steps >= total_steps:
         if dist.rank == 0:
             print(
@@ -1202,18 +1328,15 @@ def main(cfg: DictConfig) -> None:
     if dist.rank == 0:
         print(f"Learning Rate Scheduler: {cfg.lr_scheduler.type}, Total steps: {total_steps:,}")
 
-    # Initialize scaler
-    use_grad_scaler = cfg.enable_fp16 and torch.cuda.is_available() and torch.get_default_dtype(
-    ) != torch.float16
+    # Initialize scaler. fp16 needs loss scaling; bf16/fp32 do not. master
+    # weights stay fp32, which is what makes scaling meaningful.
+    use_grad_scaler = should_use_grad_scaler(cfg.enable_fp16, dist.device)
     scaler = torch.amp.GradScaler('cuda', enabled=use_grad_scaler)
 
-    # TensorBoard writer
+    # TensorBoard writer (skipped if tensorboard isn't installed)
     writer = None
-    if dist.rank == 0:
-        if SummaryWriter is None:
-            print("TensorBoard logging disabled (tensorboard not installed).")
-        else:
-            writer = SummaryWriter(os.path.join(cfg.output, "tensorboard"))
+    if dist.rank == 0 and SummaryWriter is not None:
+        writer = SummaryWriter(os.path.join(cfg.output, "tensorboard"))
 
     # Setup paths
     model_save_path = os.path.join(cfg.output, "models")
@@ -1323,7 +1446,7 @@ def main(cfg: DictConfig) -> None:
             per_device_batch_size = get_current_per_device_batch_size(epoch, cfg)
             accumulate_steps = cfg.train.accumulate_steps
             effective_batch_size = per_device_batch_size * accumulate_steps * dist.world_size
-            steps_per_epoch = effective_num_samples // (per_device_batch_size * dist.world_size)
+            steps_per_epoch = effective_num_samples // effective_batch_size
 
             if dist.rank == 0:
                 print(
@@ -1334,28 +1457,14 @@ def main(cfg: DictConfig) -> None:
                     f"({per_device_batch_size} × {accumulate_steps} × {dist.world_size})"
                 )
                 # Log batch size to TensorBoard
-                if writer is not None:
-                    writer.add_scalar("BatchSize", effective_batch_size, epoch_number)
-
-        epoch_wall_start = time.perf_counter()
-        train_total_s = 0.0
-        val_total_s = 0.0
-        loss_sync_s = 0.0
-        gc_s = 0.0
-        sdr_s = 0.0
-        ler_s = 0.0
-        log_s = 0.0
-        ckpt_best_s = 0.0
-        ckpt_periodic_s = 0.0
-        barrier_s = 0.0
+                writer.add_scalar("BatchSize", effective_batch_size, epoch_number)
 
         model.train(True)
 
         if epoch == init_epoch:
             cumulative_steps = 0
 
-        t_train_start = time.perf_counter()
-        avg_loss, global_step, train_timing = train_epoch(
+        avg_loss, global_step = train_epoch(
             generator=train_generator,
             steps_per_epoch=steps_per_epoch,
             cumulative_steps_before_epoch=cumulative_steps,
@@ -1369,15 +1478,18 @@ def main(cfg: DictConfig) -> None:
             device=dist.device,
             enable_fp16=cfg.enable_fp16,
             enable_bf16=getattr(cfg, 'enable_bf16', False),
+            use_channels_last_3d=use_channels_last_3d,
             rank=dist.rank,
             use_ema=cfg.ema.use_ema,
             ema_model=ema_model,
             ema_decay=ema_decay,
             global_step=global_step,
             accumulate_steps=accumulate_steps,
+            profile_enabled=profile_enabled,
+            profile_log_every=profile_log_every,
+            profile_warmup_steps=profile_warmup_steps,
+            profile_generator_subphases=profile_generator_subphases,
         )
-        train_total_s = float(train_timing.get("total_s", 0.0)
-                             ) if train_timing else (time.perf_counter() - t_train_start)
 
         cumulative_steps += steps_per_epoch
 
@@ -1387,8 +1499,7 @@ def main(cfg: DictConfig) -> None:
 
         val_samples_per_gpu = cfg.val.num_samples // dist.world_size
 
-        t_val_start = time.perf_counter()
-        avg_vloss, val_timing = validation_step(
+        avg_vloss = validation_step(
             generator=val_generator,
             model=model_to_eval,
             num_samples=val_samples_per_gpu,
@@ -1396,14 +1507,12 @@ def main(cfg: DictConfig) -> None:
             device=dist.device,
             enable_fp16=cfg.enable_fp16,
             enable_bf16=getattr(cfg, 'enable_bf16', False),
+            use_channels_last_3d=use_channels_last_3d,
             rank=dist.rank
         )
-        val_total_s = float(val_timing.get("total_s", 0.0)
-                           ) if val_timing else (time.perf_counter() - t_val_start)
 
         # Synchronize losses
         if torch.distributed.is_available() and torch.distributed.is_initialized():
-            t_sync_start = time.perf_counter()
             t = torch.tensor([avg_loss], device=dist.device)
             torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
             avg_loss = float(t.item())
@@ -1411,17 +1520,16 @@ def main(cfg: DictConfig) -> None:
             v = torch.tensor([avg_vloss], device=dist.device)
             torch.distributed.all_reduce(v, op=torch.distributed.ReduceOp.AVG)
             avg_vloss = float(v.item())
-            loss_sync_s = time.perf_counter() - t_sync_start
 
-        # Removed: gc.collect() + empty_cache() cause 100-400ms stall per epoch
-        # and empty_cache() causes memory fragmentation on next allocation.
-        # gc.collect()
-        # if torch.cuda.is_available():
-        #     torch.cuda.empty_cache()
-        gc_s = 0.0
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-        # Compute LER (+ PyMatching speedup) and SDR (syndrome density reduction) if enabled
+        # Compute LER and syndrome density if enabled
         use_ler_for_early_stopping = getattr(cfg, 'validation_ler', False)
+        # CI smoke-run env knobs (smoke_run.sh sets both to 1):
+        # PREDECODER_DISABLE_SDR     — skip syndrome density reduction
+        # PREDECODER_LER_FINAL_ONLY  — only compute LER on the final epoch
         disable_sdr = os.environ.get("PREDECODER_DISABLE_SDR", "0") == "1"
         ler_final_only = os.environ.get("PREDECODER_LER_FINAL_ONLY", "0") == "1"
         run_ler_this_epoch = use_ler_for_early_stopping and (
@@ -1429,48 +1537,38 @@ def main(cfg: DictConfig) -> None:
         )
         validation_ler = None
         ler_reduction_factor = None
-        pymatching_speedup_avg = None
         syndrome_density_reduction = None
+        syndrome_density_threshold = 1.5
 
         if run_ler_this_epoch:
             try:
                 orig_cfg_distance, orig_cfg_n_rounds = cfg.distance, cfg.n_rounds
                 cfg.distance, cfg.n_rounds = test_d, test_r
 
-                # Syndrome density reduction (SDR): computed for TensorBoard visibility.
                 if disable_sdr:
-                    syndrome_density_reduction = None
-                    sdr_s = 0.0
                     if dist.rank == 0:
                         print("[Syndrome Density] Skipped (PREDECODER_DISABLE_SDR=1)")
+                    syndrome_density_reduction = None
                 else:
-                    t_sdr_start = time.perf_counter()
-                    sdr_as_percent = bool(getattr(cfg, 'sdr_as_percent', False))
                     syndrome_density_reduction = compute_syndrome_density(
                         model=model_to_eval,
                         device=dist.device,
                         dist=dist,
                         cfg=cfg,
-                        generator=val_generator,
+                        generator=None,
                         rank=dist.rank,
                     )
-                    sdr_s = time.perf_counter() - t_sdr_start
-                # If multi-pair dict, reduce to a single scalar for logging (average over pairs).
-                if isinstance(syndrome_density_reduction,
-                              dict) and len(syndrome_density_reduction) > 0:
-                    syndrome_density_reduction = sum(syndrome_density_reduction.values()
-                                                    ) / len(syndrome_density_reduction)
 
-                # Average SDR across ranks for clean TensorBoard curves.
+                    if isinstance(syndrome_density_reduction, dict):
+                        syndrome_density_reduction = sum(syndrome_density_reduction.values()
+                                                        ) / len(syndrome_density_reduction)
+
                 if syndrome_density_reduction is not None and torch.distributed.is_available(
                 ) and torch.distributed.is_initialized():
-                    sd_tensor = torch.tensor(
-                        [float(syndrome_density_reduction)], device=dist.device
-                    )
+                    sd_tensor = torch.tensor([syndrome_density_reduction], device=dist.device)
                     torch.distributed.all_reduce(sd_tensor, op=torch.distributed.ReduceOp.AVG)
                     syndrome_density_reduction = float(sd_tensor.item())
 
-                t_ler_start = time.perf_counter()
                 ler_result = compute_validation_ler(
                     model=model_to_eval,
                     device=dist.device,
@@ -1479,16 +1577,14 @@ def main(cfg: DictConfig) -> None:
                     generator=None,
                     rank=dist.rank,
                 )
-                ler_s = time.perf_counter() - t_ler_start
 
                 if isinstance(ler_result, tuple):
+                    # public's compute_validation_ler returns
                     # (validation_ler, ler_reduction_factor, pymatching_speedup_avg)
                     if len(ler_result) >= 1:
                         validation_ler = ler_result[0]
                     if len(ler_result) >= 2:
                         ler_reduction_factor = ler_result[1]
-                    if len(ler_result) >= 3:
-                        pymatching_speedup_avg = ler_result[2]
                 elif isinstance(ler_result, dict):
                     ler_values = [
                         v[0]
@@ -1496,12 +1592,6 @@ def main(cfg: DictConfig) -> None:
                         if isinstance(v, tuple) and len(v) >= 1 and v[0] is not None
                     ]
                     validation_ler = sum(ler_values) / len(ler_values) if ler_values else None
-                    speedups = [
-                        v[2]
-                        for v in ler_result.values()
-                        if isinstance(v, tuple) and len(v) >= 3 and v[2] is not None
-                    ]
-                    pymatching_speedup_avg = sum(speedups) / len(speedups) if speedups else None
                 else:
                     validation_ler = ler_result
 
@@ -1513,148 +1603,55 @@ def main(cfg: DictConfig) -> None:
 
             finally:
                 cfg.distance, cfg.n_rounds = orig_cfg_distance, orig_cfg_n_rounds
-        elif use_ler_for_early_stopping and dist.rank == 0:
-            print("[LER Validation] Skipped (PREDECODER_LER_FINAL_ONLY=1)")
 
         # Log metrics
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        t_log_start = time.perf_counter()
+        is_color = code_name == "color"
+        ler_label = "LER/round" if is_color else "LER"
         if dist.rank == 0:
-            # --- Compute speed/throughput metrics ---
-            _epoch_wall = time.perf_counter() - epoch_wall_start
-            _samples_this_epoch = steps_per_epoch * per_device_batch_size * dist.world_size
-            _throughput = _samples_this_epoch / _epoch_wall if _epoch_wall > 0 else 0.0
-            _train_steps = train_timing.get(
-                "steps", steps_per_epoch
-            ) if train_timing else steps_per_epoch
-            _ms_per_batch = (train_total_s / _train_steps * 1000) if _train_steps > 0 else 0.0
-            _data_pct = (
-                train_timing.get("data_gen_s", 0) / train_total_s * 100
-            ) if train_total_s > 0 and train_timing else 0.0
-
-            # --- Main summary line ---
-            parts = [f"[{timestamp}] Epoch {epoch_number}"]
-            parts.append(f"loss={avg_loss:.5f}/{avg_vloss:.5f}")
             if use_ler_for_early_stopping and validation_ler is not None:
-                parts.append(f"LER={validation_ler:.6f}")
-            if syndrome_density_reduction is not None:
-                _sdr_unit = "%" if bool(getattr(cfg, 'sdr_as_percent', False)) else "x"
-                parts.append(f"SDR={syndrome_density_reduction:.2f}{_sdr_unit}")
-            parts.append(
-                f"{_epoch_wall:.0f}s ({_throughput:.0f} samp/s, {_ms_per_batch:.1f}ms/batch)"
-            )
-            print(" | ".join(parts))
-
-            # --- Speed breakdown line ---
-            _speed_parts = [f"[Speed] train={train_total_s:.1f}s val={val_total_s:.1f}s"]
-            if sdr_s > 0:
-                _speed_parts.append(f"sdr={sdr_s:.1f}s")
-            if ler_s > 0:
-                _speed_parts.append(f"ler={ler_s:.1f}s")
-            if _data_pct > 1.0:
-                _speed_parts.append(f"data_gen={_data_pct:.0f}% of train")
-            print(" ".join(_speed_parts))
-            dem_timing = None
-            try:
-                from evaluation import logical_error_rate as ler_stim
-                dem_timing = getattr(ler_stim, "LAST_DEM_TIMING", None)
-            except Exception:
-                dem_timing = None
-            if train_timing or val_timing or dem_timing:
-                train_data_s = float(train_timing.get("data_gen_s", 0.0)) if train_timing else 0.0
-                train_model_s = float(train_timing.get("model_s", 0.0)) if train_timing else 0.0
-                val_data_s = float(val_timing.get("data_gen_s", 0.0)) if val_timing else 0.0
-                val_model_s = float(val_timing.get("model_s", 0.0)) if val_timing else 0.0
-                dem_build_s = float(dem_timing.get("dem_build_s", 0.0)
-                                   ) if isinstance(dem_timing, dict) else 0.0
-                dem_decode_s = float(dem_timing.get("dem_decode_s", 0.0)
-                                    ) if isinstance(dem_timing, dict) else 0.0
-                total_bucket_s = train_data_s + train_model_s + val_data_s + val_model_s + dem_build_s + dem_decode_s
-                if total_bucket_s > 0:
-                    pct = lambda s: 100.0 * s / total_bucket_s
-                else:
-                    pct = lambda s: 0.0
                 print(
-                    "[Epoch Timing] train_data_gen={:.2f}s train_model={:.2f}s "
-                    "val_data_gen={:.2f}s val_model={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s".
-                    format(
-                        train_data_s, train_model_s, val_data_s, val_model_s, dem_build_s,
-                        dem_decode_s
-                    )
+                    f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f} {ler_label} {validation_ler:.6f}"
                 )
-                print(
-                    "[Epoch Timing %] train_data_gen={:.1f}% train_model={:.1f}% "
-                    "val_data_gen={:.1f}% val_model={:.1f}% dem_build={:.2f}% dem_decode={:.2f}%".
-                    format(
-                        pct(train_data_s), pct(train_model_s), pct(val_data_s), pct(val_model_s),
-                        pct(dem_build_s), pct(dem_decode_s)
-                    )
-                )
-                if ler_s > 0:
-                    ler_other_s = max(ler_s - (dem_build_s + dem_decode_s), 0.0)
-                    print(
-                        "[Epoch LER Timing] total={:.2f}s dem_build={:.2f}s dem_decode={:.2f}s other={:.2f}s"
-                        .format(ler_s, dem_build_s, dem_decode_s, ler_other_s)
-                    )
+            else:
+                print(f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f}")
 
             # Log Loss to TensorBoard
-            if writer is not None:
-                writer.add_scalars(
-                    "Loss", {
-                        "Training": avg_loss,
-                        "Validation": avg_vloss
-                    }, epoch_number
-                )
+            writer.add_scalars(
+                "Loss", {
+                    "Training": avg_loss,
+                    "Validation": avg_vloss
+                }, epoch_number
+            )
 
-                # Log LER to TensorBoard (important evaluation metric)
-                if validation_ler is not None:
-                    writer.add_scalar("Metrics/LER", validation_ler, epoch_number)
-                    if ler_reduction_factor is not None:
-                        writer.add_scalar(
-                            "Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number
-                        )
-
-                # Log PyMatching decode speedup (baseline / after pre-decoder), avg across X/Z
-                if pymatching_speedup_avg is not None:
+            # Log LER to TensorBoard (important evaluation metric)
+            # Color code reports LER per round; surface code reports total LER
+            if validation_ler is not None:
+                writer.add_scalar(f"Metrics/{ler_label}", validation_ler, epoch_number)
+                if ler_reduction_factor is not None:
                     writer.add_scalar(
-                        "Metrics/PyMatching_Speedup", float(pymatching_speedup_avg), epoch_number
+                        "Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number
                     )
 
-                # Log syndrome density reduction (SDR) as an auxiliary metric (requested for visibility).
-                if syndrome_density_reduction is not None:
-                    writer.add_scalar(
-                        "Metrics/SDR", float(syndrome_density_reduction), epoch_number
-                    )
+            # Log Syndrome Density Reduction to TensorBoard (important evaluation metric)
+            if syndrome_density_reduction is not None:
+                writer.add_scalar("Metrics/SDR", syndrome_density_reduction, epoch_number)
 
-                # Log speed metrics for tracking training efficiency over epochs.
-                writer.add_scalar("Speed/throughput_samp_per_s", _throughput, epoch_number)
-                writer.add_scalar("Speed/ms_per_batch", _ms_per_batch, epoch_number)
-                writer.add_scalar("Speed/epoch_wall_s", _epoch_wall, epoch_number)
-
-                writer.flush()
-        log_s = time.perf_counter() - t_log_start
+            writer.flush()
 
         if dist.world_size > 1:
-            t_barrier_start = time.perf_counter()
             torch.distributed.barrier()
-            barrier_s = time.perf_counter() - t_barrier_start
 
         # Early stopping logic
         if use_ler_for_early_stopping and validation_ler is not None:
             current_metric = validation_ler
+            syndrome_qualifies = syndrome_density_reduction is not None and syndrome_density_reduction >= syndrome_density_threshold
         else:
             current_metric = avg_vloss
-
-        # SDR threshold gate: only count an epoch as an improvement if SDR qualifies.
-        # If SDR was not computed (None), fall back to always qualifying.
-        # Default thresholds: 1.5x in factor mode, 33.3% in percent mode (equivalent).
-        _sdr_pct = bool(getattr(cfg, 'sdr_as_percent', False))
-        _default_threshold = 33.3 if _sdr_pct else 1.5
-        syndrome_density_threshold = cfg.get('syndrome_density_threshold', _default_threshold)
-        syndrome_qualifies = (
-            syndrome_density_reduction is not None and
-            syndrome_density_reduction >= syndrome_density_threshold
-        )
+            syndrome_qualifies = True
+        # SDR may be disabled in CI smoke runs (PREDECODER_DISABLE_SDR=1) or
+        # before the first SDR validation — treat "no SDR computed yet" as
+        # qualifying so we still snapshot the best-loss checkpoint.
         sdr_not_computed = syndrome_density_reduction is None
 
         if current_metric < best_vloss and (syndrome_qualifies or sdr_not_computed):
@@ -1662,7 +1659,6 @@ def main(cfg: DictConfig) -> None:
             epochs_since_best = 0
 
             if dist.rank == 0:
-                t_ckpt_best = time.perf_counter()
                 save_checkpoint(
                     path=to_absolute_path(best_model_path),
                     models=model_for_ckpt,
@@ -1680,17 +1676,7 @@ def main(cfg: DictConfig) -> None:
                     },
                     global_step=global_step,
                 )
-                ckpt_best_s = time.perf_counter() - t_ckpt_best
-        else:
-            if not (
-                syndrome_qualifies or sdr_not_computed
-            ) and current_metric < best_vloss and dist.rank == 0:
-                _es_unit = "%" if _sdr_pct else "x"
-                print(
-                    f"[Early Stopping] Metric improved ({current_metric:.6f} < {best_vloss:.6f}) "
-                    f"but SDR {syndrome_density_reduction:.2f}{_es_unit} < threshold {syndrome_density_threshold}{_es_unit}; "
-                    f"not counting as improvement."
-                )
+        elif current_metric >= best_vloss and syndrome_qualifies:
             epochs_since_best += 1
 
             if cfg.early_stopping.enabled and epochs_since_best >= cfg.early_stopping.patience:
@@ -1704,9 +1690,13 @@ def main(cfg: DictConfig) -> None:
                 break
 
         # Log early stopping metrics to TensorBoard
-        if dist.rank == 0 and writer is not None:
+        if dist.rank == 0:
             writer.add_scalar("EarlyStopping/epochs_since_best", epochs_since_best, epoch_number)
             writer.add_scalar("EarlyStopping/best_metric", best_vloss, epoch_number)
+            if syndrome_density_reduction is not None:
+                writer.add_scalar(
+                    "EarlyStopping/syndrome_qualifies", float(syndrome_qualifies), epoch_number
+                )
 
         # Track epoch time
         epoch_end_time = time.time()
@@ -1714,22 +1704,16 @@ def main(cfg: DictConfig) -> None:
         epoch_times.append(epoch_duration)
 
         if dist.rank == 0:
-            _avg_epoch_s = sum(epoch_times) / len(epoch_times) if epoch_times else epoch_duration
-            _eta_epochs = cfg.early_stopping.patience - epochs_since_best if cfg.early_stopping.enabled else 0
-            _eta_str = f" ETA-stop={_eta_epochs * _avg_epoch_s / 60:.0f}m" if _eta_epochs > 0 else ""
             print(
-                f"[{timestamp}] Best={best_vloss:.6f} wait={epochs_since_best}/{cfg.early_stopping.patience}{_eta_str}"
+                f"[{timestamp}] Best metric {best_vloss:.6f}, Epochs since best: {epochs_since_best}, Epoch time {epoch_duration/60:.1f}m"
             )
 
-        # Removed: gc.collect() + empty_cache() cause 100-400ms stall per epoch
-        # and empty_cache() causes memory fragmentation on next allocation.
-        # gc.collect()
-        # if torch.cuda.is_available():
-        #     torch.cuda.empty_cache()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Save periodic checkpoint
         if dist.rank == 0 and (epoch + 1) % cfg.train.checkpoint_interval == 0:
-            t_ckpt_periodic = time.perf_counter()
             save_checkpoint(
                 path=to_absolute_path(model_save_path),
                 models=model_for_ckpt,
@@ -1739,37 +1723,6 @@ def main(cfg: DictConfig) -> None:
                 epoch=epoch_number + 1,
                 metadata={"epochs_completed": epoch + 1},
                 global_step=global_step,
-            )
-            ckpt_periodic_s = time.perf_counter() - t_ckpt_periodic
-
-        if dist.rank == 0:
-            epoch_wall_s = time.perf_counter() - epoch_wall_start
-            measured_sum = (
-                train_total_s + val_total_s + loss_sync_s + gc_s + sdr_s + ler_s + ckpt_best_s +
-                ckpt_periodic_s + barrier_s + log_s
-            )
-            overhead_s = max(epoch_wall_s - measured_sum, 0.0)
-            if epoch_wall_s > 0:
-                pct_wall = lambda s: 100.0 * s / epoch_wall_s
-            else:
-                pct_wall = lambda s: 0.0
-            print(
-                "[Epoch Wall] total={:.2f}s train={:.2f}s val={:.2f}s sync={:.2f}s "
-                "gc={:.2f}s sdr={:.2f}s ler={:.2f}s ckpt_best={:.2f}s ckpt_periodic={:.2f}s "
-                "barrier={:.2f}s log={:.2f}s overhead={:.2f}s".format(
-                    epoch_wall_s, train_total_s, val_total_s, loss_sync_s, gc_s, sdr_s, ler_s,
-                    ckpt_best_s, ckpt_periodic_s, barrier_s, log_s, overhead_s
-                )
-            )
-            print(
-                "[Epoch Wall %] train={:.1f}% val={:.1f}% sync={:.1f}% gc={:.1f}% sdr={:.1f}% ler={:.1f}% "
-                "ckpt_best={:.1f}% ckpt_periodic={:.1f}% barrier={:.1f}% log={:.1f}% overhead={:.1f}%"
-                .format(
-                    pct_wall(train_total_s), pct_wall(val_total_s), pct_wall(loss_sync_s),
-                    pct_wall(gc_s), pct_wall(sdr_s), pct_wall(ler_s), pct_wall(ckpt_best_s),
-                    pct_wall(ckpt_periodic_s), pct_wall(barrier_s), pct_wall(log_s),
-                    pct_wall(overhead_s)
-                )
             )
 
 

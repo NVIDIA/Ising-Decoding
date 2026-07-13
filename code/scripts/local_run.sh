@@ -239,7 +239,7 @@ if [ "${GPUS}" -gt 1 ]; then
     code/workflows/run.py \
     --config-name="${CONFIG_NAME}" \
     workflow.task="${WORKFLOW}" \
-    +exp_tag="${EXPERIMENT_NAME}" \
+    ++exp_tag="${EXPERIMENT_NAME}" \
     ${RESUME_FLAG} \
     ${OVERRIDES} \
     2>&1 | tee -a "${LOG_FILE}"
@@ -247,7 +247,7 @@ else
   "${PYTHON_BIN}" -u code/workflows/run.py \
     --config-name="${CONFIG_NAME}" \
     workflow.task="${WORKFLOW}" \
-    +exp_tag="${EXPERIMENT_NAME}" \
+    ++exp_tag="${EXPERIMENT_NAME}" \
     ${RESUME_FLAG} \
     ${OVERRIDES} \
     2>&1 | tee -a "${LOG_FILE}"

@@ -43,6 +43,7 @@ from qec.noise_model import (
     _single_p_mapping,
     get_grouped_totals,
     get_training_upscaled_noise_model,
+    COLOR_CODE_TRAINING_UPSCALE_TARGET,
     SURFACE_CODE_TRAINING_UPSCALE_TARGET,
     SURFACE_CODE_THRESHOLD_APPROX,
 )
@@ -678,14 +679,22 @@ class TestNoiseModelUpscaling(unittest.TestCase):
         _, info_low = get_training_upscaled_noise_model(nm_low, code_type="surface_code")
         self.assertFalse(info_low["above_target_warning"])
 
-    def test_non_surface_code_no_upscaling(self):
-        """For code_type != 'surface_code', no scaling is applied; original model returned."""
+    def test_color_code_uses_color_training_target(self):
+        """Color code uses its own 4e-3 training target."""
         nm = _noise_model_from_p(1e-4)
         training_nm, info = get_training_upscaled_noise_model(nm, code_type="color_code")
+        self.assertTrue(info.get("applied_upscale", False))
+        self.assertEqual(info["target"], COLOR_CODE_TRAINING_UPSCALE_TARGET)
+        new_tot = get_grouped_totals(training_nm)
+        self.assertAlmostEqual(new_tot["max_group"], COLOR_CODE_TRAINING_UPSCALE_TARGET, places=10)
+
+    def test_unknown_code_no_upscaling(self):
+        """For unsupported code_type values, no scaling is applied."""
+        nm = _noise_model_from_p(1e-4)
+        training_nm, info = get_training_upscaled_noise_model(nm, code_type="other_code")
         self.assertFalse(info.get("applied_upscale", False))
-        self.assertEqual(nm.to_config_dict(), training_nm.to_config_dict())
-        self.assertIn("message", info)
-        self.assertIn("surface_code", info["message"])
+        self.assertIs(training_nm, nm)
+        self.assertIn("no training target", info["message"])
 
     def test_invalid_zero_totals_raises(self):
         """When all grouped totals are zero, get_training_upscaled_noise_model raises ValueError."""

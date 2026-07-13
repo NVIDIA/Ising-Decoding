@@ -113,16 +113,50 @@ bash code/scripts/cluster_train.sh
 
 ## Available training configs
 
-| Config file | Model | R | Noise |
-|-------------|-------|---|-------|
-| `conf/config_qec_decoder_r9_fp8.yaml` | Model 1 | 9 | Depolarizing p=0.006 |
-| `conf/config_qec_decoder_r13_fp8.yaml` | Model 4 | 13 | Depolarizing p=0.006 |
-| `conf/config_public.yaml` | Any | Varies | User-defined |
+| Config file | Code | Model | R | Noise |
+|-------------|------|-------|---|-------|
+| `conf/config_qec_decoder_r9_fp8.yaml` | Surface | Model 1 | 9 | Depolarizing p=0.006 |
+| `conf/config_qec_decoder_r13_fp8.yaml` | Surface | Model 4 | 13 | Depolarizing p=0.006 |
+| `conf/config_public.yaml` | Surface | Any | Varies | User-defined |
+| `conf/config_color_model_1_s_LR3e-4.yaml` | Color | Model 1-shaped | 9 | Superdense color-code circuit (`p_min/p_max ≈ 0.003`) |
+| `conf/config_color_threshold_model_1_d13.yaml` | Color | n/a (eval) | 13 | Threshold sweep against a trained color checkpoint |
+| `conf/config_inference_color_model_5.yaml` | Color | n/a (inference) | 9 | Inference with a trained Model-5-shaped color checkpoint via `workflow.task=inference` (set `model_checkpoint_file`) |
 
 Select a config by setting `CONFIG_NAME` (without the `.yaml` extension):
 ```bash
 export CONFIG_NAME=config_qec_decoder_r13_fp8
 ```
+
+### Color-code training
+
+Color-code training runs through the same `local_run.sh` launcher as
+surface; the launcher bypasses the public-config validator for
+`code: color` configs and `run_color` dispatches to the training entry
+point. Color-code **inference** (on a trained color-code checkpoint) is
+documented in **Color code support** in `README.md`. Before launching training,
+generate the augmented DEM bundle once per
+`(distance, n_rounds, basis)` combination:
+
+```bash
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --code color --distance 9 --n_rounds 9 --basis X \
+    --dem_output_dir frames_data
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --code color --distance 9 --n_rounds 9 --basis Z \
+    --dem_output_dir frames_data
+```
+
+Then launch training:
+
+```bash
+CONFIG_NAME=config_color_model_1_s_LR3e-4 \
+    WORKFLOW=train \
+    EXTRA_PARAMS="data.precomputed_frames_dir=$(pwd)/frames_data" \
+    bash code/scripts/local_run.sh
+```
+
+See **Color code support** in `README.md` for current limitations
+(fixed-p augmented DEM, no Y decomposition).
 
 ## Environment variable reference
 

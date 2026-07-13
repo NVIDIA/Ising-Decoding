@@ -2,18 +2,24 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](./LICENSE)
 [![Release](https://img.shields.io/badge/Release-v0.1.0-brightgreen)](https://github.com/NVIDIA/Ising-Decoding/tree/releases/v0.1.0)
-[![Paper](https://img.shields.io/badge/Paper-NVIDIA%20Research-76b900)](https://research.nvidia.com/publication/2026-04_fast-ai-based-pre-decoders-surface-codes)
+[![Paper: Surface](https://img.shields.io/badge/Paper-Surface%20Codes-76b900)](https://research.nvidia.com/publication/2026-04_fast-ai-based-pre-decoders-surface-codes)
+[![Paper: Color](https://img.shields.io/badge/Paper-Color%20Codes-76b900)](https://research.nvidia.com/publication/2026-07_fast-and-accurate-ai-based-pre-decoders-color-codes)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![Model: Fast](https://img.shields.io/badge/🤗%20HuggingFace-Fast%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast)
-[![Model: Accurate](https://img.shields.io/badge/🤗%20HuggingFace-Accurate%20Model-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate)
+[![Model: Surface Fast](https://img.shields.io/badge/🤗%20HuggingFace-Surface%20Fast-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast)
+[![Model: Surface Accurate](https://img.shields.io/badge/🤗%20HuggingFace-Surface%20Accurate-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate)
 
 This repo offers AI training recipes to build, customize and deploy scalable quantum error correction **decoders**:
 
 - A neural network consumes detector syndromes across space **and** time
 - It predicts corrections that reduce syndrome density / improve decoding
-- A standard decoder (PyMatching) produces the final logical decision
+- A standard global decoder produces the final logical decision (PyMatching for surface codes, Chromobius for color codes)
 
-The public release exposes a **single user-facing config** and a **single runner script**.
+Two code families are supported, both driven by the same user-facing config (`conf/config_public.yaml`) — select with `code: surface` or `code: color`:
+
+- **Surface code** — the primary path, with pre-trained models published on Hugging Face. PyMatching is the global decoder.
+- **Color code** — Chromobius is the global decoder, on a Torch + cuStabilizer runtime. The public-config validator fills in the color-specific circuit/data defaults; `code: color` training additionally needs the augmented-DEM precompute step described in [Color code support](#color-code-support).
+
+The public release exposes a **single user-facing config** and a **single runner script** for both families.
 
 ![Pre-decoder pipeline](images/predecoder_pipeline.png)
 
@@ -36,6 +42,7 @@ The public release exposes a **single user-facing config** and a **single runner
   - [Public configuration](#public-configuration-confconfig_publicyaml)
   - [Precomputed frames](#precomputed-frames-recommended)
   - [Resuming training and running inference](#resuming-training-and-running-inference-on-a-trained-model)
+  - [Color code support](#color-code-support)
 - [Logging and outputs](#logging-and-outputs)
   - [What gets written where](#what-gets-written-where)
   - [Evaluation defaults](#evaluation-defaults-public-release)
@@ -47,14 +54,22 @@ The public release exposes a **single user-facing config** and a **single runner
 
 ## Publication
 
-This implementation accompanies the paper:
+This implementation accompanies two papers, one per code family.
+
+**Surface codes:**
 
 Christopher Chamberland, Jan Olle, Muyuan Li, Scott Thornton, and Igor Baratta,
 "Fast and accurate AI-based pre-decoders for surface codes,"
 [arXiv:2604.12841](https://arxiv.org/abs/2604.12841), 2026.
 [doi:10.48550/arXiv.2604.12841](https://doi.org/10.48550/arXiv.2604.12841)
 
-Please cite the paper if you use this repository in research or published work.
+**Color codes:**
+
+Jan Olle, Christopher Chamberland, Muyuan Li, and Igor Baratta,
+"Fast and accurate AI-based pre-decoders for color codes,"
+[NVIDIA Research](https://research.nvidia.com/publication/2026-07_fast-and-accurate-ai-based-pre-decoders-color-codes), 2026. *(link goes live on publication)*
+
+Please cite the paper for the code family you use if this repository supports research or published work.
 
 ## High-level workflow
 
@@ -105,8 +120,10 @@ Target Python versions: **3.11, 3.12, 3.13**.
 
 Two minimal requirements files are provided:
 
-- `code/requirements_public_inference.txt` (Stim + PyTorch path)
-- `code/requirements_public_train-cuXY.txt` (training path, where XY = 12 or 13)
+- `code/requirements_public_inference.txt` (Stim + PyTorch path; includes `chromobius` for color-code logical-error-rate evaluation)
+- `code/requirements_public_train-cuXY.txt` (training path, where XY = 12 or 13; CUDA build of `cuquantum-python` provides the cuStabilizer backend used by both code families)
+
+Both code families (surface and color) run on the Torch + cuStabilizer training pipeline.
 
 Install examples (virtual environment is optional but recommended):
 
@@ -202,7 +219,7 @@ If you are not training locally, you can run inference using pre-trained models.
    ```
 
 2. **Get the pre-trained models**
-   Two pre-trained models are published on Hugging Face (they are licensed
+   Two surface-code models are published on Hugging Face (they are licensed
    separately from the code in this repo and are not part of it):
    - [nvidia/Ising-Decoder-SurfaceCode-1-Fast](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast) (receptive field R=9)
    - [nvidia/Ising-Decoder-SurfaceCode-1-Accurate](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate) (receptive field R=13)
@@ -272,10 +289,11 @@ The pre-trained public models use `--model-id 1` (R=9) and `--model-id 4` (R=13)
 After training (or starting from the `.safetensors` files downloaded from Hugging Face), you can export the model to
 ONNX and optionally apply INT8 or FP8 post-training quantization for deployment.
 
-You may also change the surface code distance and number of rounds at inference
+You may also change the code distance and number of rounds at inference
 time. That is - you are not required retrain a new model when changing either
 one of these parameters; since the model is a 3D convolutional neural network,
-the model will simply be run over a new decoding volume.
+the model will simply be run over a new decoding volume. This holds for both
+the surface-code and color-code families.
 
 - To run with a new distance, simply add `DISTANCE=<your distance>` to the commands below.
 - To run with a new number of rounds, simply add `N_ROUNDS=<your number of rounds>` to the commands below.
@@ -316,7 +334,7 @@ ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh
 | Variable | Default | Description |
 |---|---|---|
 | `CONFIG_NAME` | `config_public` | Use the defaults from the `conf/$CONFIG_NAME.yaml` file |
-| `DISTANCE` | Use the distance specified in the `conf/$CONFIG_NAME.yaml` file | surface code distance |
+| `DISTANCE` | Use the distance specified in the `conf/$CONFIG_NAME.yaml` file | code distance (surface or color) |
 | `N_ROUNDS` | Calibration samples for INT8/FP8 post-training quantization. | number of rounds in memory experiment |
 
 Notes:
@@ -384,6 +402,17 @@ in-memory simulator. It exists for two distinct audiences:
    ship. Jump to [Bring your own detector samples](#bring-your-own-detector-samples).
 2. **You want a reproducible end-to-end smoke test.** Use the local
    generator below, then run the same decode commands.
+
+> **Code-family support.** The file-based offline path currently targets the
+> **surface code** with **PyMatching** as the global decoder (decode modes
+> `pymatching_only` and `ising_decoding_pymatching`). The color-code inference
+> path runs today, but it generates syndromes in-memory and decodes with
+> Chromobius rather than reading `.dets` files — see
+> [Run inference on a trained color-code checkpoint](#run-inference-on-a-trained-color-code-checkpoint).
+> The sample I/O layer itself (metadata builder, path resolver, `.dets`
+> reader/writer in `qec.surface_code.stim_sample_io`) is code-agnostic; wiring
+> `.dets` offline decoding through Chromobius for color codes is a tracked
+> follow-up ([Color-code limitations](#color-code-limitations-in-this-release)).
 
 #### File contract
 
@@ -478,7 +507,7 @@ The generator reads from `conf/config_public.yaml`:
 
 | config field | role |
 | --- | --- |
-| `distance` | surface-code distance |
+| `distance` | code distance |
 | `n_rounds` | number of measurement rounds |
 | `data.code_rotation` | code orientation (`XV`/`XH`/`ZV`/`ZH` or `O1`..`O4`) |
 | `data.noise_model` | 25-parameter noise model dict (optional) |
@@ -659,7 +688,14 @@ If you change any config settings, also change the experiment name so outputs ar
 
 #### Model selection
 
-- `model_id`: one of **{1,2,3,4,5}**
+- `model_id`: for `code: surface`, one of **{1,2,3,4,5}**; for `code: color`,
+  one of **{1,2,4,5}**. Color model 3 is intentionally unavailable in the
+  public config because its receptive field is larger than the currently
+  supported color-code training window.
+
+#### Code family
+
+- `code`: **surface** or **color**
 
 Each `model_id` has a fixed receptive field \(R\):
 
@@ -668,6 +704,10 @@ Each `model_id` has a fixed receptive field \(R\):
 - **model 3**: \(R=17\)
 - **model 4**: \(R=13\)
 - **model 5**: \(R=13\)
+
+Optimizer learning rate is managed internally: surface code uses the
+model-specific public LR table, while color code always uses **1 × 10⁻⁵** for
+all supported model IDs.
 
 #### Training recommendations
 
@@ -681,7 +721,9 @@ Each `model_id` has a fixed receptive field \(R\):
 
 #### Code orientation
 
-- `data.code_rotation`: **O1, O2, O3, O4**
+- `data.code_rotation`: **O1, O2, O3, O4** for surface code. This field is
+  ignored for color code; color-code circuit schedule and feedforward defaults
+  are set internally by the public config validator.
 
 For a concrete picture, here are the **distance-3** layouts and the corresponding **logical operator supports** (● = in the logical, · = not in the logical).
 
@@ -781,9 +823,9 @@ LOGICAL Z (lz):
 - The shipped configs use a **uniform circuit-level depolarizing** mapping, where all 25 values are derived from a single physical error rate `p` (for example `p_prep_{X,Z}=2*p/3`, `p_idle_cnot_{X,Y,Z}=p/3`, and `p_cnot_*=p/15`).
 - You may edit `data.noise_model` to train on a non-uniform/custom 25-parameter model. In that case the Torch training generator refreshes the sampling probability vector from the active 25p model instead of collapsing back to the scalar uniform-depolarizing path.
 
-#### Training noise upscaling (surface code)
+#### Training noise upscaling
 
-When training a surface-code pre-decoder the noise parameters you specify may be very small (e.g. `p = 1e-4`), which produces extremely sparse syndromes and slow convergence. To address this, the training pipeline **automatically upscales** all 25 noise-model parameters so that the largest *effective* fault-channel probability equals a fixed target of **6 × 10⁻³** (just below the surface-code threshold of ~7.5 × 10⁻³).
+When training a pre-decoder the noise parameters you specify may be very small (e.g. `p = 1e-4`), which produces extremely sparse syndromes and slow convergence. To address this, the training pipeline **automatically upscales** all 25 noise-model parameters so that the largest *effective* fault-channel probability equals a code-family target: **6 × 10⁻³** for surface code and **4 × 10⁻³** for color code.
 
 The seven channels considered (the "capital P's") are:
 
@@ -806,11 +848,14 @@ Two design notes:
 
 **Upscaling rules:**
 
-- If `max_group < 6e-3`: all 25 p's are multiplied by `6e-3 / max_group` for training data generation only. Evaluation always uses the original user-specified noise model as-is.
-- If `max_group >= 6e-3`: parameters are **not** modified (the training log emits a warning in case this indicates a configuration error).
-- Non-surface-code types (`code_type != "surface_code"`) are never upscaled.
+- If `max_group` is below the code-family target: all 25 p's are multiplied by
+  `target / max_group` for training data generation only. Evaluation always
+  uses the original user-specified noise model as-is.
+- If `max_group` is already at or above the code-family target: parameters are
+  **not** modified (the training log emits a warning in case this indicates a
+  configuration error).
 
-**Algorithm in brief:** The pipeline computes the seven channels above, takes `p_max = max(...)`, and rescales the entire 25-parameter vector by `0.006 / p_max` so that `p_max` is raised to **0.6%** (6 × 10⁻³). The original noise model is preserved unchanged for evaluation.
+**Algorithm in brief:** The pipeline computes the seven channels above, takes `p_max = max(...)`, and rescales the entire 25-parameter vector by `target / p_max` so that `p_max` is raised to the code-family training target. The original noise model is preserved unchanged for evaluation.
 
 We have found that training on denser syndromes and then evaluating on sparser data produces better results than training directly on sparse data.
 
@@ -864,6 +909,110 @@ time.
 
 - **Inference uses the trained model from `outputs/<experiment_name>/models/`**, so keep the same `EXPERIMENT_NAME` when you switch from training to inference.
 - **Training auto-resumes**: if a run is interrupted, launching the same training command again (same `EXPERIMENT_NAME`) will automatically load the latest checkpoint it finds and continue training (up to the fixed 100 epochs). To force a clean restart, set `FRESH_START=1`, although we recommend changing `EXPERIMENT_NAME` instead.
+
+### Color code support
+
+Color-code pre-decoders are included in this release. The training pipeline
+runs on Torch + cuStabilizer (the same backend used for surface codes); the
+global decoder is [Chromobius](https://github.com/quantumlib/chromobius),
+which is installed by `code/requirements_public_inference.txt`.
+
+The public config (`conf/config_public.yaml`) supports color directly: set
+`code: color` and the public-config validator fills in the color-specific
+circuit/data defaults (superdense, nearest-neighbor schedule, feedforward, HE),
+exactly as it does for surface. Color also ships **standalone configs** (below)
+for the richer control the narrow public config doesn't expose — explicit
+`test`/`train`/`val` sections, threshold/SDR/timing sweeps. Those carry the
+internal Hydra schema, so they bypass the public validator.
+
+#### Shipped color-code configs
+
+| Config file | Purpose |
+|-------------|---------|
+| `conf/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
+| `conf/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
+| `conf/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Defaults to `d=9, R=9, p=1e-3`; override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
+
+#### Precompute the augmented DEM bundle
+
+The Torch color-code generator consumes a precomputed augmented DEM bundle
+(produced by `qec.precompute_dem` with `--code color`). Generate it once per
+`(distance, n_rounds, basis)`:
+
+```bash
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --code color --distance 9 --n_rounds 9 --basis X \
+    --dem_output_dir frames_data
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --code color --distance 9 --n_rounds 9 --basis Z \
+    --dem_output_dir frames_data
+```
+
+The bundle is reusable across runs whose only difference is the per-channel
+fault probability — the augmented response matrix is structural, while
+sampling probabilities are refreshed at load time.
+
+#### Run inference on a trained color-code checkpoint
+
+The public runner (`code/workflows/run.py`, driven by
+`code/scripts/local_run.sh`) dispatches color-code configs to the same
+`inference` / `threshold` / `sdr` / `chromobius_timing` workflow tasks that
+surface code uses. `conf/config_inference_color_model_5.yaml` is a standalone
+inference config pinned to a model-5-shaped architecture
+(`PreDecoderModelMemory_v1`, 6-layer conv `[256, 256, 256, 256, 256, 4]`,
+kernel 3) — train such a checkpoint with the configs below, then point the
+launcher at it:
+
+```bash
+CONFIG_NAME=config_inference_color_model_5 \
+    WORKFLOW=inference \
+    EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt" \
+    bash code/scripts/local_run.sh
+```
+
+To sweep noise or measurement bases add overrides to `EXTRA_PARAMS`:
+
+```bash
+CONFIG_NAME=config_inference_color_model_5 \
+    WORKFLOW=inference \
+    EXTRA_PARAMS="model_checkpoint_file=/path/to/your/checkpoint.pt test.num_samples=1024 test.p_error=0.001 test.meas_basis_test=both" \
+    bash code/scripts/local_run.sh
+```
+
+Switch `WORKFLOW=threshold` for an `(d, p)` LER sweep (set
+`threshold.distances`, `threshold.p_values`, `threshold.n_rounds`,
+`threshold.num_samples` via `EXTRA_PARAMS`), or `WORKFLOW=chromobius_timing`
+/ `WORKFLOW=sdr` to capture the corresponding decoder-only metrics.
+
+#### Launch color-code training
+
+Color-code **training** runs through the same launcher as inference — pick
+a color training config and set `WORKFLOW=train`:
+
+```bash
+CONFIG_NAME=config_color_model_1_s_LR3e-4 \
+    WORKFLOW=train \
+    EXTRA_PARAMS="data.precomputed_frames_dir=$(pwd)/frames_data" \
+    bash code/scripts/local_run.sh
+```
+
+These standalone color configs carry `train`/`val`/`test` sections, so the
+launcher routes them around the public-config validator, forwards
+`--config-name=` and `workflow.task=` to `code/workflows/run.py`, and
+`run_color` then dispatches to the training entry point. Pass training
+overrides (epochs, batch size, etc.) via `EXTRA_PARAMS`. (Color training can
+also be driven from `conf/config_public.yaml` with `code: color`,
+`workflow.task: train`, and `data.precomputed_frames_dir` pointing at your
+precomputed bundle.)
+
+#### Color-code limitations in this release
+
+- The narrow `conf/config_public.yaml` covers single-point color
+  train/inference (`code: color`); threshold/SDR/timing sweeps and explicit
+  `test`/`train`/`val` overrides still require the standalone configs above.
+- The augmented DEM precompute path covers `X` and `Z` bases. `Y` decomposition is not yet implemented for color codes.
+- Color-code training data is generated at a fixed physical error rate `p` (the augmented DEM bundle is fixed-p); the surface-code path's `[p_min, p_max]` linspace sweep is not yet available for color.
+- **Offline decoding from `.dets` files** ([above](#offline-decoding-from-stim-detector-samples)) is not yet wired for color codes. The sample I/O layer is code-agnostic, but the color inference path only generates syndromes in-memory and decodes with Chromobius. Making it consume `.dets` files needs: a `QCDataPipePreDecoder_ColorCode_from_stim_file` datapipe, `PREDECODER_STIM_SAMPLES_DIR` dispatch in `code/data/factory.py` (`_create_color_datapipe_inference`), a color `generate_stim_data` handler in `run_color` (`code/workflows/run.py`), and a color circuit/DEM rebuild for validation before Chromobius decode. Tracked as a follow-up.
 
 ### HE acceleration (advanced): parallel spacelike
 
@@ -1028,12 +1177,44 @@ dispatch:
 
 ## Results
 
+### Surface code
+
 Logical error rate (LER) vs. time for X-basis decoding at physical error rates p = 0.003 and 0.006:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="images/ler_vs_time_model_card_p0.003_0.006_X_dark.svg">
   <img src="images/ler_vs_time_model_card_p0.003_0.006_X_light.svg" alt="LER vs time (X basis, p=0.003–0.006)">
 </picture>
+
+### Color code
+
+End-to-end per-round logical error rate vs. single-shot (batch size 1) decode runtime for the
+pre-decoder + Chromobius pipeline compared with standalone Chromobius, across code distances at
+physical error rate p = 0.1 % (X basis). The pre-decoder runs at FP8 precision on a single NVIDIA
+GB300 GPU; Chromobius is timed on a single Grace Neoverse-V2 CPU.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/end_to_end_runtime_vs_ler_modelB_basis_X_p0p001_dark.svg">
+  <img src="images/end_to_end_runtime_vs_ler_modelB_basis_X_p0p001_light.svg" alt="End-to-end per-round LER vs decode runtime at p=0.1% (X basis): pre-decoder + Chromobius vs Chromobius alone, across code distances">
+</picture>
+
+Logical-error-rate improvement factor of the pre-decoder + Chromobius pipeline over standalone
+Chromobius (X basis, p = 0.3 %, `n_rounds = d`), for the pre-decoder models of the color-code
+paper. The improvement grows with code distance even though each model is trained only at a
+single distance equal to its receptive field:
+
+| Model | d=5 | d=9 | d=13 | d=17 | d=21 | d=31 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Model 1 | 1.33× | 1.51× | 2.13× | 3.18× | 5.03× | 18.58× |
+| Model 4 | 1.68× | 2.23× | 3.87× | 7.67× | 15.73× | 124.71× |
+| Model 5 | 1.82× | 2.64× | 4.84× | 10.61× | 23.78× | 223.72× |
+| Model B | 1.79× | 2.88× | 5.56× | 13.16× | 31.21× | **347.74×** |
+
+At d = 31 and
+p = 0.3 %, the model B + Chromobius pipeline improves the logical error rate by 347× while
+reducing end-to-end decode runtime by 7.33× relative to standalone Chromobius; pre-decoding also
+cuts Chromobius decode time per round by up to ~9.5× (Model 5, d = 13, p = 0.1 %). Z-basis
+results track the X basis closely.
 
 ## License
 

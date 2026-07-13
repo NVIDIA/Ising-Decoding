@@ -25,7 +25,11 @@ if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
 import evaluation.metrics as metrics
-from evaluation.metrics import configure_metrics, _extract_reduction_factor, compute_syndrome_density
+from evaluation.metrics import (
+    configure_metrics,
+    _extract_reduction_factor,
+    compute_syndrome_density,
+)
 
 
 class TestConfigureMetrics(unittest.TestCase):
@@ -85,6 +89,39 @@ class TestComputeSyndromeDensitySignature(unittest.TestCase):
             "sdr_as_percent is a display-only flag in train.py and must not be added "
             "to compute_syndrome_density(); passing it causes TypeError at runtime.",
         )
+
+
+class TestColorLERExtraction(unittest.TestCase):
+
+    def test_extracts_color_logical_error_rate_mean_from_both_bases(self):
+        old_compute = metrics.compute_logical_error_rate
+        try:
+            metrics.compute_logical_error_rate = lambda *_args, **_kwargs: {
+                "X":
+                    {
+                        "logical_error_rate (mean)": 0.02,
+                        "logical_errors": 2,
+                        "chromobius_errors": 4,
+                    },
+                "Z":
+                    {
+                        "logical_error_rate (mean)": 0.04,
+                        "logical_errors": 4,
+                        "chromobius_errors": 8,
+                    },
+            }
+            ler, reduction, _speedup = metrics._compute_single_ler(
+                model=None,
+                device=None,
+                dist=None,
+                cfg=None,
+                generator=None,
+                rank=1,
+            )
+            self.assertAlmostEqual(ler, 0.03)
+            self.assertAlmostEqual(reduction, 2.0)
+        finally:
+            metrics.compute_logical_error_rate = old_compute
 
 
 class TestComputeSingleLerPreservesZero(unittest.TestCase):

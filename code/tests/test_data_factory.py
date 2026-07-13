@@ -38,6 +38,15 @@ class TestDatapipeFactoryCreateDatapipe(unittest.TestCase):
         self.assertIsNone(a)
         self.assertIsNone(b)
 
+    def test_color_memory_returns_none_none(self):
+        cfg = OmegaConf.create({
+            "code": "color",
+            "datapipe": "memory",
+        })
+        a, b = DatapipeFactory.create_datapipe(cfg)
+        self.assertIsNone(a)
+        self.assertIsNone(b)
+
     def test_invalid_code_raises(self):
         cfg = OmegaConf.create({"code": "invalid"})
         with self.assertRaises(ValueError):

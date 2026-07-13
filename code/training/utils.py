@@ -26,13 +26,18 @@ from torch.cuda.amp import GradScaler
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler, LambdaLR
 
-# import modulus
-# from modulus.distributed import DistributedManager
-# from modulus.utils.capture import _StaticCapture
-# from modulus.launch.logging import PythonLogger
 from training.distributed import DistributedManager
 from training.capture import _StaticCapture
 from training.logging import PythonLogger
+
+
+def _is_external_model(model: torch.nn.Module) -> bool:
+    """Duck-typed check for "external" model classes (e.g. physicsnemo/modulus
+    models) that carry their own save/load/meta interface. Public productization
+    is physicsnemo-free; this returns False for plain torch.nn.Module so the
+    standard torch.save / torch.load path is used."""
+    return hasattr(model, "save") and hasattr(model, "load") and hasattr(model, "meta")
+
 
 # Type aliases for clarity
 optimizer = Optimizer
@@ -41,10 +46,6 @@ scaler = GradScaler
 
 # Logger instance
 checkpoint_logging = PythonLogger("checkpoint")
-
-
-def _is_external_model(model: torch.nn.Module) -> bool:
-    return hasattr(model, "save") and hasattr(model, "load") and hasattr(model, "meta")
 
 
 def create_directory(filepath):
@@ -181,16 +182,10 @@ def _get_checkpoint_filename(
     # model_parallel_rank should be the same as the process rank itself and
     # only rank 0 saves
     if not DistributedManager.is_initialized():
-        world_size = int(os.environ.get("WORLD_SIZE", "1"))
-        if world_size > 1:
-            checkpoint_logging.warning(
-                "`DistributedManager` not initialized; initializing now for multi-GPU checkpointing."
-            )
-            DistributedManager.initialize()
-        else:
-            checkpoint_logging.info(
-                "`DistributedManager` not initialized; proceeding with single-process checkpointing."
-            )
+        checkpoint_logging.warning(
+            "`DistributedManager` not initialized already. Initializing now, but this might lead to unexpected errors"
+        )
+        DistributedManager.initialize()
     manager = DistributedManager()
     model_parallel_rank = (
         manager.group_rank("model_parallel") if "model_parallel" in manager.group_names else 0
@@ -260,7 +255,7 @@ def _unique_model_names(models: List[torch.nn.Module],) -> Dict[str, torch.nn.Mo
         # Base name of model is meta.name unless pytorch model
         base_name = model0.__class__.__name__
         # if isinstance(model0, modulus.models.Module):
-        if _is_external_model(model0) and hasattr(model0.meta, "name"):
+        if _is_external_model(model0):
             base_name = model0.meta.name
         # If we have multiple models of the same name, introduce another index
         if base_name in model_dict:
@@ -406,38 +401,18 @@ def load_checkpoint(
         )
         return 0, 0
 
-    # If there is nothing to load (fresh run), don't emit scary warnings/errors.
-    # Note: `_get_checkpoint_filename(..., index=None, saving=False)` returns a default `.0` path
-    # even when the directory is empty, so we explicitly glob for any real checkpoint files.
-    ckpt_dir = Path(path)
-    has_any_training_ckpt = any(ckpt_dir.glob("checkpoint.*.pt"))
-
     # === Load model checkpoint(s) ===
     if models:
         if not isinstance(models, list):
             models = [models]
         models = _unique_model_names(models)
-
-        expected_model_files: List[Path] = []
-        for name, model in models.items():
-            model_type = "mdlus" if _is_external_model(model) else "pt"
-            expected_model_files.append(
-                Path(_get_checkpoint_filename(path, name, index=epoch, model_type=model_type))
-            )
-        has_any_model_file = any(p.exists() for p in expected_model_files)
-        if not has_any_training_ckpt and not has_any_model_file:
-            checkpoint_logging.info(
-                f"No checkpoints found in {path}; starting fresh (skipping load)."
-            )
-            return 0, 0
-
         for name, model in models.items():
             # model_type = "mdlus" if isinstance(model, modulus.models.Module) else "pt"
             model_type = "mdlus" if _is_external_model(model) else "pt"
             file_name = _get_checkpoint_filename(path, name, index=epoch, model_type=model_type)
 
             if not Path(file_name).exists():
-                checkpoint_logging.warning(f"Missing model file {file_name}, skipping load")
+                checkpoint_logging.error(f"Missing model file {file_name}, skipping load")
                 continue
 
             # if isinstance(model, modulus.models.Module):
@@ -452,9 +427,7 @@ def load_checkpoint(
     # === Load training state ===
     checkpoint_filename = _get_checkpoint_filename(path, index=epoch, model_type="pt")
     if not Path(checkpoint_filename).is_file():
-        # If there were checkpoint files at all, warn; otherwise keep it quiet (fresh run).
-        if has_any_training_ckpt:
-            checkpoint_logging.warning("Could not find valid checkpoint file, skipping load")
+        checkpoint_logging.warning("Could not find valid checkpoint file, skipping load")
         return 0, 0
 
     checkpoint_dict = torch.load(checkpoint_filename, map_location=device, weights_only=False)

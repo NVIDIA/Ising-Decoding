@@ -41,11 +41,39 @@ Performance strategy
 
 from __future__ import annotations
 
+import threading
 import warnings
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import torch
+
+# Compile mode for the HE inner-loop kernels.
+#
+# These compiled functions run inside the data generator's *background prefetch
+# thread* (the ThreadPoolExecutor in ``train_epoch``). Inductor CUDA-graph
+# trees (``mode="reduce-overhead"`` / the cudagraphs in ``"max-autotune"``) keep
+# their tree manager in thread-local storage and assert the TLS key is present
+# (``torch/_inductor/cudagraph_trees.py``); when the first compiled call lands in
+# the prefetch thread that key is missing, raising ``AssertionError`` (and, on
+# other DDP ranks, the related "FX symbolically trace a dynamo-optimized
+# function" error). ``mode="default"`` keeps Inductor fusion -- the bulk of the
+# parallel-HE speedup -- without CUDA graphs, so the kernels are safe to call
+# off the main thread. (If CUDA graphs are wanted back, the HE must instead run
+# on the main thread rather than the prefetch thread.)
+_HE_COMPILE_MODE = "default"
+
+
+def _mark_cudagraph_step_begin_if_main_thread() -> None:
+    """Call ``cudagraph_mark_step_begin`` only on the main thread.
+
+    It touches thread-local CUDA-graph state, so calling it from a worker thread
+    (e.g. the data-generator prefetch thread, or a compile-warmup thread) is
+    unsafe. No-op off the main thread; with the cudagraph-free _HE_COMPILE_MODE
+    it is a no-op anyway, but this keeps the call safe if CUDA graphs return.
+    """
+    if threading.current_thread() is threading.main_thread():
+        torch.compiler.cudagraph_mark_step_begin()
 
 
 def _as_uint8_binary(x: torch.Tensor) -> torch.Tensor:
@@ -1208,8 +1236,8 @@ def _fix_equivalence(cfg: torch.Tensor, cache: SpacelikeHECache, *, basis: str) 
 # These functions replicate the exact sequential algorithm (_weight_reduction
 # + _fix_equivalence) but in forms optimized for GPU execution:
 #
-# Weight-reduction: torch.compile with mode="reduce-overhead" (CUDA graphs)
-#   fuses all layer operations into a single kernel dispatch.
+# Weight-reduction: torch.compile (mode set by _HE_COMPILE_MODE) fuses all
+#   layer operations into a single kernel dispatch.
 #
 # Fix-equivalence: Manual CUDA graph capture of the branchless sequential
 #   stabilizer loop.  The Python for-loop over stabilizers produces hundreds
@@ -1531,7 +1559,7 @@ def _get_compiled_seq_wr(num_layers: int):
     def _wr_fn(error_f, padded_masks, is_boundary, layer_valid):
         return _wr_seq_step_nobreak(error_f, padded_masks, is_boundary, layer_valid, nl)
 
-    compiled = torch.compile(_wr_fn, mode="reduce-overhead", fullgraph=True)
+    compiled = torch.compile(_wr_fn, mode=_HE_COMPILE_MODE, fullgraph=True)
     _compiled_seq_wr_cache[key] = compiled
     return compiled
 
@@ -1753,7 +1781,7 @@ def _simplify_spacelike_seq_compiled(
     for _ in range(int(max_iterations)):
         prev.copy_(cfg)
 
-        torch.compiler.cudagraph_mark_step_begin()
+        _mark_cudagraph_step_begin_if_main_thread()
         # `.clone()` is required: with `mode="reduce-overhead"` the compiled
         # WR function returns a tensor that aliases an internal CUDA-graph
         # output buffer. Without this clone, the next iteration's replay
@@ -1866,7 +1894,7 @@ def _simplify_spacelike_parallel_compiled(
     # casts per outer iteration.
     prev_f = cfg_f.round()
     for _ in range(0, max_iterations, _SPACELIKE_CHUNK):
-        torch.compiler.cudagraph_mark_step_begin()
+        _mark_cudagraph_step_begin_if_main_thread()
         # `.clone()` is required: `mode="reduce-overhead"` puts `chunk_fn`
         # behind a CUDA graph whose output buffer is reused on the next replay.
         # Without this clone, `prev_f` would alias the buffer that the next
@@ -3031,7 +3059,7 @@ def _get_compiled_spacelike_chunk():
             )
         return error_f
 
-    compiled = torch.compile(_spacelike_chunk, mode="reduce-overhead", fullgraph=True)
+    compiled = torch.compile(_spacelike_chunk, mode=_HE_COMPILE_MODE, fullgraph=True)
     _compiled_spacelike_cache[key] = compiled
     return compiled
 
@@ -3113,7 +3141,7 @@ def _get_compiled_timelike_loop(
 
         return x_work, z_work, sz_work, sx_work
 
-    compiled = torch.compile(_timelike_loop, mode="reduce-overhead", fullgraph=True)
+    compiled = torch.compile(_timelike_loop, mode=_HE_COMPILE_MODE, fullgraph=True)
     _compiled_timelike_cache[key] = compiled
     return compiled
 
@@ -3181,7 +3209,9 @@ def _get_compiled_weight2_loop(
 
         return x_work, z_work, sz_work, sx_work
 
-    compiled = torch.compile(_w2_loop, mode="max-autotune", fullgraph=True)
+    # "-no-cudagraphs": keep autotuning but drop CUDA graphs, which are unsafe in
+    # the prefetch thread (see _HE_COMPILE_MODE).
+    compiled = torch.compile(_w2_loop, mode="max-autotune-no-cudagraphs", fullgraph=True)
     _compiled_weight2_cache[key] = compiled
     return compiled
 
