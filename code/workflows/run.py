@@ -233,6 +233,21 @@ def run_surface(cfg: DictConfig):
             raise ValueError(f"Invalid test.meas_basis_test={basis_cfg!r}; expected X, Z, or both.")
 
         num_samples = int(getattr(cfg.test, "num_samples", 1000))
+        # The public config rejects test.* overrides, so the shot count is
+        # otherwise fixed at the merged default; honor the same env var the
+        # inference workflows use. Unlike those (which silently ignore bad
+        # values), fail fast here — this workflow's only purpose is sampling.
+        env_samples = os.environ.get("PREDECODER_INFERENCE_NUM_SAMPLES")
+        if env_samples:
+            try:
+                num_samples = int(env_samples)
+            except ValueError:
+                num_samples = -1
+            if num_samples <= 0:
+                raise ValueError(
+                    "PREDECODER_INFERENCE_NUM_SAMPLES must be a positive integer, "
+                    f"got {env_samples!r}"
+                )
         output_dir = os.path.join(HydraConfig.get().runtime.output_dir, "stim_samples")
         noise_model_cfg = getattr(cfg.data, "noise_model", None)
         noise_model_params = None
@@ -718,6 +733,25 @@ def _load_model(cfg, dist):
             model_id=None,
             device=str(dist.device),
         )
+
+        # The cascade model "B" is color-code only: loading it into a surface
+        # runtime config would silently run the surface workflow with a color
+        # cascade model, so fail fast instead of warning.
+        loaded_spec_model_id = metadata.get("model_id")
+        if loaded_spec_model_id is not None:
+            from model.registry import get_model_spec
+            code_name = str(getattr(cfg, "code", "surface")).lower()
+            spec = get_model_spec(loaded_spec_model_id)
+            if (
+                spec.model_version == "predecoder_memory_cascade" and
+                not code_name.startswith("color")
+            ):
+                raise ValueError(
+                    f"SafeTensors checkpoint has model_id={loaded_spec_model_id} "
+                    f"(color-code cascade model), but the runtime config has "
+                    f"code={code_name!r}. Re-run with code=color to use this model."
+                )
+
         if dist.rank == 0:
             loaded_model_id = metadata.get("model_id", "unknown")
             dtype = metadata.get("quant_format", "fp32")

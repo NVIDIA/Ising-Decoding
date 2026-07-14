@@ -113,6 +113,26 @@ class TestSafeTensorsRoundTrip(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_safetensors(model, path, model_id=self.MODEL_ID, dtype="int8")
 
+    def test_round_trip_model_b(self):
+        """String model ids (color-code cascade model "B") round-trip end to end."""
+        cfg = _build_minimal_cfg("B")
+        self.assertEqual(cfg.code, "color")
+        model = ModelFactory.create_model(cfg)
+        with tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False) as f:
+            path = f.name
+        self.addCleanup(os.unlink, path)
+
+        save_safetensors(model, path, model_id="B", dtype="fp32")
+        loaded, metadata = load_safetensors(path, model_id=None, device="cpu")
+
+        self.assertEqual(metadata["model_id"], "B")
+        self.assertEqual(metadata["model_version"], "predecoder_memory_cascade")
+        self._assert_state_dicts_close(model.state_dict(), loaded.state_dict(), atol=0.0)
+
+        # Lower-case alias normalizes through the registry
+        loaded_alias, _ = load_safetensors(path, model_id="b", device="cpu")
+        self.assertIsNotNone(loaded_alias)
+
 
 class TestSafeTensorsRunPyIntegration(unittest.TestCase):
     """Test PREDECODER_SAFETENSORS_CHECKPOINT code path in workflows/run.py."""

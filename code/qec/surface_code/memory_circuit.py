@@ -1233,6 +1233,249 @@ class MemoryCircuit(Circuit):
         }
 
 
+def triangular_color_code_circuit(d):
+
+    # Function which creates the Cmat version of the triangular color code circuit
+
+    # Validate integrality of counts (optional but helpful)
+    if (3 * d * d + 1) % 4 != 0 or (3 * (d * d - 1)) % 8 != 0 or (3 * d - 1) % 2 != 0:
+        raise ValueError("d does not yield integer counts for this construction.")
+
+    num_data = (3 * d * d + 1) // 4
+    num_plaquettes = (3 * (d * d - 1)) // 8
+    num_ancilla = 2 * num_plaquettes
+    num_rows_data_qubits = (3 * d - 1) // 2
+
+    num_time_steps = 10
+
+    # Use int dtype to keep gate codes as integers (optional)
+    Cmat = np.ones((num_data + num_ancilla, num_time_steps), dtype=int)
+
+    cnot_target = 10000  # Number representing the target of a CNOT gate
+
+    # First num_data rows of Cmat are for data qubits, and the remaining rows are the ancillas.
+    # Follow the same convention as the Gidney paper. Inverted triangle, data qubits are labelled left to right, top to bottom
+
+    for tt in range(num_time_steps):
+
+        if tt == 0:
+            # Initialize ancillas in each plaquette
+            index = num_data
+            for _ in range(num_plaquettes):
+                Cmat[index, tt] = 3  # Prepare in |+>
+                index += 1
+                Cmat[index, tt] = 4  # Prepare in |0>
+                index += 1
+
+        elif tt == num_time_steps - 1:
+            # Measure the ancillas in each plaquette
+            index = num_data
+            for _ in range(num_plaquettes):
+                Cmat[index, tt] = 5  # Measure in X
+                index += 1
+                Cmat[index, tt] = 6  # Measure in Z
+                index += 1
+
+        elif tt == 1 or tt == num_time_steps - 2:
+            # CNOT between the two ancilla qubits: control |+>, target |0>
+            index = num_data
+            for _ in range(num_plaquettes):
+                Cmat[index, tt] = cnot_target + (index + 2)  # control points to target row
+                Cmat[index + 1, tt] = cnot_target  # mark as "target"
+                index += 2
+
+        elif tt == 2:
+            # First sequence (data = control)
+            data_qubit_index = d
+            index_ancilla = num_data
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 1):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        if cc == cols - 1:
+                            index_ancilla += 3
+                        else:
+                            index_ancilla += 1
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+
+        elif tt == 3:
+            # Second sequence (data = control)
+            data_qubit_index = 0  # <-- fixed indentation (no leading space)
+            index_ancilla = num_data
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 1):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        index_ancilla += 1
+                        if cc == cols - 1:
+                            data_qubit_index += 3
+                        else:
+                            data_qubit_index += 1
+                    cols -= 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        if cc == cols - 1:
+                            index_ancilla += 3
+                        else:
+                            index_ancilla += 1
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+
+        elif tt == 4:
+            # Third sequence (data = control)
+            data_qubit_index = 1
+            index_ancilla = num_data + d - 1
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 2):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 2
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[data_qubit_index, tt] = cnot_target + (index_ancilla + 1)
+                        Cmat[index_ancilla, tt] = cnot_target
+                        index_ancilla += 1
+                        if cc == cols - 1:
+                            data_qubit_index += 3
+                        else:
+                            data_qubit_index += 1
+
+        elif tt == 5:
+            # First sequence (data = target)
+            data_qubit_index = d
+            index_ancilla = num_data
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 1):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        if cc == cols - 1:
+                            index_ancilla += 3
+                        else:
+                            index_ancilla += 1
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+
+        elif tt == 6:
+            # Second sequence (data = target)
+            data_qubit_index = 0
+            index_ancilla = num_data
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 1):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        index_ancilla += 1
+                        if cc == cols - 1:
+                            data_qubit_index += 3
+                        else:
+                            data_qubit_index += 1
+                    cols -= 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        if cc == cols - 1:
+                            index_ancilla += 3
+                        else:
+                            index_ancilla += 1
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 1
+
+        elif tt == 7:
+            # Third sequence (data = target)
+            data_qubit_index = 1
+            index_ancilla = num_data + d - 1
+            cols = d - 1
+            for rr in range(num_rows_data_qubits - 2):
+                if rr % 3 == 0:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                elif rr % 3 == 1:
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        data_qubit_index += 1
+                        index_ancilla += 1
+                    cols -= 2
+                else:  # rr % 3 == 2
+                    for cc in range(cols):
+                        Cmat[index_ancilla, tt] = cnot_target + (data_qubit_index + 1)
+                        Cmat[data_qubit_index, tt] = cnot_target
+                        index_ancilla += 1
+                        if cc == cols - 1:
+                            data_qubit_index += 3
+                        else:
+                            data_qubit_index += 1
+
+    # Add idle locations (2 during preparation, 7 during measurement)
+    for jj in range(num_data):
+        Cmat[jj, 0] = 2
+        Cmat[jj, num_time_steps - 1] = 7
+
+    return Cmat
+
+
 if __name__ == "__main__":
 
     d = 5

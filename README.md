@@ -176,6 +176,24 @@ Inference note:
   - Some environments crash during `torch.compile`.
   - Disable compile: `TORCH_COMPILE=0 bash code/scripts/local_run.sh`.
   - Or try a safer mode: `TORCH_COMPILE=1 TORCH_COMPILE_MODE=reduce-overhead bash code/scripts/local_run.sh`.
+- **Multi-GPU SIGSEGV inside `libnccl.so.2` on the CUDA 12.8 stack (known issue)**:
+  - The `torch 2.11.0+cu128` wheel pins `nvidia-nccl-cu12==2.28.9`, which has
+    been observed to segfault on any multi-rank NCCL operation (DDP gradient
+    sync, all-reduce) on H100x8 nodes running newer CUDA-13.x-family drivers.
+    The CUDA 13.0 stack (NCCL 2.29.7) is unaffected on the same hardware.
+  - Preferred: use the cu130 requirements/wheels on such nodes
+    (`TORCH_CUDA=cu130`, `code/requirements_public_train-cu13.txt`).
+  - If you must stay on cu128, upgrade NCCL in place. The torch wheel declares
+    an exact `nvidia-nccl-cu12==2.28.9` dependency, so pip will report a
+    dependency conflict for the upgrade — it is safe to proceed because
+    `libnccl.so.2` is ABI-compatible (`--no-deps` keeps the rest of the CUDA
+    package set untouched):
+    ```bash
+    pip install --no-deps --upgrade "nvidia-nccl-cu12>=2.29"
+    ```
+  - `export NCCL_NVLS_ENABLE=0` has also been reported to avoid the crash
+    family on NVLink-Switch topologies; `NCCL_DEBUG=INFO` helps capture the
+    crash site for bug reports.
 - **Blackwell GPUs (RTX 5080/5090, GB200/GB300)**:
   - Stable PyTorch wheels (`cu124`) do not ship SM 12.0 kernels.
     Install the nightly build with the `cu128` index:
@@ -281,7 +299,11 @@ PREDECODER_SAFETENSORS_CHECKPOINT=outputs/<EXPERIMENT_NAME>/models/<checkpoint>_
 WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
-`MODEL_ID` is the public model identifier (1–5); see `model/registry.py` for the mapping.
+`MODEL_ID` is the public model identifier — 1–5 for surface-code checkpoints, or
+B for the color-code cascade model; see `model/registry.py` for the mapping.
+Color-code *convolutional* checkpoints (model_id 1/2/4/5 trained with
+`code: color`) are not supported by this converter — color training widens the
+final conv layer, so the rebuilt surface architecture cannot load them.
 The pre-trained public models use `--model-id 1` (R=9) and `--model-id 4` (R=13).
 
 ### ONNX export and quantization (optional, post-training)
@@ -335,7 +357,7 @@ ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh
 |---|---|---|
 | `CONFIG_NAME` | `config_public` | Use the defaults from the `conf/$CONFIG_NAME.yaml` file |
 | `DISTANCE` | Use the distance specified in the `conf/$CONFIG_NAME.yaml` file | code distance (surface or color) |
-| `N_ROUNDS` | Calibration samples for INT8/FP8 post-training quantization. | number of rounds in memory experiment |
+| `N_ROUNDS` | Use the number of rounds specified in the `conf/$CONFIG_NAME.yaml` file | number of rounds in memory experiment |
 
 Notes:
 
@@ -351,8 +373,12 @@ CUDA-Q Realtime, you will need a test harness with valid inputs—both the
 exported neural network model and the corresponding syndrome data.
 
 The utility script `code/export/generate_test_data.py` is provided to generate
-this exact data (both an `.onnx` file and several `.bin` files) so you can
-easily consume it in the CUDA-Q QEC realtime AI decoder.
+the syndrome-data side of this (several `.bin` files: detector samples,
+observables, check matrices, priors, and PyMatching baseline predictions) so
+you can easily consume it in the CUDA-Q QEC realtime AI decoder. The `.onnx`
+model itself comes from the ONNX export step above; optionally pass it to this
+script via `--onnx-model` to also record the pre-decoder outputs
+(`predecoder_outputs.bin`) for the same samples.
 
 > **Important:** The `--distance` and `--n-rounds` arguments provided to this
 script **must match** the values used in the preceding section when running the
@@ -512,12 +538,13 @@ The generator reads from `conf/config_public.yaml`:
 | `data.code_rotation` | code orientation (`XV`/`XH`/`ZV`/`ZH` or `O1`..`O4`) |
 | `data.noise_model` | 25-parameter noise model dict (optional) |
 | `test.meas_basis_test` | `X`, `Z`, or `both` (default `both`) |
-| `test.p_error` | scalar noise level (default `0.003`) |
+| `test.p_error` | scalar noise level (default `0.006` for surface, `0.003` for color; fixed by the public config) |
 | `test.num_samples` | shots per basis (default `262144`, ~20 MB per file) |
 
 The default sample count is large because the smoke run targets LER stable to
-~3 significant digits; override `++test.num_samples=N` (or set the field in a
-local override config) to shrink it for a faster iteration. Output goes to:
+~3 significant digits; set `PREDECODER_INFERENCE_NUM_SAMPLES=N` in the
+environment to shrink it for a faster iteration (the public config rejects
+direct `test.num_samples` overrides). Output goes to:
 
 ```text
 outputs/offline_stim_run/stim_samples/samples_X.dets
@@ -689,9 +716,10 @@ If you change any config settings, also change the experiment name so outputs ar
 #### Model selection
 
 - `model_id`: for `code: surface`, one of **{1,2,3,4,5}**; for `code: color`,
-  one of **{1,2,4,5}**. Color model 3 is intentionally unavailable in the
+  one of **{1,2,4,5,B}**. Color model 3 is intentionally unavailable in the
   public config because its receptive field is larger than the currently
-  supported color-code training window.
+  supported color-code training window. Model B (cascade/bottleneck, R=13)
+  is color-code only.
 
 #### Code family
 
@@ -704,6 +732,7 @@ Each `model_id` has a fixed receptive field \(R\):
 - **model 3**: \(R=17\)
 - **model 4**: \(R=13\)
 - **model 5**: \(R=13\)
+- **model B**: \(R=13\) (color code only)
 
 Optimizer learning rate is managed internally: surface code uses the
 model-specific public LR table, while color code always uses **1 × 10⁻⁵** for
@@ -891,11 +920,23 @@ Training/validation data generation can load precomputed frames from:
 
 - `frames_data/`
 
-If frames are missing, the code can fall back to on-the-fly generation, but it is slower. To precompute frames:
+If frames are missing, the code can fall back to on-the-fly generation, but it
+is slower. To precompute surface-code frames, run `qec.precompute_dem` once per
+basis (one basis per invocation; `--rotation` accepts the internal orientations
+`XV`/`XH`/`ZV`/`ZH`). Public training always runs at the chosen model's
+receptive field, so match `--distance`/`--n_rounds` to it — 9 for models 1/2,
+17 for model 3, 13 for models 4/5 (the default `model_id: 1` needs the d=9
+files):
 
 ```bash
-python3 code/data/precompute_frames.py --distance 13 --n_rounds 13 --basis X Z --rotation O1
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --distance 9 --n_rounds 9 --basis X --rotation XV --dem_output_dir frames_data
+PYTHONPATH=code python code/qec/precompute_dem.py \
+    --distance 9 --n_rounds 9 --basis Z --rotation XV --dem_output_dir frames_data
 ```
+
+For color codes, use `--code color` without `--rotation` — see
+[Precompute the augmented DEM bundle](#precompute-the-augmented-dem-bundle).
 
 Precomputed DEM/frame artifacts are structural: they encode which detector
 responses each possible error column can produce for a given distance, number of
@@ -931,7 +972,7 @@ internal Hydra schema, so they bypass the public validator.
 |-------------|---------|
 | `conf/config_color_model_1_s_LR3e-4.yaml` | Train a model-1-shaped color-code pre-decoder at `d=9, r=9` (superdense schedule). |
 | `conf/config_color_threshold_model_1_d13.yaml` | Threshold sweep against a trained color-code checkpoint at `d=13` (set `model_checkpoint_dir` to a training run's `models/` directory). |
-| `conf/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Defaults to `d=9, R=9, p=1e-3`; override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
+| `conf/config_inference_color_model_5.yaml` | Run inference with a trained model-5-shaped color-code checkpoint via the public runner (`workflow.task=inference`; set `model_checkpoint_file` to your `.pt`). Model 5 has receptive field `R=13`; the test window defaults to `distance=9, n_rounds=9, p=1e-3`. Override `test.num_samples` / `test.p_error` / `test.meas_basis_test` for sweeps. |
 
 #### Precompute the augmented DEM bundle
 
@@ -1001,9 +1042,12 @@ launcher routes them around the public-config validator, forwards
 `--config-name=` and `workflow.task=` to `code/workflows/run.py`, and
 `run_color` then dispatches to the training entry point. Pass training
 overrides (epochs, batch size, etc.) via `EXTRA_PARAMS`. (Color training can
-also be driven from `conf/config_public.yaml` with `code: color`,
-`workflow.task: train`, and `data.precomputed_frames_dir` pointing at your
-precomputed bundle.)
+also be driven from `conf/config_public.yaml` with `code: color` and
+`workflow.task: train`; there the precomputed-frames path is not
+user-configurable — the validator auto-sets it to the repo-relative
+`frames_data/` directory, so generate your bundle there. Custom
+`data.precomputed_frames_dir` paths require the standalone color configs
+above.)
 
 #### Color-code limitations in this release
 

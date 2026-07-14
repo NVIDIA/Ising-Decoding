@@ -94,14 +94,14 @@ jobs:
           source .venv_train_${{ matrix.python-version }}_${{ matrix.torch-cuda }}/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_train.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          # 0.35: short run (16k samples, 2 epochs for stable LER across py versions)
+          # 0.35: short run (16k samples, 4 epochs for stable LER across py versions)
           python code/scripts/check_ler_from_log.py /tmp/ci_train.log --max-ler 0.35
         env:
           EXPERIMENT_NAME: ci_short
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
           PREDECODER_TEST_SAMPLES: "2048"
-          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_TRAIN_EPOCHS: "4"
 
       - name: Training + inference with multi-worker DataLoader (num_workers=2)
         shell: bash
@@ -115,7 +115,7 @@ jobs:
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
           PREDECODER_TEST_SAMPLES: "2048"
-          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_TRAIN_EPOCHS: "4"
           PREDECODER_INFERENCE_NUM_WORKERS: "2"
 
   # ---------------------------------------------------------------------------
@@ -157,20 +157,20 @@ jobs:
           # TODO: matrix by CUDA major version [cu12, cu13]
           pip install -r code/requirements_public_train-cu12.txt
 
-      - name: Mid-tier training + inference with LER check (32k train, 2 epochs)
+      - name: Mid-tier training + inference with LER check (32k train, 4 epochs)
         shell: bash
         run: |
           . .venv_mid/bin/activate
           bash code/scripts/smoke_run.sh 2>&1 | tee /tmp/ci_mid.log
           r=${PIPESTATUS[0]}; [ $r -ne 0 ] && exit $r
-          # 0.2: mid-tier (32k/2 epochs); loosen if flaky
+          # 0.2: mid-tier (32k/4 epochs); loosen if flaky
           python code/scripts/check_ler_from_log.py /tmp/ci_mid.log --max-ler 0.2
         env:
           EXPERIMENT_NAME: ci_mid
           PREDECODER_TRAIN_SAMPLES: "32768"
           PREDECODER_VAL_SAMPLES: "4096"
           PREDECODER_TEST_SAMPLES: "4096"
-          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_TRAIN_EPOCHS: "4"
 
       - name: HE compile tests (torch.compile + autotune on GPU)
         run: |
@@ -256,7 +256,7 @@ jobs:
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
           PREDECODER_TEST_SAMPLES: "2048"
-          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_TRAIN_EPOCHS: "4"
 
       - name: Multi-GPU smoke training with parallel spacelike HE (2 GPUs, DDP)
         # Additive coverage on top of the default-config multi-GPU smoke above.
@@ -291,7 +291,7 @@ jobs:
           PREDECODER_TRAIN_SAMPLES: "16384"
           PREDECODER_VAL_SAMPLES: "2048"
           PREDECODER_TEST_SAMPLES: "2048"
-          PREDECODER_TRAIN_EPOCHS: "2"
+          PREDECODER_TRAIN_EPOCHS: "4"
 
   # ---------------------------------------------------------------------------
   # GPU coverage: captures GPU-specific code paths missed by the CPU coverage job

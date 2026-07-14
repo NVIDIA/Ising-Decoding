@@ -56,7 +56,7 @@ data:
   p_min: 0.001 # Minimum physical error rate (when using random p per batch)
   p_max: 0.006 # Maximum physical error rate (when using random p per batch)
   error_mode: circuit_level_surface_custom # Error model (Stim inference)
-  precomputed_frames_dir: /root/pre-decoder/dem_data # Path to DEM bundle dir (H.X/H.Z/p/A). Use precompute_frames.py --dem_output_dir to generate.
+  precomputed_frames_dir: /root/pre-decoder/dem_data # Path to DEM bundle dir (H.X/H.Z/p/A). Use qec/precompute_dem.py --dem_output_dir to generate.
   enable_correlated_pymatching: False # If true, use two-pass correlated MWPM matching (more accurate but ~2.7x slower)
   code_rotation: XV # Surface code orientation: XV, XH, ZV, ZH (default: XV)
 

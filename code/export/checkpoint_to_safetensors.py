@@ -38,6 +38,7 @@ import torch
 
 from export.safetensors_utils import _build_minimal_cfg, save_safetensors
 from model.factory import ModelFactory
+from model.registry import get_model_spec
 
 
 def _load_checkpoint_state_dict(checkpoint_path: str, device: str) -> dict:
@@ -82,9 +83,15 @@ def main():
     )
     parser.add_argument(
         "--model-id",
-        type=int,
+        type=str,
         required=True,
-        help="Public model ID (1..5).",
+        help=(
+            "Public model ID: 1..5 for surface-code checkpoints, or B for the "
+            "color-code cascade model. Color-code convolutional checkpoints "
+            "(model_id 1/2/4/5 trained with code=color) are not supported by "
+            "this converter: color training widens the final conv layer, so "
+            "the rebuilt surface architecture cannot load them."
+        ),
     )
     parser.add_argument(
         "--fp16",
@@ -108,6 +115,13 @@ def main():
     )
     args = parser.parse_args()
 
+    try:
+        spec = get_model_spec(args.model_id)
+    except ValueError as e:
+        parser.error(f"argument --model-id: {e}")
+    # Canonical registry key: int for 1..5, "B" for the cascade model.
+    model_id = spec.model_id
+
     dtype = "fp16" if args.fp16 else "fp32"
     checkpoint_path = Path(args.checkpoint)
 
@@ -123,8 +137,8 @@ def main():
     print(f"Loading checkpoint: {checkpoint_path}")
     state_dict = _load_checkpoint_state_dict(str(checkpoint_path), args.device)
 
-    print(f"Building model architecture for model_id={args.model_id} ...")
-    cfg = _build_minimal_cfg(args.model_id)
+    print(f"Building model architecture for model_id={model_id} ...")
+    cfg = _build_minimal_cfg(model_id)
     model = ModelFactory.create_model(cfg).to(args.device)
 
     model.load_state_dict(state_dict, strict=True)
@@ -135,7 +149,7 @@ def main():
         print("  Converted to float16")
 
     print(f"Saving to: {output_path}")
-    save_safetensors(model, str(output_path), model_id=args.model_id, dtype=dtype)
+    save_safetensors(model, str(output_path), model_id=model_id, dtype=dtype)
 
     size_mb = output_path.stat().st_size / (1024**2)
     print(f"Done. File size: {size_mb:.2f} MB")

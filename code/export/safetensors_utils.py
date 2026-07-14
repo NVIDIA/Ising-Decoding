@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 from safetensors import safe_open
@@ -34,12 +34,12 @@ from workflows.config_validator import apply_public_defaults_and_model
 from omegaconf import OmegaConf
 
 
-def _build_minimal_cfg(model_id: int):
+def _build_minimal_cfg(model_id: Union[int, str]):
     """Build a minimal inference config for model_id without a full Hydra setup."""
     spec = get_model_spec(model_id)
     cfg = OmegaConf.create(
         {
-            "model_id": model_id,
+            "model_id": spec.model_id,
             "distance": spec.receptive_field,
             "n_rounds": spec.receptive_field,
             "data": {
@@ -47,13 +47,18 @@ def _build_minimal_cfg(model_id: int):
             },
         }
     )
+    # The cascade/bottleneck model "B" is color-code only. Conv ids (1..5)
+    # build the surface architecture here; color-trained conv checkpoints have
+    # a widened final layer (filters[-1] >= 16) and cannot be loaded into it.
+    if spec.model_version == "predecoder_memory_cascade":
+        cfg.code = "color"
     return apply_public_defaults_and_model(cfg, spec)
 
 
 def save_safetensors(
     model: torch.nn.Module,
     path: str,
-    model_id: int,
+    model_id: Union[int, str],
     dtype: str = "fp32",
     extra_metadata: Optional[dict] = None,
 ) -> None:
@@ -63,7 +68,7 @@ def save_safetensors(
     Args:
         model: The model to save (should already be on cpu or target device).
         path: Output file path (e.g. "model_fp32.safetensors").
-        model_id: Public model ID (1..5).
+        model_id: Public model ID (1..5 or "B").
         dtype: "fp32" or "fp16".
         extra_metadata: Optional dict of additional string metadata to embed.
     """
@@ -73,7 +78,7 @@ def save_safetensors(
     spec = get_model_spec(model_id)
 
     metadata = {
-        "model_id": str(model_id),
+        "model_id": str(spec.model_id),
         "quant_format": dtype,
         "model_version": spec.model_version,
         "receptive_field": str(spec.receptive_field),
@@ -89,7 +94,7 @@ def save_safetensors(
 
 def load_safetensors(
     safetensors_path: str,
-    model_id: Optional[int] = None,
+    model_id: Optional[Union[int, str]] = None,
     device: str = "cuda",
 ):
     """
@@ -107,16 +112,15 @@ def load_safetensors(
     with safe_open(safetensors_path, framework="pt", device="cpu") as f:
         metadata = dict(f.metadata())
 
-    # Resolve model_id
+    # Resolve model_id. Keep it as-is (int or string): get_model_spec()
+    # normalizes numeric strings to ints and "b" to "B" for the cascade model.
     if model_id is None:
         if "model_id" not in metadata:
             raise ValueError(
                 f"SafeTensors file has no 'model_id' in metadata and model_id was not provided: "
                 f"{safetensors_path}"
             )
-        model_id = int(metadata["model_id"])
-    else:
-        model_id = int(model_id)
+        model_id = metadata["model_id"]
 
     cfg = _build_minimal_cfg(model_id)
     model = ModelFactory.create_model(cfg).to(device)
