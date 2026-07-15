@@ -83,6 +83,207 @@ def test_color_precompute_p_vector_uses_25p_values(basis):
         ), (f"Unexpected scalar-derived probability {scalar_value} in 25p color DEM p vector")
 
 
+@pytest.mark.parametrize(
+    ("basis", "final_error_type", "final_probability"),
+    [("X", "Z", 0.0044), ("Z", "X", 0.0033)],
+)
+def test_color_data_spam_idle_and_final_readout_probabilities(
+    basis, final_error_type, final_probability
+):
+    from qec.noise_model import NoiseModel
+    from qec.precompute_dem import build_single_p_marginal_color_code
+
+    noise_model = NoiseModel(
+        p_prep_X=0.0011,
+        p_prep_Z=0.0022,
+        p_meas_X=0.0033,
+        p_meas_Z=0.0044,
+        p_idle_spam_X=0.0061,
+        p_idle_spam_Y=0.0062,
+        p_idle_spam_Z=0.0063,
+    )
+    error_types = ("X", "Y", "Z")
+    metadata = [(0, -1, -1, -1, "I", -1)]
+    metadata.extend(
+        (index, 1, 3, 0, error_type, -1) for index, error_type in enumerate(error_types, start=1)
+    )
+    metadata.extend(
+        (index, 2, 0, 0, error_type, -1) for index, error_type in enumerate(error_types, start=4)
+    )
+
+    probabilities = build_single_p_marginal_color_code(
+        error_metadata_global=metadata,
+        t_total=4,
+        n_rounds=3,
+        data_qubits=np.array([0], dtype=np.int32),
+        xcheck_qubits=np.array([1], dtype=np.int32),
+        zcheck_qubits=np.array([2], dtype=np.int32),
+        basis=basis,
+        p_scalar=0.0,
+        noise_model=noise_model,
+    )
+
+    np.testing.assert_allclose(
+        probabilities[1:4],
+        [noise_model.p_idle_spam_X, noise_model.p_idle_spam_Y, noise_model.p_idle_spam_Z],
+        rtol=0.0,
+        atol=1e-9,
+    )
+    expected_final = np.zeros(3, dtype=np.float32)
+    expected_final[error_types.index(final_error_type)] = final_probability
+    np.testing.assert_allclose(probabilities[4:7], expected_final, rtol=0.0, atol=1e-9)
+
+
+@pytest.mark.parametrize("basis", ["X", "Z"])
+def test_color_scalar_data_idle_probability_remains_p_scalar_over_three(basis):
+    """The 25p SPAM fix must not change legacy scalar data-idle priors."""
+    from qec.precompute_dem import build_single_p_marginal_color_code
+
+    p_scalar = 0.03
+    metadata = [(0, -1, -1, -1, "I", -1)]
+    metadata.extend(
+        (index, 1, 3, 0, error_type, -1)
+        for index, error_type in enumerate(("X", "Y", "Z"), start=1)
+    )
+
+    probabilities = build_single_p_marginal_color_code(
+        error_metadata_global=metadata,
+        t_total=4,
+        n_rounds=3,
+        data_qubits=np.array([0], dtype=np.int32),
+        xcheck_qubits=np.array([1], dtype=np.int32),
+        zcheck_qubits=np.array([2], dtype=np.int32),
+        basis=basis,
+        p_scalar=p_scalar,
+        noise_model=None,
+    )
+
+    np.testing.assert_allclose(
+        probabilities[1:4],
+        [p_scalar / 3.0] * 3,
+        rtol=0.0,
+        atol=1e-9,
+    )
+
+
+@pytest.mark.parametrize(
+    ("basis", "final_instruction", "final_error_type", "final_probability"),
+    [("X", "Z_ERROR", "Z", 0.047), ("Z", "X_ERROR", "X", 0.031)],
+)
+def test_color_stim_and_dem_data_noise_locations_match(
+    basis, final_instruction, final_error_type, final_probability
+):
+    from qec.color_code.memory_circuit import MemoryCircuit
+    from qec.noise_model import NoiseModel
+    from qec.precompute_dem import (
+        _extract_color_round_layout,
+        build_single_p_marginal_color_code,
+        generate_all_errors_local,
+        replicate_metadata_across_rounds,
+    )
+
+    noise_model = NoiseModel(
+        p_meas_X=0.031,
+        p_meas_Z=0.047,
+        p_idle_spam_X=0.061,
+        p_idle_spam_Y=0.073,
+        p_idle_spam_Z=0.089,
+    )
+    n_rounds = 4
+    circuit = MemoryCircuit(
+        distance=3,
+        idle_error=0.0,
+        sqgate_error=0.0,
+        tqgate_error=0.0,
+        spam_error=0.0,
+        n_rounds=n_rounds,
+        basis=basis,
+        noise_model=noise_model,
+        add_detectors=False,
+        schedule="nearest-neighbor",
+    )
+    data_qubits = set(int(q) for q in circuit.code.data_qubits)
+
+    stim_idle_ops = []
+    stim_final_ops = []
+    for name, targets, argument in circuit.stim_circuit_raw.flattened_operations():
+        int_targets = {int(target) for target in targets if isinstance(target, int)}
+        if name == "PAULI_CHANNEL_1" and int_targets == data_qubits:
+            stim_idle_ops.append(argument)
+        if (name == final_instruction and int_targets == data_qubits):
+            stim_final_ops.append(argument)
+
+    assert len(stim_idle_ops) == n_rounds - 1
+    for argument in stim_idle_ops:
+        np.testing.assert_allclose(
+            argument,
+            [
+                noise_model.p_idle_spam_X,
+                noise_model.p_idle_spam_Y,
+                noise_model.p_idle_spam_Z,
+            ],
+            rtol=0.0,
+            atol=1e-10,
+        )
+    assert len(stim_final_ops) == 1
+    assert float(stim_final_ops[0]) == pytest.approx(final_probability)
+
+    layout = _extract_color_round_layout(
+        circ=circuit,
+        distance=3,
+        n_rounds=n_rounds,
+        basis=basis,
+        schedule="nearest-neighbor",
+    )
+    _, metadata_local = generate_all_errors_local(
+        t_total=layout["t_total"],
+        nq=layout["nq"],
+        controls_by_layer=layout["cnot_circuit"],
+        cx_times=layout["cx_times"],
+    )
+    metadata = replicate_metadata_across_rounds(
+        metadata_local=metadata_local,
+        n_rounds=n_rounds,
+    )
+    probabilities = build_single_p_marginal_color_code(
+        error_metadata_global=metadata,
+        t_total=layout["t_total"],
+        n_rounds=n_rounds,
+        data_qubits=layout["data_qubits"],
+        xcheck_qubits=layout["xcheck_qubits"],
+        zcheck_qubits=layout["zcheck_qubits"],
+        basis=basis,
+        p_scalar=0.0,
+        noise_model=noise_model,
+    )
+
+    idle_rates = {
+        "X": noise_model.p_idle_spam_X,
+        "Y": noise_model.p_idle_spam_Y,
+        "Z": noise_model.p_idle_spam_Z,
+    }
+    dem_idle_locations = [
+        (round_index, time_index, qubit, error_type, float(probabilities[error_index]))
+        for error_index, round_index, time_index, qubit, error_type, _ in metadata
+        if round_index < n_rounds - 1 and time_index == layout["t_total"] -
+        1 and qubit in data_qubits and error_type in idle_rates
+    ]
+    assert len(dem_idle_locations) == (n_rounds - 1) * len(data_qubits) * 3
+    for _, _, _, error_type, probability in dem_idle_locations:
+        assert probability == pytest.approx(idle_rates[error_type])
+
+    dem_final_locations = [
+        (error_type, float(probabilities[error_index]))
+        for error_index, round_index, time_index, qubit, error_type, _ in metadata
+        if round_index == n_rounds -
+        1 and time_index == 0 and qubit in data_qubits and float(probabilities[error_index]) != 0.0
+    ]
+    assert len(dem_final_locations) == len(data_qubits)
+    for error_type, probability in dem_final_locations:
+        assert error_type == final_error_type
+        assert probability == pytest.approx(final_probability)
+
+
 def test_color_precompute_p_vector_scalar_path_unchanged_when_noise_model_none():
     """Passing noise_model=None must reproduce the legacy scalar p vector bit-for-bit."""
     from qec.precompute_dem import precompute_dem_bundle_color_code

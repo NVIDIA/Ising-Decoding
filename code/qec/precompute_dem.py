@@ -1635,7 +1635,7 @@ def build_single_p_marginal_color_code(
         is_ancilla_prep = is_prep and is_meas_qubit and not is_data
         is_ancilla_meas = is_meas and is_meas_qubit and not is_data
         is_data_prep = is_prep and is_data
-        is_data_meas = is_meas and is_data
+        is_data_spam_idle = tt == int(t_total) - 1 and is_data
         is_data_prep_final = tt == 0 and is_data and (round_idx, q) in prep_basis_map
 
         if use_nm:
@@ -1654,8 +1654,13 @@ def build_single_p_marginal_color_code(
                         p_err[int(eidx)] = p_meas_X_nm if meas_basis == 0 else p_meas_Z_nm
                     elif is_data_prep:
                         prep_basis = int(prep_basis_map[(round_idx, q)])
-                        p_err[int(eidx)] = p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm
-                    elif is_data_meas:
+                        if is_final_round:
+                            # The final perfect round models noisy data readout with a
+                            # fake Pauli error at tt=0 (see MemoryCircuit).
+                            p_err[int(eidx)] = (p_meas_Z_nm if prep_basis == 0 else p_meas_X_nm)
+                        else:
+                            p_err[int(eidx)] = (p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm)
+                    elif is_data_spam_idle:
                         p_err[int(eidx)] = nm_idle_spam.get(err_type, 0.0)
                     else:
                         p_err[int(eidx)] = nm_idle_cnot.get(err_type, 0.0)
@@ -1663,8 +1668,7 @@ def build_single_p_marginal_color_code(
                     p_err[int(eidx)] = 0.0
         else:
             p_non_final = (
-                spam_error if
-                (is_ancilla_prep or is_ancilla_meas or is_data_prep or is_data_meas) else p_scalar
+                spam_error if (is_ancilla_prep or is_ancilla_meas or is_data_prep) else p_scalar
             )
             if is_final_round:
                 p_adjusted = spam_error if is_data_prep_final else 0.0

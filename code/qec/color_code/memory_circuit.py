@@ -1718,12 +1718,15 @@ class MemoryCircuit(Circuit):
 
         # Final data measurement (noiseless)
         orig = (self.idle_error, self.sqgate_error, self.tqgate_error, self.spam_error)
+        orig_noise_model = self.noise_model
+        self.noise_model = None
         self.set_error_rates_simple(0, 0, 0, 0)
         self.set_error_rates()
 
         self.add_measure(self.code.data_qubits, basis=self.basis)
 
         # Restore original error rates
+        self.noise_model = orig_noise_model
         self.set_error_rates_simple(*orig)
         self.set_error_rates()
 
