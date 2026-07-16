@@ -259,8 +259,13 @@ def test_color_stim_and_dem_data_noise_locations_match(
     stim_data_basis_error_ops = []
     stim_xcheck_error_ops = []
     stim_zcheck_error_ops = []
-    for name, targets, argument in circuit.stim_circuit_raw.flattened_operations():
-        int_targets = {int(target) for target in targets if isinstance(target, int)}
+    for instruction in circuit.stim_circuit_raw.flattened():
+        name = instruction.name
+        arguments = instruction.gate_args_copy()
+        argument = arguments[0] if len(arguments) == 1 else arguments
+        int_targets = {
+            target.value for target in instruction.targets_copy() if target.is_qubit_target
+        }
         if name == "PAULI_CHANNEL_1" and int_targets == data_qubits:
             stim_idle_ops.append(argument)
         if (name == final_instruction and int_targets == data_qubits):
