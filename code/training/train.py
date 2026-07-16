@@ -1306,9 +1306,7 @@ def main(cfg: DictConfig) -> None:
     for epoch in range(cfg.train.epochs):
         per_device_bs = get_current_per_device_batch_size(epoch, cfg)
         acc = cfg.train.accumulate_steps
-        batches = compute_batches_per_epoch(
-            effective_num_samples, per_device_bs, dist.world_size
-        )
+        batches = compute_batches_per_epoch(effective_num_samples, per_device_bs, dist.world_size)
         steps = max(1, math.ceil(batches / acc))
         total_steps += steps
 
