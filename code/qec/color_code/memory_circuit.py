@@ -1491,7 +1491,9 @@ class MemoryCircuit(Circuit):
             sqgate_error: Single-qubit gate error rate (used if noise_model is None)
             tqgate_error: Two-qubit gate error rate (used if noise_model is None)
             spam_error: SPAM error rate (used if noise_model is None)
-            n_rounds: Number of stabilizer measurement rounds
+            n_rounds: Number of stabilizer measurement rounds, counting the
+                         state-prep and final logical-measurement rounds.
+                         Must be >= 2.
             basis: Logical basis ('X' or 'Z')
             get_all_detectors: Whether to include all detector types
             add_boundary_detectors: Whether to add boundary detectors comparing final data
@@ -1509,6 +1511,16 @@ class MemoryCircuit(Circuit):
                          - No post-round idle noise on data qubits
                          This matches the noise structure in Gidney's superdense color code paper.
         """
+        if n_rounds < 2:
+            # The circuit is built as state-prep round + REPEAT(n_rounds - 2)
+            # + final logical-measurement round, so n_rounds=1 would silently
+            # produce the same circuit as n_rounds=2 while downstream consumers
+            # (detector counting, DEM metadata replication) still use the
+            # requested value.
+            raise ValueError(
+                f"n_rounds must be >= 2, got {n_rounds}: n_rounds counts the "
+                "state-prep and final logical-measurement rounds"
+            )
         self.circuit = ''
         self.margin = ''
         self.distance = distance

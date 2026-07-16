@@ -52,7 +52,7 @@ def _first_superdense_round_layers(circuit_text: str,
                                    *,
                                    n_layers: int = 8) -> List[List[Tuple[int, int]]]:
     """
-    MemoryCircuit builds multiple stabilizer rounds even when n_rounds=1 (state-prep + final logical-meas round).
+    Even the minimal n_rounds=2 MemoryCircuit builds two stabilizer rounds (state-prep + final logical-meas round).
     Each round contributes an 8-layer superdense schedule, so the raw Stim text can contain 16+ CX lines.
 
     These schedule-structure tests are intended to validate a *single* 8-layer schedule instance, so we
@@ -148,14 +148,14 @@ class TestColorCodeLegacyCnotMapping(unittest.TestCase):
     def _assert_layers_match_under_mapping(self, d: int) -> None:
         cc = ColorCode(d)
 
-        # Generate our circuit with a single stabilizer round and no ticks to keep CX lines aligned to layers.
+        # Generate the minimal two-round circuit with no ticks to keep CX lines aligned to layers.
         circ = MemoryCircuit(
             distance=d,
             idle_error=0.0,
             sqgate_error=0.0,
             tqgate_error=0.0,
             spam_error=0.0,
-            n_rounds=1,
+            n_rounds=2,
             basis="X",
             add_tick=False,
             add_detectors=False,

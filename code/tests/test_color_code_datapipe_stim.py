@@ -292,7 +292,7 @@ class TestColorCodeDatapipeStimDistances:
 class TestColorCodeDatapipeStimRounds:
     """Test different numbers of rounds."""
 
-    @pytest.mark.parametrize("n_rounds", [1, 3, 5, 7])
+    @pytest.mark.parametrize("n_rounds", [2, 3, 5, 7])
     def test_various_rounds(self, n_rounds):
         """Test datapipe works for various round counts."""
         from data.datapipe_stim_color import QCDataPipePreDecoder_ColorCode_inference
@@ -311,6 +311,22 @@ class TestColorCodeDatapipeStimRounds:
         # Check time dimension
         assert sample['trainX'].shape[1] == n_rounds
         assert sample['x_syn_diff'].shape[1] == n_rounds
+
+    def test_single_round_is_rejected(self):
+        """n_rounds counts the state-prep and final logical-measurement rounds,
+        so n_rounds=1 is not representable and must fail loudly instead of
+        silently building a two-round circuit."""
+        from data.datapipe_stim_color import QCDataPipePreDecoder_ColorCode_inference
+
+        with pytest.raises(ValueError, match="n_rounds must be >= 2"):
+            QCDataPipePreDecoder_ColorCode_inference(
+                distance=3,
+                n_rounds=1,
+                num_samples=3,
+                error_mode="circuit_level_color_code",
+                p_error=0.001,
+                measure_basis='X',
+            )
 
 
 if __name__ == "__main__":

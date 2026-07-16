@@ -63,7 +63,7 @@ class TestColorCodeDataAncillaPartition(unittest.TestCase):
             sqgate_error=0.0,
             tqgate_error=0.0,
             spam_error=0.0,
-            n_rounds=1,
+            n_rounds=2,
             basis="X",
             add_tick=False,
             add_detectors=False,

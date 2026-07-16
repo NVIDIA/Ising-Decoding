@@ -61,7 +61,7 @@ def _parse_cx_layers(stim_text: str) -> List[List[Pair]]:
 
 def _first_superdense_round_layers(stim_text: str, *, n_layers: int = 8) -> List[List[Pair]]:
     """
-    MemoryCircuit builds multiple stabilizer rounds even when n_rounds=1 (state-prep + final logical-meas round).
+    Even the minimal n_rounds=2 MemoryCircuit builds two stabilizer rounds (state-prep + final logical-meas round).
     Each round contributes an 8-layer superdense schedule, so the raw Stim text can contain 16+ CX lines.
 
     These schedule-structure tests are intended to validate a *single* 8-layer schedule instance, so we
@@ -89,7 +89,7 @@ class TestColorCodeNewScheduleProperties(unittest.TestCase):
             sqgate_error=0.0,
             tqgate_error=0.0,
             spam_error=0.0,
-            n_rounds=1,
+            n_rounds=2,
             basis="X",
             add_tick=False,
             add_detectors=False,
