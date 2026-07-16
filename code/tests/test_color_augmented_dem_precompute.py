@@ -84,11 +84,24 @@ def test_color_precompute_p_vector_uses_25p_values(basis):
 
 
 @pytest.mark.parametrize(
-    ("basis", "final_error_type", "final_probability"),
-    [("X", "Z", 0.0044), ("Z", "X", 0.0033)],
+    (
+        "basis",
+        "final_error_type",
+        "final_probability",
+        "data_prep_error_type",
+        "data_prep_probability",
+    ),
+    [
+        ("X", "Z", 0.0044, "Z", 0.0022),
+        ("Z", "X", 0.0033, "X", 0.0011),
+    ],
 )
-def test_color_data_spam_idle_and_final_readout_probabilities(
-    basis, final_error_type, final_probability
+def test_color_single_qubit_noise_probabilities_follow_pauli_labels(
+    basis,
+    final_error_type,
+    final_probability,
+    data_prep_error_type,
+    data_prep_probability,
 ):
     from qec.noise_model import NoiseModel
     from qec.precompute_dem import build_single_p_marginal_color_code
@@ -109,6 +122,15 @@ def test_color_data_spam_idle_and_final_readout_probabilities(
     )
     metadata.extend(
         (index, 2, 0, 0, error_type, -1) for index, error_type in enumerate(error_types, start=4)
+    )
+    metadata.extend(
+        [
+            (7, 1, 0, 1, "Z", -1),
+            (8, 1, 3, 1, "Z", -1),
+            (9, 1, 0, 2, "X", -1),
+            (10, 1, 3, 2, "X", -1),
+            (11, 0, 0, 0, data_prep_error_type, -1),
+        ]
     )
 
     probabilities = build_single_p_marginal_color_code(
@@ -132,6 +154,18 @@ def test_color_data_spam_idle_and_final_readout_probabilities(
     expected_final = np.zeros(3, dtype=np.float32)
     expected_final[error_types.index(final_error_type)] = final_probability
     np.testing.assert_allclose(probabilities[4:7], expected_final, rtol=0.0, atol=1e-9)
+    np.testing.assert_allclose(
+        probabilities[7:11],
+        [
+            noise_model.p_prep_Z,
+            noise_model.p_meas_Z,
+            noise_model.p_prep_X,
+            noise_model.p_meas_X,
+        ],
+        rtol=0.0,
+        atol=1e-9,
+    )
+    assert probabilities[11] == pytest.approx(data_prep_probability)
 
 
 @pytest.mark.parametrize("basis", ["X", "Z"])
@@ -167,11 +201,24 @@ def test_color_scalar_data_idle_probability_remains_p_scalar_over_three(basis):
 
 
 @pytest.mark.parametrize(
-    ("basis", "final_instruction", "final_error_type", "final_probability"),
-    [("X", "Z_ERROR", "Z", 0.047), ("Z", "X_ERROR", "X", 0.031)],
+    (
+        "basis",
+        "final_instruction",
+        "final_error_type",
+        "data_prep_probability",
+        "final_probability",
+    ),
+    [
+        ("X", "Z_ERROR", "Z", 0.023, 0.047),
+        ("Z", "X_ERROR", "X", 0.019, 0.031),
+    ],
 )
 def test_color_stim_and_dem_data_noise_locations_match(
-    basis, final_instruction, final_error_type, final_probability
+    basis,
+    final_instruction,
+    final_error_type,
+    data_prep_probability,
+    final_probability,
 ):
     from qec.color_code.memory_circuit import MemoryCircuit
     from qec.noise_model import NoiseModel
@@ -183,6 +230,8 @@ def test_color_stim_and_dem_data_noise_locations_match(
     )
 
     noise_model = NoiseModel(
+        p_prep_X=0.019,
+        p_prep_Z=0.023,
         p_meas_X=0.031,
         p_meas_Z=0.047,
         p_idle_spam_X=0.061,
@@ -203,15 +252,23 @@ def test_color_stim_and_dem_data_noise_locations_match(
         schedule="nearest-neighbor",
     )
     data_qubits = set(int(q) for q in circuit.code.data_qubits)
+    xcheck_qubits = set(int(q) for q in circuit.code.xcheck_qubits)
+    zcheck_qubits = set(int(q) for q in circuit.code.zcheck_qubits)
 
     stim_idle_ops = []
-    stim_final_ops = []
+    stim_data_basis_error_ops = []
+    stim_xcheck_error_ops = []
+    stim_zcheck_error_ops = []
     for name, targets, argument in circuit.stim_circuit_raw.flattened_operations():
         int_targets = {int(target) for target in targets if isinstance(target, int)}
         if name == "PAULI_CHANNEL_1" and int_targets == data_qubits:
             stim_idle_ops.append(argument)
         if (name == final_instruction and int_targets == data_qubits):
-            stim_final_ops.append(argument)
+            stim_data_basis_error_ops.append(float(argument))
+        if name == "Z_ERROR" and int_targets == xcheck_qubits:
+            stim_xcheck_error_ops.append(float(argument))
+        if name == "X_ERROR" and int_targets == zcheck_qubits:
+            stim_zcheck_error_ops.append(float(argument))
 
     assert len(stim_idle_ops) == n_rounds - 1
     for argument in stim_idle_ops:
@@ -225,8 +282,15 @@ def test_color_stim_and_dem_data_noise_locations_match(
             rtol=0.0,
             atol=1e-10,
         )
-    assert len(stim_final_ops) == 1
-    assert float(stim_final_ops[0]) == pytest.approx(final_probability)
+    assert sorted(stim_data_basis_error_ops) == pytest.approx(
+        sorted([data_prep_probability, final_probability])
+    )
+    assert sorted(stim_xcheck_error_ops) == pytest.approx(
+        sorted([noise_model.p_prep_Z, noise_model.p_meas_Z] * (n_rounds - 1))
+    )
+    assert sorted(stim_zcheck_error_ops) == pytest.approx(
+        sorted([noise_model.p_prep_X, noise_model.p_meas_X] * (n_rounds - 1))
+    )
 
     layout = _extract_color_round_layout(
         circ=circuit,
