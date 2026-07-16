@@ -28,6 +28,7 @@ if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
 from training.utils import (
+    compute_batches_per_epoch,
     create_directory,
     should_stop_due_to_time,
     _is_external_model,
@@ -135,16 +136,12 @@ class TestStepsPerEpochCalculation(unittest.TestCase):
     not optimizer steps.  accumulate_steps only controls optimizer.step()
     frequency and must not reduce the loop iteration count."""
 
-    def _steps_per_epoch(self, num_samples, per_device_bs, world_size):
-        """Mirror the calculation in train.py:main() (line ~1298)."""
-        return num_samples // (per_device_bs * world_size)
-
     def test_accumulate_steps_does_not_reduce_data_seen(self):
         num_samples = 8_388_608
         batch_size = 512
         world_size = 1
 
-        steps = self._steps_per_epoch(num_samples, batch_size, world_size)
+        steps = compute_batches_per_epoch(num_samples, batch_size, world_size)
         data_seen = steps * batch_size * world_size
 
         self.assertEqual(data_seen, num_samples)
@@ -154,12 +151,24 @@ class TestStepsPerEpochCalculation(unittest.TestCase):
         batch_size = 512
         world_size = 4
 
-        steps = self._steps_per_epoch(num_samples, batch_size, world_size)
+        steps = compute_batches_per_epoch(num_samples, batch_size, world_size)
         data_seen = steps * batch_size * world_size
 
         self.assertEqual(data_seen, num_samples)
 
     def test_default_production_values(self):
-        steps = self._steps_per_epoch(67_108_864, 512, 1)
+        steps = compute_batches_per_epoch(67_108_864, 512, 1)
         self.assertEqual(steps, 131072)
         self.assertEqual(steps * 512, 67_108_864)
+
+    def test_partial_batch_is_not_counted(self):
+        steps = compute_batches_per_epoch(1_025, 512, 2)
+        self.assertEqual(steps, 1)
+
+    def test_rejects_non_positive_batch_size(self):
+        with self.assertRaisesRegex(ValueError, "per_device_batch_size must be positive"):
+            compute_batches_per_epoch(1_024, 0, 1)
+
+    def test_rejects_non_positive_world_size(self):
+        with self.assertRaisesRegex(ValueError, "world_size must be positive"):
+            compute_batches_per_epoch(1_024, 512, 0)

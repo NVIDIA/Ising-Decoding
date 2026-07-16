@@ -90,6 +90,21 @@ def create_directory(filepath):
         os.makedirs(filepath)
 
 
+def compute_batches_per_epoch(num_samples, per_device_batch_size, world_size):
+    """Return full forward-pass batches per epoch.
+
+    Uses floor division, so a trailing partial batch is dropped. This counts
+    loop iterations, not optimizer steps; gradient accumulation is applied
+    separately by the caller.
+    """
+    if per_device_batch_size <= 0:
+        raise ValueError("per_device_batch_size must be positive")
+    if world_size <= 0:
+        raise ValueError("world_size must be positive")
+
+    return num_samples // (per_device_batch_size * world_size)
+
+
 def should_stop_due_to_time(cfg, epoch_times, current_epoch, rank=0):
     """
     Check if we should stop training due to time constraints.

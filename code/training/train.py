@@ -58,7 +58,7 @@ from training.distributed import DistributedManager
 
 from training.utils import (
     load_checkpoint, save_checkpoint, load_latest_best_checkpoint_metadata, create_directory,
-    should_stop_due_to_time, compare_receptive_field_with_window_data
+    should_stop_due_to_time, compare_receptive_field_with_window_data, compute_batches_per_epoch
 )
 from model.factory import ModelFactory
 
@@ -1306,7 +1306,9 @@ def main(cfg: DictConfig) -> None:
     for epoch in range(cfg.train.epochs):
         per_device_bs = get_current_per_device_batch_size(epoch, cfg)
         acc = cfg.train.accumulate_steps
-        batches = effective_num_samples // (per_device_bs * dist.world_size)
+        batches = compute_batches_per_epoch(
+            effective_num_samples, per_device_bs, dist.world_size
+        )
         steps = max(1, math.ceil(batches / acc))
         total_steps += steps
 
@@ -1352,7 +1354,9 @@ def main(cfg: DictConfig) -> None:
     # Calculate steps per epoch
     per_device_bs0 = get_current_per_device_batch_size(0, cfg)
     acc0 = cfg.train.accumulate_steps
-    batches_per_epoch = effective_num_samples // (per_device_bs0 * dist.world_size)
+    batches_per_epoch = compute_batches_per_epoch(
+        effective_num_samples, per_device_bs0, dist.world_size
+    )
     steps_per_epoch_estimate = math.ceil(batches_per_epoch / acc0)
 
     # Load optimizer/scheduler/scaler state
@@ -1435,7 +1439,9 @@ def main(cfg: DictConfig) -> None:
             per_device_batch_size = get_current_per_device_batch_size(epoch, cfg)
             accumulate_steps = cfg.train.accumulate_steps
             effective_batch_size = per_device_batch_size * accumulate_steps * dist.world_size
-            steps_per_epoch = effective_num_samples // (per_device_batch_size * dist.world_size)
+            steps_per_epoch = compute_batches_per_epoch(
+                effective_num_samples, per_device_batch_size, dist.world_size
+            )
 
             if dist.rank == 0:
                 print(
