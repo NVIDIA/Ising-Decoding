@@ -200,6 +200,74 @@ def test_color_scalar_data_idle_probability_remains_p_scalar_over_three(basis):
     )
 
 
+def test_color_noiseless_context_restores_noise_state_after_error():
+    from qec.color_code.memory_circuit import Circuit
+    from qec.noise_model import NoiseModel
+
+    circuit = Circuit(np.array([0], dtype=np.int32))
+    noise_model = NoiseModel(p_meas_X=0.01)
+    original_rates = (0.1, 0.2, 0.3, 0.4)
+    circuit.set_noise_model(noise_model)
+    circuit.set_error_rates_simple(*original_rates)
+    circuit.set_error_rates()
+    original_error_rates = dict(circuit.error_rates)
+
+    with pytest.raises(RuntimeError, match="test failure"):
+        with circuit._temporarily_noiseless() as (saved_noise_model, saved_rates):
+            assert saved_noise_model is noise_model
+            assert saved_rates == original_rates
+            assert circuit.noise_model is None
+            assert (
+                circuit.idle_error,
+                circuit.sqgate_error,
+                circuit.tqgate_error,
+                circuit.spam_error,
+            ) == (0, 0, 0, 0)
+            raise RuntimeError("test failure")
+
+    assert circuit.noise_model is noise_model
+    assert (
+        circuit.idle_error,
+        circuit.sqgate_error,
+        circuit.tqgate_error,
+        circuit.spam_error,
+    ) == original_rates
+    assert circuit.error_rates == original_error_rates
+
+
+def test_color_noiseless_context_restores_noise_state_normally():
+    from qec.color_code.memory_circuit import Circuit
+    from qec.noise_model import NoiseModel
+
+    circuit = Circuit(np.array([0], dtype=np.int32))
+    noise_model = NoiseModel(p_meas_Z=0.02)
+    original_rates = (0.11, 0.22, 0.33, 0.44)
+    circuit.set_noise_model(noise_model)
+    circuit.set_error_rates_simple(*original_rates)
+    circuit.set_error_rates()
+    original_error_rates = dict(circuit.error_rates)
+
+    with circuit._temporarily_noiseless() as (saved_noise_model, saved_rates):
+        assert saved_noise_model is noise_model
+        assert saved_rates == original_rates
+        assert circuit.noise_model is None
+        assert (
+            circuit.idle_error,
+            circuit.sqgate_error,
+            circuit.tqgate_error,
+            circuit.spam_error,
+        ) == (0, 0, 0, 0)
+
+    assert circuit.noise_model is noise_model
+    assert (
+        circuit.idle_error,
+        circuit.sqgate_error,
+        circuit.tqgate_error,
+        circuit.spam_error,
+    ) == original_rates
+    assert circuit.error_rates == original_error_rates
+
+
 @pytest.mark.parametrize(
     (
         "basis",

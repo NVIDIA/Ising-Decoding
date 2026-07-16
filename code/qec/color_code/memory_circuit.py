@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from contextlib import contextmanager
+
 import stim
 import numpy as np
 from qec.noise_model import NoiseModel
@@ -475,6 +477,26 @@ class Circuit:
         self.sqgate_error = sqgate_error
         self.tqgate_error = tqgate_error
         self.spam_error = spam_error
+
+    @contextmanager
+    def _temporarily_noiseless(self):
+        """Temporarily disable both explicit and legacy noise sources."""
+        original_rates = (
+            self.idle_error,
+            self.sqgate_error,
+            self.tqgate_error,
+            self.spam_error,
+        )
+        original_noise_model = self.noise_model
+        self.noise_model = None
+        self.set_error_rates_simple(0, 0, 0, 0)
+        self.set_error_rates()
+        try:
+            yield original_noise_model, original_rates
+        finally:
+            self.noise_model = original_noise_model
+            self.set_error_rates_simple(*original_rates)
+            self.set_error_rates()
 
     def set_error_rates(self):
         """
@@ -1266,7 +1288,11 @@ class MemoryCircuit(Circuit):
                 self.add_cnot_layer(layer, add_tick=self._add_tick)
 
     def _add_stabilizer_round(
-        self, logical_measurement=False, state_prep=False, combine_reset_and_measure=False
+        self,
+        logical_measurement=False,
+        state_prep=False,
+        combine_reset_and_measure=False,
+        _original_noise_state=None,
     ):
         """
         Add one stabilizer-measurement round for the color code.
@@ -1279,16 +1305,9 @@ class MemoryCircuit(Circuit):
         The feedforward is absorbed by stim.Circuit.with_inlined_feedback() at circuit construction end.
         """
         if logical_measurement:
-            # --- save original error rates and noise_model ---
-            orig = (self.idle_error, self.sqgate_error, self.tqgate_error, self.spam_error)
-            orig_noise_model = self.noise_model
-
-            # Final round (logical measurement): noiseless EXCEPT fake data-prep SPAM injection on data qubits.
-            # We temporarily clear noise_model so it doesn't inject idle/CNOT/measurement noise.
-            self.noise_model = None
-            # Set all legacy scalar rates to 0 so no other noise is injected in this round.
-            self.set_error_rates_simple(0, 0, 0, 0)
-            self.set_error_rates()
+            if _original_noise_state is None:
+                raise RuntimeError("Logical measurement round must run in a noiseless context")
+            orig_noise_model, orig = _original_noise_state
 
         # Reset ancillas (or model reset-via-measurement depending on combine_reset_and_measure)
         if not combine_reset_and_measure:
@@ -1349,11 +1368,6 @@ class MemoryCircuit(Circuit):
                 else:
                     self.add_idle(self.code.data_qubits, logical_measurement=logical_measurement)
 
-        if logical_measurement:
-            # Keep all scalar error rates at 0 for the rest of the logical-measurement round.
-            self.set_error_rates_simple(0, 0, 0, 0)
-            self.set_error_rates()
-
         # FIRST TICK
         if self._add_tick:
             self.add_tick()
@@ -1397,12 +1411,6 @@ class MemoryCircuit(Circuit):
         # Skip if using Gidney-style noise (matches Gidney's superdense circuit structure).
         if not self._gidney_style_noise:
             self._add_post_round_data_idle_noise(logical_measurement=logical_measurement)
-
-        if logical_measurement:
-            # --- restore original error rates and noise_model before exiting ---
-            self.noise_model = orig_noise_model
-            self.set_error_rates_simple(*orig)
-            self.set_error_rates()
 
     def _add_boundary_detectors_to_circuit(self):
         """
@@ -1692,7 +1700,12 @@ class MemoryCircuit(Circuit):
 
         ################## Logical measurement ##################
         # Final perfect stabilizer round (with reset errors but no other noise)
-        self._add_stabilizer_round(logical_measurement=True, combine_reset_and_measure=True)
+        with self._temporarily_noiseless() as original_noise_state:
+            self._add_stabilizer_round(
+                logical_measurement=True,
+                combine_reset_and_measure=True,
+                _original_noise_state=original_noise_state,
+            )
 
         if self._add_detectors:
             # Final round detectors: compare final perfect round to previous
@@ -1717,18 +1730,8 @@ class MemoryCircuit(Circuit):
                     self.add_detector([z_ind, z_ind + round_offset], coords=det_coords)
 
         # Final data measurement (noiseless)
-        orig = (self.idle_error, self.sqgate_error, self.tqgate_error, self.spam_error)
-        orig_noise_model = self.noise_model
-        self.noise_model = None
-        self.set_error_rates_simple(0, 0, 0, 0)
-        self.set_error_rates()
-
-        self.add_measure(self.code.data_qubits, basis=self.basis)
-
-        # Restore original error rates
-        self.noise_model = orig_noise_model
-        self.set_error_rates_simple(*orig)
-        self.set_error_rates()
+        with self._temporarily_noiseless():
+            self.add_measure(self.code.data_qubits, basis=self.basis)
 
         # Add boundary detectors if requested
         # These compare final data qubit measurements to last ancilla measurements
