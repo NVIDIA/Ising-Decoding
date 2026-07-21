@@ -10,6 +10,8 @@ memory-format helpers, without requiring a GPU.
 from __future__ import annotations
 
 import sys
+import tempfile
+import unittest
 from pathlib import Path
 
 import pytest
@@ -110,3 +112,48 @@ def test_match_input_noop_for_contiguous_model():
     conv = torch.nn.Conv3d(4, 8, kernel_size=3)  # default contiguous
     x = torch.randn(1, 4, 3, 5, 5)
     assert match_input_to_model_memory_format(x, conv) is x
+
+
+# unittest.TestCase so CI's `unittest discover` collects it (the pytest-style
+# tests above are only run by pytest).
+class TestMatchInputDuringOnnxExport(unittest.TestCase):
+    """The layout-match helper must be a no-op inside torch.onnx.export.
+
+    Regression test: an unguarded contiguous(memory_format=channels_last_3d)
+    in a traced forward makes the legacy exporter fail with
+    "onnx memory_format support is not implemented".
+    """
+
+    def test_match_input_skipped_during_onnx_export(self):
+        # The legacy TorchScript exporter needs the onnx package to serialize.
+        try:
+            from onnx.reference import ReferenceEvaluator
+        except ImportError:
+            self.skipTest("onnx is not installed")
+
+        class Wrap(torch.nn.Module):
+
+            def __init__(self):
+                super().__init__()
+                self.model = module_to_channels_last_3d(torch.nn.Conv3d(4, 8, kernel_size=3), True)
+
+            def forward(self, x):
+                x = match_input_to_model_memory_format(x, self.model)
+                return self.model(x)
+
+        wrap = Wrap().eval()
+        x = torch.randn(1, 4, 3, 8, 8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out_path = Path(tmpdir) / "wrap.onnx"
+            # Without the in-export guard the legacy exporter raises
+            # SymbolicValueError: "onnx memory_format support is not implemented".
+            torch.onnx.export(
+                wrap, (x,), str(out_path), opset_version=18, input_names=["x"], dynamo=False
+            )
+            self.assertTrue(out_path.exists())
+            # Skipping the layout conversion is value-neutral: the exported
+            # graph must reproduce the eager output.
+            (onnx_out,) = ReferenceEvaluator(str(out_path)).run(None, {"x": x.numpy()})
+        with torch.no_grad():
+            eager = wrap(x)
+        self.assertTrue(torch.allclose(eager, torch.from_numpy(onnx_out), atol=1e-5))

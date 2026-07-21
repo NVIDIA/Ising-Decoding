@@ -29,6 +29,7 @@ from evaluation.logical_error_rate import (
     _build_stab_maps,
     _decode_batch,
     _parse_quant_format,
+    _sync_and_raise_on_export_failure,
     map_grid_to_stabilizer_tensor,
     sample_predictions,
 )
@@ -750,6 +751,7 @@ def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets)
                 )
 
     elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
+        export_error = None
         if dist.rank == 0:
             try:
                 fp32_onnx_path = (
@@ -781,39 +783,47 @@ def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets)
                 print(f"[Ablation] Exported FP32 ONNX: {fp32_onnx_path}")
 
                 if quant_format:
-                    calib_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
-                    calib_dets = stim_dets[:calib_samples].astype(np.uint8)
+                    # Quantization failure semantics mirror the LER path: FP8 is
+                    # fail-fast, INT8 falls back to the FP32 ONNX (README notes).
                     try:
-                        import modelopt.onnx.quantization as mq
-                        quant_kwargs = {}
-                        if quant_format == "fp8":
-                            quant_kwargs["op_types_to_quantize"] = ["Conv"]
-                            quant_kwargs["high_precision_dtype"] = "fp16"
-                        mq.quantize(
-                            onnx_path=fp32_onnx_path,
-                            quantize_mode=quant_format,
-                            calibration_data={"dets": calib_dets.astype("float32")},
-                            output_path=onnx_path,
-                            **quant_kwargs,
-                        )
-                    except ImportError:
+                        calib_samples = int(os.environ.get("QUANT_CALIB_SAMPLES", "256"))
+                        calib_dets = stim_dets[:calib_samples].astype(np.uint8)
+                        try:
+                            import modelopt.onnx.quantization as mq
+                            quant_kwargs = {}
+                            if quant_format == "fp8":
+                                quant_kwargs["op_types_to_quantize"] = ["Conv"]
+                                quant_kwargs["high_precision_dtype"] = "fp16"
+                            mq.quantize(
+                                onnx_path=fp32_onnx_path,
+                                quantize_mode=quant_format,
+                                calibration_data={"dets": calib_dets.astype("float32")},
+                                output_path=onnx_path,
+                                **quant_kwargs,
+                            )
+                        except ImportError:
+                            if quant_format == "fp8":
+                                raise RuntimeError(
+                                    "[Ablation] FP8 quantization requires nvidia-modelopt."
+                                )
+                            from evaluation.logical_error_rate import _ort_quantize_int8
+                            _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
+                        print(f"[Ablation] Exported quantized ONNX: {onnx_path}")
+                    except Exception as e:
                         if quant_format == "fp8":
                             raise RuntimeError(
-                                "[Ablation] FP8 quantization requires nvidia-modelopt."
-                            )
-                        from evaluation.logical_error_rate import _ort_quantize_int8
-                        _ort_quantize_int8(fp32_onnx_path, onnx_path, calib_dets)
-                    print(f"[Ablation] Exported quantized ONNX: {onnx_path}")
+                                f"[Ablation] FP8 ONNX quantization failed (fail-fast): {e}"
+                            ) from e
+                        print(f"[Ablation] ONNX quantization failed: {e}; using FP32 ONNX.")
+                        onnx_path = fp32_onnx_path
             except Exception as e:
-                print(f"[Ablation] ONNX export failed: {e}; using PyTorch.")
-                onnx_workflow = OnnxWorkflow.TORCH_ONLY
-
-        if dist.world_size > 1:
-            # Broadcast rank 0's onnx_workflow (may have been set to TORCH_ONLY on
-            # export failure) so non-zero ranks skip the TRT build when rank 0 failed.
-            wf_list = [onnx_workflow]
-            torch.distributed.broadcast_object_list(wf_list, src=0)
-            onnx_workflow = wf_list[0]
+                # Stash instead of raising here: non-zero ranks must first learn
+                # about the failure through the collective below, or they would
+                # block in it after rank 0 dies.
+                export_error = e
+        # Doubles as the post-export sync so non-zero ranks don't race ahead to
+        # the TRT build.
+        _sync_and_raise_on_export_failure(export_error, onnx_workflow, dist, "[Ablation]")
         engine_path = onnx_path.replace(".onnx", ".engine")
 
         if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":

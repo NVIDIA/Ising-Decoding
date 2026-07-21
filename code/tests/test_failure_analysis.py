@@ -1161,6 +1161,32 @@ class TestOnnxWorkflowParsing(unittest.TestCase):
             OnnxWorkflow(99)
 
 
+class TestSyncAndRaiseOnExportFailure(unittest.TestCase):
+    """A failed explicitly-requested export must fail fast on every rank.
+
+    Covers the shared helper used by both the LER inference path
+    (run_inference_and_decode_pre_decoder_memory) and decoder_ablation_study.
+    """
+
+    def test_no_error_is_a_noop(self):
+        from evaluation.logical_error_rate import (OnnxWorkflow, _sync_and_raise_on_export_failure)
+        _sync_and_raise_on_export_failure(
+            None, OnnxWorkflow.EXPORT_ONNX_ONLY, _DummyDist(), "[LER]"
+        )
+
+    def test_export_error_raises_with_context(self):
+        from evaluation.logical_error_rate import (OnnxWorkflow, _sync_and_raise_on_export_failure)
+        cause = ValueError("onnx memory_format support is not implemented")
+        with self.assertRaisesRegex(
+            RuntimeError, r"\[LER\] ONNX export failed with ONNX_WORKFLOW=1 "
+            r"\(EXPORT_ONNX_ONLY\) explicitly requested"
+        ) as ctx:
+            _sync_and_raise_on_export_failure(
+                cause, OnnxWorkflow.EXPORT_ONNX_ONLY, _DummyDist(), "[LER]"
+            )
+        self.assertIs(ctx.exception.__cause__, cause)
+
+
 class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
     """
     ONNX_WORKFLOW=3 with a missing engine file must fall back to PyTorch silently
@@ -1220,8 +1246,9 @@ class TestDecoderAblationStudyTRTFallback(unittest.TestCase):
 
 class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
     """
-    ONNX_WORKFLOW=1 must attempt ONNX export (rank 0) then fall back to PyTorch for inference.
-    Results must be identical in structure to the default PyTorch path.
+    ONNX_WORKFLOW=1 must attempt ONNX export (rank 0) and run inference with
+    PyTorch; results must be identical in structure to the default PyTorch
+    path. A failed export must raise instead of silently falling back.
     """
 
     _D = 3
@@ -1265,9 +1292,13 @@ class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
         self.assertEqual(result["total_samples"], self._N)
         self.assertTrue(set(DECODER_NAMES).issubset(set(result["decoder_errors"].keys())))
 
-    def test_workflow1_export_failure_falls_back_gracefully(self):
-        """If ONNX export raises, results must still be valid (PyTorch fallback)."""
-        from evaluation.failure_analysis import decoder_ablation_study, DECODER_NAMES
+    def test_workflow1_export_failure_raises(self):
+        """If an explicitly requested ONNX export raises, the run must fail fast.
+
+        Silently falling back to PyTorch (and exiting 0) would let automation
+        believe the requested ONNX artifact was generated when it was not.
+        """
+        from evaluation.failure_analysis import decoder_ablation_study
         from data.datapipe_stim import QCDataPipePreDecoder_Memory_inference
         real_ds = QCDataPipePreDecoder_Memory_inference(
             distance=self._D,
@@ -1288,11 +1319,8 @@ class TestDecoderAblationStudyOnnxExport(unittest.TestCase):
                  patch("torch.onnx.export", side_effect=RuntimeError("export broken")), \
                  patch("os.getcwd", return_value=tmpdir):
                 mf.create_datapipe_inference.return_value = real_ds
-                result = decoder_ablation_study(
-                    _ZeroModel(), torch.device("cpu"), _DummyDist(), cfg
-                )
-        self.assertEqual(result["total_samples"], self._N)
-        self.assertTrue(set(DECODER_NAMES).issubset(set(result["decoder_errors"].keys())))
+                with self.assertRaisesRegex(RuntimeError, "ONNX export failed"):
+                    decoder_ablation_study(_ZeroModel(), torch.device("cpu"), _DummyDist(), cfg)
 
 
 class TestDecoderAblationStudyTRTExecution(unittest.TestCase):

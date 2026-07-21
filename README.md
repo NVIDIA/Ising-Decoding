@@ -362,6 +362,9 @@ ONNX_WORKFLOW=3 WORKFLOW=inference bash code/scripts/local_run.sh
 Notes:
 
 - TensorRT workflows (`ONNX_WORKFLOW=2` or `3`) require `tensorrt` and `modelopt`.
+- A failed ONNX export (`ONNX_WORKFLOW=1` or `2`) is fatal (nonzero exit) instead of silently
+  falling back to PyTorch. A TensorRT build/load failure after a successful export still falls
+  back to PyTorch.
 - FP8 quantization failure is fatal. INT8 failure falls back to the FP32 ONNX model silently.
 - ONNX and engine files are written to the current working directory.
 - `ONNX_WORKFLOW` is also honoured by the `decoder_ablation` workflow — see below.

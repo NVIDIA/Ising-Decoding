@@ -254,6 +254,28 @@ def _ort_quantize_int8(fp32_onnx_path: str, output_path: str, calib_dets: "np.nd
     )
 
 
+def _sync_and_raise_on_export_failure(export_error, onnx_workflow, dist, tag: str) -> None:
+    """Fail fast (on every rank) when a requested ONNX export failed on rank 0.
+
+    ONNX_WORKFLOW defaults to 0, so a failed export here was explicitly
+    requested: raising instead of silently falling back to PyTorch makes the
+    run exit nonzero, so automation cannot mistake a fallback run for a
+    produced artifact. The broadcast doubles as the post-export barrier and
+    lets non-zero ranks exit promptly instead of blocking in a later
+    collective once rank 0 dies.
+    """
+    if dist.world_size > 1:
+        msg_list = [None if export_error is None else str(export_error)]
+        torch.distributed.broadcast_object_list(msg_list, src=0)
+        if export_error is None and msg_list[0] is not None:
+            export_error = RuntimeError(msg_list[0])
+    if export_error is not None:
+        raise RuntimeError(
+            f"{tag} ONNX export failed with ONNX_WORKFLOW={onnx_workflow.value} "
+            f"({onnx_workflow.name}) explicitly requested: {export_error}"
+        ) from export_error
+
+
 def _time_single_shot_latency_stim(
     matcher,
     baseline_syndromes: np.ndarray,
@@ -1168,6 +1190,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 )
 
     elif onnx_workflow in (OnnxWorkflow.EXPORT_ONNX_ONLY, OnnxWorkflow.EXPORT_AND_USE_TRT):
+        export_error = None
         if dist.rank == 0:
             try:
                 example_dets = torch.randint(0, 2, example_shape, dtype=torch.uint8, device=device)
@@ -1250,11 +1273,11 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                         print(f"[LER] ONNX quantization failed: {e}; using FP32 ONNX.")
                         onnx_path = fp32_onnx_path
             except Exception as e:
-                if dist.rank == 0:
-                    print(f"[LER] ONNX export failed: {e}; falling back to PyTorch.")
-                onnx_workflow = OnnxWorkflow.TORCH_ONLY
-        if dist.world_size > 1:
-            torch.distributed.barrier()
+                # Stash instead of raising here: non-zero ranks must first learn
+                # about the failure through the collective below, or they would
+                # block in it after rank 0 dies.
+                export_error = e
+        _sync_and_raise_on_export_failure(export_error, onnx_workflow, dist, "[LER]")
         # Re-derive engine_path from the final onnx_path (may have changed on quant fallback)
         engine_path = str(Path(onnx_path).with_suffix(".engine"))
         if onnx_workflow == OnnxWorkflow.EXPORT_AND_USE_TRT and device.type == "cuda":

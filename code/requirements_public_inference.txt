@@ -27,6 +27,9 @@ safetensors>=0.4.0
 scipy
 ldpc
 beliefmatching
+# Required by the legacy TorchScript ONNX exporter at serialization time
+# (ONNX_WORKFLOW=1/2 cannot produce an artifact without it).
+onnx
 # Color-code support (Torch + cuStabilizer runtime).
 chromobius
 # Optional GPU-only prerequisites (not pip-installed here due to size and CUDA dependency):

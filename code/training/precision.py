@@ -119,7 +119,13 @@ def match_input_to_model_memory_format(tensor: torch.Tensor, model) -> torch.Ten
     If the model runs in channels_last_3d, a contiguous half-precision input
     forces the slow Conv3D kernel; converting the input keeps eval on the fast
     Tensor-Core path and consistent with training. No-op for contiguous models.
+
+    Skipped during ONNX export: the legacy exporter cannot lower
+    ``contiguous(memory_format=channels_last_3d)``, and ONNX has no
+    memory-format concept — layout only affects kernel dispatch, not values.
     """
+    if getattr(torch.onnx, "is_in_onnx_export", lambda: False)():
+        return tensor
     if tensor.dim() == 5 and model_is_channels_last_3d(model):
         return tensor.contiguous(memory_format=torch.channels_last_3d)
     return tensor
