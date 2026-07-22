@@ -261,8 +261,8 @@ If you are not training locally, you can run inference using pre-trained models.
    hf download nvidia/Ising-Decoder-ColorCode-1-Fast --local-dir models/
    ```
 
-   Each repo ships a single fp16 `.safetensors` checkpoint (see the model card
-   for the exact file and any additional formats):
+   Each repo ships a single checkpoint (see the model card for the exact file
+   and any additional formats):
    - `models/ising_decoder_surface_code_1_fast_r9_v1.0.77_fp16.safetensors`
    - `models/ising_decoder_surface_code_1_accurate_r13_v1.0.86_fp16.safetensors`
    - `models/ising_decoder_color_code_1_fast_r13_v1.0.400_fp16.safetensors`
@@ -273,9 +273,9 @@ If you are not training locally, you can run inference using pre-trained models.
    customization rather than a property of the published checkpoints.
 
 3. **Run surface-code inference** by pointing the runner at the downloaded
-   SafeTensors file. `PREDECODER_SAFETENSORS_CHECKPOINT` loads the checkpoint
-   and reads the model architecture and precision from its metadata, so you do
-   not need to set `model_id` in `conf/config_public.yaml`:
+   checkpoint. `PREDECODER_SAFETENSORS_CHECKPOINT` reads the model architecture
+   and precision from file metadata, so you do not need to set `model_id` in
+   `conf/config_public.yaml`:
 
    ```bash
    PREDECODER_SAFETENSORS_CHECKPOINT=models/ising_decoder_surface_code_1_fast_r9_v1.0.77_fp16.safetensors \
@@ -287,7 +287,7 @@ If you are not training locally, you can run inference using pre-trained models.
 
 4. **Run color-code inference** with the published color checkpoint. Set
    `code: color` in `conf/config_public.yaml` (see [Color code support](#color-code-support)
-   for the color runtime), then load the SafeTensors file the same way:
+   for the color runtime), then load the checkpoint the same way:
 
    ```bash
    PREDECODER_SAFETENSORS_CHECKPOINT=models/ising_decoder_color_code_1_fast_r13_v1.0.400_fp16.safetensors \
