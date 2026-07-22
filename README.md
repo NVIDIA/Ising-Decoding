@@ -7,6 +7,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Model: Surface Fast](https://img.shields.io/badge/🤗%20HuggingFace-Surface%20Fast-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast)
 [![Model: Surface Accurate](https://img.shields.io/badge/🤗%20HuggingFace-Surface%20Accurate-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate)
+[![Model: Color Fast](https://img.shields.io/badge/🤗%20HuggingFace-Color%20Fast-ffd21e)](https://huggingface.co/nvidia/Ising-Decoder-ColorCode-1-Fast)
 
 This repo offers AI training recipes to build, customize and deploy scalable quantum error correction **decoders**:
 
@@ -237,10 +238,16 @@ If you are not training locally, you can run inference using pre-trained models.
    ```
 
 2. **Get the pre-trained models**
-   Two surface-code models are published on Hugging Face (they are licensed
-   separately from the code in this repo and are not part of it):
+   Pre-trained pre-decoders are published on Hugging Face as fp16 SafeTensors
+   files (they are licensed separately from the code in this repo and are not
+   part of it):
+
+   Surface code:
    - [nvidia/Ising-Decoder-SurfaceCode-1-Fast](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Fast) (receptive field R=9)
    - [nvidia/Ising-Decoder-SurfaceCode-1-Accurate](https://huggingface.co/nvidia/Ising-Decoder-SurfaceCode-1-Accurate) (receptive field R=13)
+
+   Color code:
+   - [nvidia/Ising-Decoder-ColorCode-1-Fast](https://huggingface.co/nvidia/Ising-Decoder-ColorCode-1-Fast) (receptive field R=13) — run through the color-code path (`code: color`); see the color example below.
 
    The models are access-controlled: sign in with a Hugging Face token
    (create one at <https://huggingface.co/settings/tokens>), then download
@@ -251,26 +258,40 @@ If you are not training locally, you can run inference using pre-trained models.
    hf auth login
    hf download nvidia/Ising-Decoder-SurfaceCode-1-Fast --local-dir models/
    hf download nvidia/Ising-Decoder-SurfaceCode-1-Accurate --local-dir models/
+   hf download nvidia/Ising-Decoder-ColorCode-1-Fast --local-dir models/
    ```
 
-   See each model card for the available files and formats. The scripts below
-   expect `models/Ising-Decoder-SurfaceCode-1-Fast.pt` and
-   `models/Ising-Decoder-SurfaceCode-1-Accurate.pt`.
+   Each repo ships a single fp16 `.safetensors` checkpoint (see the model card
+   for the exact file and any additional formats):
+   - `models/ising_decoder_surface_code_1_fast_r9_v1.0.77_fp16.safetensors`
+   - `models/ising_decoder_surface_code_1_accurate_r13_v1.0.86_fp16.safetensors`
+   - `models/ising_decoder_color_code_1_fast_r13_v1.0.400_fp16.safetensors`
 
    These checkpoints target the uniform circuit-level depolarizing setting
    encoded by the public configs. Custom, non-uniform 25-parameter noise models
    are supported for training by the pipeline below; they are a training-time
    customization rather than a property of the published checkpoints.
 
-3. Set:
-
-   - `EXPERIMENT_NAME=predecoder_model_1`
-   - `model_id: 1` in `conf/config_public.yaml`
-
-4. **Run inference**:
+3. **Run surface-code inference** by pointing the runner at the downloaded
+   SafeTensors file. `PREDECODER_SAFETENSORS_CHECKPOINT` loads the checkpoint
+   and reads the model architecture and precision from its metadata, so you do
+   not need to set `model_id` in `conf/config_public.yaml`:
 
    ```bash
-   WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
+   PREDECODER_SAFETENSORS_CHECKPOINT=models/ising_decoder_surface_code_1_fast_r9_v1.0.77_fp16.safetensors \
+     WORKFLOW=inference EXPERIMENT_NAME=predecoder_model_1 bash code/scripts/local_run.sh
+   ```
+
+   Swap in `ising_decoder_surface_code_1_accurate_r13_v1.0.86_fp16.safetensors`
+   for the Accurate (R=13) model.
+
+4. **Run color-code inference** with the published color checkpoint. Set
+   `code: color` in `conf/config_public.yaml` (see [Color code support](#color-code-support)
+   for the color runtime), then load the SafeTensors file the same way:
+
+   ```bash
+   PREDECODER_SAFETENSORS_CHECKPOINT=models/ising_decoder_color_code_1_fast_r13_v1.0.400_fp16.safetensors \
+     WORKFLOW=inference EXPERIMENT_NAME=predecoder_color_1_fast bash code/scripts/local_run.sh
    ```
 
 Inference output is written to `outputs/<EXPERIMENT_NAME>/` with a full log in
