@@ -404,6 +404,7 @@ def train_epoch(
     last_loss = 0.0
     epoch_total_loss = 0.0
     accumulated_samples = 0
+    accumulated_batches = 0
     profile_sums = {}
     profile_count = 0
 
@@ -501,8 +502,10 @@ def train_epoch(
                 _sync_cuda_if_needed(device)
                 model_fwd_bwd_s = time.perf_counter() - model_t0
             accumulated_samples += current_batch_size
+            accumulated_batches += 1
 
-            if (step + 1) % accumulate_steps == 0:
+            should_update = ((step + 1) % accumulate_steps == 0 or step + 1 == steps_per_epoch)
+            if should_update:
                 if profile_enabled:
                     _sync_cuda_if_needed(device)
                     opt_t0 = time.perf_counter()
@@ -556,8 +559,8 @@ def train_epoch(
             running_loss += batch_loss_mean
             epoch_total_loss += batch_loss_mean
 
-            if (step + 1) % accumulate_steps == 0:
-                last_loss = running_loss / accumulate_steps
+            if should_update:
+                last_loss = running_loss / accumulated_batches
                 if rank == 0:
                     tb_writer.add_scalar('Loss/train_step', last_loss, global_step)
                     tb_writer.add_scalar(
@@ -565,6 +568,7 @@ def train_epoch(
                         scheduler.get_last_lr()[0], global_step
                     )
                 running_loss = 0.0
+                accumulated_batches = 0
 
             # Get the next batch: from the prefetch worker (eager generation) or
             # synchronously on the main thread (compiled generation).

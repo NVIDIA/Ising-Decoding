@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.utils import save_checkpoint, load_checkpoint
 from training.optimizers import get_lr_scheduler
-from training.train import get_current_per_device_batch_size
+from training.train import get_current_per_device_batch_size, train_epoch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -112,9 +112,84 @@ def _simulate_training_steps(model, optimizer, scheduler, num_steps):
         scheduler.step()
 
 
+class _ConstantGenerator:
+
+    def generate_batch(self, step, batch_size, **kwargs):
+        del step, kwargs
+        inputs = torch.ones(batch_size, 1)
+        targets = torch.zeros(batch_size, 1)
+        return inputs, targets
+
+
+class _CountingOptimizer:
+
+    def __init__(self, params, lr):
+        self.params = list(params)
+        self.param_groups = [{"lr": lr}]
+        self.step_calls = 0
+
+    def step(self):
+        self.step_calls += 1
+        with torch.no_grad():
+            for param in self.params:
+                if param.grad is not None:
+                    param.add_(param.grad, alpha=-self.param_groups[0]["lr"])
+
+    def zero_grad(self):
+        for param in self.params:
+            param.grad = None
+
+
+class _CountingScheduler:
+
+    def __init__(self, optimizer):
+        self.optimizer = optimizer
+        self.step_calls = 0
+
+    def step(self):
+        self.step_calls += 1
+
+    def get_last_lr(self):
+        return [self.optimizer.param_groups[0]["lr"]]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+class TestGradientAccumulation(unittest.TestCase):
+
+    def test_flushes_incomplete_accumulation_at_epoch_end(self):
+        model = nn.Linear(1, 1, bias=False)
+        nn.init.zeros_(model.weight)
+        optimizer = _CountingOptimizer(model.parameters(), lr=1.0)
+        scheduler = _CountingScheduler(optimizer)
+        scaler = torch.amp.GradScaler("cuda", enabled=False)
+
+        _, global_step = train_epoch(
+            generator=_ConstantGenerator(),
+            steps_per_epoch=3,
+            batch_size=2,
+            cumulative_steps_before_epoch=0,
+            epoch_number=0,
+            model=model,
+            optimizer=optimizer,
+            scaler=scaler,
+            scheduler=scheduler,
+            tb_writer=None,
+            device=torch.device("cpu"),
+            enable_fp16=False,
+            rank=1,
+            global_step=0,
+            accumulate_steps=2,
+        )
+
+        self.assertEqual(optimizer.step_calls, 2)
+        self.assertEqual(scheduler.step_calls, 2)
+        self.assertEqual(global_step, 2)
+        self.assertLess(model.weight.item(), -0.5)
+        self.assertIsNone(model.weight.grad)
 
 
 class TestCheckpointEpochNumbering(unittest.TestCase):
