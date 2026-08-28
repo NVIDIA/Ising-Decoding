@@ -24,6 +24,10 @@ set -euo pipefail
 #   WORKFLOW=generate_stim_data bash code/scripts/local_run.sh
 #   GPUS=4 bash code/scripts/local_run.sh
 #   CUDA_VISIBLE_DEVICES=1 bash code/scripts/local_run.sh        # use only GPU 1
+#   # Multi-node: run once per node (e.g. srun --ntasks-per-node=1), each with
+#   # its own NODE_RANK and a shared MASTER_ADDR/MASTER_PORT.
+#   GPUS=4 NNODES=8 NODE_RANK=${SLURM_NODEID} MASTER_ADDR=<first-node> \
+#     bash code/scripts/local_run.sh
 #
 # ONNX / TRT fast inference (requires tensorrt; set ONNX_WORKFLOW before running):
 #   ONNX_WORKFLOW=1 WORKFLOW=inference bash code/scripts/local_run.sh          # export ONNX only (inspect/reuse later)
@@ -116,6 +120,28 @@ PY
   fi
 fi
 
+# Multi-node rendezvous. One task per node, each running an inner torchrun that
+# spawns NPROC_PER_NODE ranks; torchrun then derives global RANK from NODE_RANK
+# and the local index. A Slurm launcher sets NNODES/NODE_RANK/MASTER_ADDR (e.g.
+# from SLURM_NNODES/SLURM_NODEID and the first host of SLURM_JOB_NODELIST).
+NNODES="${NNODES:-${SLURM_NNODES:-1}}"
+NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+if [ "${NNODES}" -gt 1 ] && [ -z "${MASTER_ADDR:-}" ]; then
+  if command -v scontrol >/dev/null 2>&1 && [ -n "${SLURM_JOB_NODELIST:-}" ]; then
+    MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
+  else
+    echo "[local_run.sh] Error: NNODES=${NNODES} requires MASTER_ADDR to be set." >&2
+    exit 1
+  fi
+  export MASTER_ADDR
+fi
+# A free ephemeral port is only safe to pick locally on a single node; every
+# node must agree on the port, so multi-node runs use a fixed default.
+if [ "${NNODES}" -gt 1 ] && [ -z "${MASTER_PORT:-}" ]; then
+  MASTER_PORT=29500
+  export MASTER_PORT
+fi
+
 if [ -z "${MASTER_PORT:-}" ]; then
   MASTER_PORT="$(python3 - <<'PY'
 import socket
@@ -180,6 +206,9 @@ echo "=========================================="
 echo "workflow.task: ${WORKFLOW}"
 echo "config: ${CONFIG_NAME}"
 echo "GPUS: ${GPUS} (CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>})"
+if [ "${NNODES}" -gt 1 ]; then
+  echo "nodes: ${NNODES} (node_rank=${NODE_RANK}, master=${MASTER_ADDR}:${MASTER_PORT})"
+fi
 echo "output: ${OUTPUT_DIR}"
 echo "logs: ${LOG_DIR}"
 echo "overrides: ${OVERRIDES:-<none>}"
@@ -230,11 +259,12 @@ cd "${REPO_ROOT}"
 
 LOG_FILE="${LOG_DIR}/${WORKFLOW}.log"
 
-if [ "${GPUS}" -gt 1 ]; then
+if [ "${GPUS}" -gt 1 ] || [ "${NNODES}" -gt 1 ]; then
   "${PYTHON_BIN}" -m torch.distributed.run \
     --nproc_per_node="${GPUS}" \
-    --nnodes=1 \
-    --node_rank=0 \
+    --nnodes="${NNODES}" \
+    --node_rank="${NODE_RANK}" \
+    ${MASTER_ADDR:+--master_addr="${MASTER_ADDR}"} \
     --master_port="${MASTER_PORT}" \
     code/workflows/run.py \
     --config-name="${CONFIG_NAME}" \
