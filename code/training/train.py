@@ -561,7 +561,7 @@ def train_epoch(
 
             if should_update:
                 last_loss = running_loss / accumulated_batches
-                if rank == 0:
+                if rank == 0 and tb_writer is not None:
                     tb_writer.add_scalar('Loss/train_step', last_loss, global_step)
                     tb_writer.add_scalar(
                         'LearningRate/train',
@@ -654,22 +654,23 @@ def train_epoch(
                     f"dlpack={avg.get('dlpack_s', 0.0) * 1000:.1f}ms | "
                     f"format={avg.get('format_s', 0.0) * 1000:.1f}ms"
                 )
-            tb_writer.add_scalar(
-                'Timing/generator_total_ms',
-                avg.get('generator_total_s', 0.0) * 1000, epoch_number
-            )
-            tb_writer.add_scalar(
-                'Timing/future_wait_ms',
-                avg.get('future_wait_s', 0.0) * 1000, epoch_number
-            )
-            tb_writer.add_scalar(
-                'Timing/model_fwd_bwd_ms',
-                avg.get('model_fwd_bwd_s', 0.0) * 1000, epoch_number
-            )
-            tb_writer.add_scalar(
-                'Timing/optimizer_step_ms',
-                avg.get('optimizer_step_s', 0.0) * 1000, epoch_number
-            )
+            if tb_writer is not None:
+                tb_writer.add_scalar(
+                    'Timing/generator_total_ms',
+                    avg.get('generator_total_s', 0.0) * 1000, epoch_number
+                )
+                tb_writer.add_scalar(
+                    'Timing/future_wait_ms',
+                    avg.get('future_wait_s', 0.0) * 1000, epoch_number
+                )
+                tb_writer.add_scalar(
+                    'Timing/model_fwd_bwd_ms',
+                    avg.get('model_fwd_bwd_s', 0.0) * 1000, epoch_number
+                )
+                tb_writer.add_scalar(
+                    'Timing/optimizer_step_ms',
+                    avg.get('optimizer_step_s', 0.0) * 1000, epoch_number
+                )
 
     return avg_loss, global_step
 
@@ -1454,7 +1455,8 @@ def main(cfg: DictConfig) -> None:
                     f"({per_device_batch_size} × {accumulate_steps} × {dist.world_size})"
                 )
                 # Log batch size to TensorBoard
-                writer.add_scalar("BatchSize", effective_batch_size, epoch_number)
+                if writer is not None:
+                    writer.add_scalar("BatchSize", effective_batch_size, epoch_number)
 
         model.train(True)
 
@@ -1613,28 +1615,29 @@ def main(cfg: DictConfig) -> None:
             else:
                 print(f"[{timestamp}] LOSS train {avg_loss:.5f} valid {avg_vloss:.5f}")
 
-            # Log Loss to TensorBoard
-            writer.add_scalars(
-                "Loss", {
-                    "Training": avg_loss,
-                    "Validation": avg_vloss
-                }, epoch_number
-            )
+            if writer is not None:
+                # Log Loss to TensorBoard
+                writer.add_scalars(
+                    "Loss", {
+                        "Training": avg_loss,
+                        "Validation": avg_vloss
+                    }, epoch_number
+                )
 
-            # Log LER to TensorBoard (important evaluation metric)
-            # Color code reports LER per round; surface code reports total LER
-            if validation_ler is not None:
-                writer.add_scalar(f"Metrics/{ler_label}", validation_ler, epoch_number)
-                if ler_reduction_factor is not None:
-                    writer.add_scalar(
-                        "Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number
-                    )
+                # Log LER to TensorBoard (important evaluation metric)
+                # Color code reports LER per round; surface code reports total LER
+                if validation_ler is not None:
+                    writer.add_scalar(f"Metrics/{ler_label}", validation_ler, epoch_number)
+                    if ler_reduction_factor is not None:
+                        writer.add_scalar(
+                            "Metrics/LER_Reduction_Factor", ler_reduction_factor, epoch_number
+                        )
 
-            # Log Syndrome Density Reduction to TensorBoard (important evaluation metric)
-            if syndrome_density_reduction is not None:
-                writer.add_scalar("Metrics/SDR", syndrome_density_reduction, epoch_number)
+                # Log Syndrome Density Reduction to TensorBoard (important evaluation metric)
+                if syndrome_density_reduction is not None:
+                    writer.add_scalar("Metrics/SDR", syndrome_density_reduction, epoch_number)
 
-            writer.flush()
+                writer.flush()
 
         if dist.world_size > 1:
             torch.distributed.barrier()
@@ -1687,7 +1690,7 @@ def main(cfg: DictConfig) -> None:
                 break
 
         # Log early stopping metrics to TensorBoard
-        if dist.rank == 0:
+        if dist.rank == 0 and writer is not None:
             writer.add_scalar("EarlyStopping/epochs_since_best", epochs_since_best, epoch_number)
             writer.add_scalar("EarlyStopping/best_metric", best_vloss, epoch_number)
             if syndrome_density_reduction is not None:
