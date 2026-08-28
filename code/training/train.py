@@ -194,6 +194,13 @@ def get_accumulate_steps(epoch, cfg):
     return min(max(unbounded_accumulate, 1), cfg.train.accumulate_steps)
 
 
+def maybe_convert_sync_batchnorm(model, enabled, world_size):
+    """Convert BatchNorm modules when synchronized DDP statistics are enabled."""
+    if not enabled or int(world_size) <= 1:
+        return model
+    return torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
+
 def get_curriculum_batch_sizes(cfg, epoch, num_pairs):
     """
     Get per-(d, n_rounds) batch sizes for curriculum learning.
@@ -1253,8 +1260,22 @@ def main(cfg: DictConfig) -> None:
         OmegaConf.select(cfg, "profiling.generator_subphases", default=False)
     )
 
-    # Create model
-    base_model = ModelFactory.create_model(cfg).to(dist.device)
+    # Create model. SyncBatchNorm conversion must happen before the device move
+    # and before DDP wrapping. Without it each rank normalizes with its own
+    # per-device batch statistics and the checkpointed running stats come from
+    # rank 0 alone. State-dict keys are unchanged, so checkpoints stay
+    # interchangeable between single- and multi-GPU runs.
+    base_model = ModelFactory.create_model(cfg)
+    sync_batchnorm_enabled = bool(OmegaConf.select(cfg, "sync_batchnorm", default=False))
+    if sync_batchnorm_enabled and dist.world_size > 1:
+        base_model = maybe_convert_sync_batchnorm(
+            base_model, enabled=True, world_size=dist.world_size
+        )
+        if dist.rank == 0:
+            print("[DDP] Using SyncBatchNorm across distributed ranks")
+    elif sync_batchnorm_enabled and dist.rank == 0:
+        print("[DDP] sync_batchnorm requested but world_size=1; keeping local BatchNorm")
+    base_model = base_model.to(dist.device)
 
     # Mixed precision is handled by autocast in the train/val steps; keep
     # parameters, BatchNorm state, and optimizer state in fp32. Only switch the
