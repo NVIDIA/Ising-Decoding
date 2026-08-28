@@ -18,6 +18,7 @@ from data.superbatch import SuperbatchBuffer  # noqa: E402
 
 
 class _Builder:
+
     def __init__(self) -> None:
         self.calls = []
         self.lock = threading.Lock()
@@ -25,10 +26,7 @@ class _Builder:
     def __call__(self, start_step, sample_count, collect_timing):
         with self.lock:
             self.calls.append((start_step, sample_count, collect_timing))
-        values = (
-            torch.arange(sample_count, dtype=torch.float32)
-            + int(start_step) * 100
-        )
+        values = (torch.arange(sample_count, dtype=torch.float32) + int(start_step) * 100)
         return values[:, None], (values + 0.5)[:, None], {"build": 1.0}
 
 
@@ -41,15 +39,9 @@ def test_resident_slices_and_prefetched_refill_follow_steps():
         build_fn=builder,
     )
     try:
-        x0, y0 = buffer.generate(
-            step=10, batch_size=2, return_timing=False, direct_fn=builder
-        )
-        x1, _ = buffer.generate(
-            step=11, batch_size=2, return_timing=False, direct_fn=builder
-        )
-        x2, _ = buffer.generate(
-            step=12, batch_size=2, return_timing=False, direct_fn=builder
-        )
+        x0, y0 = buffer.generate(step=10, batch_size=2, return_timing=False, direct_fn=builder)
+        x1, _ = buffer.generate(step=11, batch_size=2, return_timing=False, direct_fn=builder)
+        x2, _ = buffer.generate(step=12, batch_size=2, return_timing=False, direct_fn=builder)
 
         assert x0[:, 0].tolist() == [1000.0, 1001.0]
         assert y0[:, 0].tolist() == [1000.5, 1001.5]
@@ -69,12 +61,8 @@ def test_step_discontinuity_discards_stale_resident_data():
         build_fn=builder,
     )
     try:
-        buffer.generate(
-            step=3, batch_size=2, return_timing=False, direct_fn=builder
-        )
-        jumped, _ = buffer.generate(
-            step=20, batch_size=2, return_timing=False, direct_fn=builder
-        )
+        buffer.generate(step=3, batch_size=2, return_timing=False, direct_fn=builder)
+        jumped, _ = buffer.generate(step=20, batch_size=2, return_timing=False, direct_fn=builder)
         assert jumped[:, 0].tolist() == [2000.0, 2001.0]
         assert [call[0] for call in builder.calls] == [3, 20]
     finally:
@@ -89,9 +77,7 @@ def test_disabled_buffer_preserves_direct_path_and_timing():
         device=torch.device("cpu"),
         build_fn=builder,
     )
-    x, y, timing = buffer.generate(
-        step=7, batch_size=3, return_timing=True, direct_fn=builder
-    )
+    x, y, timing = buffer.generate(step=7, batch_size=3, return_timing=True, direct_fn=builder)
     assert x[:, 0].tolist() == [700.0, 701.0, 702.0]
     assert y[:, 0].tolist() == [700.5, 701.5, 702.5]
     assert timing == {"build": 1.0}
@@ -128,12 +114,8 @@ def test_timing_is_attributed_to_first_slice_only():
         build_fn=builder,
     )
     try:
-        _, _, first = buffer.generate(
-            step=0, batch_size=2, return_timing=True, direct_fn=builder
-        )
-        _, _, second = buffer.generate(
-            step=1, batch_size=2, return_timing=True, direct_fn=builder
-        )
+        _, _, first = buffer.generate(step=0, batch_size=2, return_timing=True, direct_fn=builder)
+        _, _, second = buffer.generate(step=1, batch_size=2, return_timing=True, direct_fn=builder)
         assert first["build"] == 1.0
         assert first["superbatch_generate_s"] >= 0
         assert first["superbatch_wait_s"] >= 0
@@ -147,6 +129,7 @@ def test_color_superbatch_balances_mixed_bases_in_every_slice():
     from data.generator_torch_color import ColorQCDataGeneratorTorch
 
     class _BasisSim:
+
         def __init__(self, marker):
             self.marker = marker
 
@@ -186,6 +169,7 @@ def test_color_superbatch_replay_is_deterministic():
     from data.generator_torch_color import ColorQCDataGeneratorTorch
 
     class _SeedSim:
+
         def generate_batch(self, batch_size, *, seed):
             g = torch.Generator().manual_seed(int(seed))
             x = torch.rand((batch_size, 1), generator=g)
@@ -226,6 +210,7 @@ def test_color_superbatch_slices_do_not_overlap():
     from data.generator_torch_color import ColorQCDataGeneratorTorch
 
     class _CountingSim:
+
         def generate_batch(self, batch_size, *, seed):
             base = torch.arange(batch_size, dtype=torch.float32) + int(seed) % 1000
             return base[:, None], base[:, None] + 0.5

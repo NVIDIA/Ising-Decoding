@@ -50,9 +50,7 @@ class SuperbatchBuffer:
         self._producer_stream: Optional[torch.cuda.Stream] = None
 
         if self.active:
-            self._executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="superbatch"
-            )
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="superbatch")
             if self.device.type == "cuda":
                 self._producer_stream = torch.cuda.Stream(device=self.device)
 
@@ -76,16 +74,12 @@ class SuperbatchBuffer:
             )
         return batch_size
 
-    def _build(
-        self, start_step: int, batch_size: int, collect_timing: bool
-    ) -> _BuiltSuperbatch:
+    def _build(self, start_step: int, batch_size: int, collect_timing: bool) -> _BuiltSuperbatch:
         build_t0 = time.perf_counter()
         ready_event = None
         if self.device.type == "cuda":
             assert self._producer_stream is not None
-            with torch.cuda.device(self.device), torch.cuda.stream(
-                self._producer_stream
-            ):
+            with torch.cuda.device(self.device), torch.cuda.stream(self._producer_stream):
                 train_x, train_y, timing = self._build_fn(
                     int(start_step), self.superbatch_size, collect_timing
                 )
@@ -115,9 +109,7 @@ class SuperbatchBuffer:
             ready_event=ready_event,
         )
 
-    def _submit_locked(
-        self, start_step: int, batch_size: int, collect_timing: bool
-    ) -> None:
+    def _submit_locked(self, start_step: int, batch_size: int, collect_timing: bool) -> None:
         if self._future is not None:
             return
         if self._executor is None:
@@ -147,9 +139,8 @@ class SuperbatchBuffer:
             except Exception:
                 pass
 
-    def _activate(
-        self, start_step: int, batch_size: int, collect_timing: bool
-    ) -> tuple[_BuiltSuperbatch, float]:
+    def _activate(self, start_step: int, batch_size: int,
+                  collect_timing: bool) -> tuple[_BuiltSuperbatch, float]:
         key = (int(start_step), int(batch_size))
         with self._lock:
             if self._future_key != key:
@@ -182,9 +173,7 @@ class SuperbatchBuffer:
             self._resident = built
             if self.prefetch:
                 next_step = built.start_step + built.num_slices
-                self._submit_locked(
-                    next_step, built.batch_size, collect_timing
-                )
+                self._submit_locked(next_step, built.batch_size, collect_timing)
         return built, wait_s
 
     def _wait_for_consumer(self, built: _BuiltSuperbatch) -> None:
@@ -206,9 +195,7 @@ class SuperbatchBuffer:
     ):
         """Return one minibatch, building/refilling a resident batch as needed."""
         if not self.active:
-            train_x, train_y, timing = direct_fn(
-                int(step), int(batch_size), bool(return_timing)
-            )
+            train_x, train_y, timing = direct_fn(int(step), int(batch_size), bool(return_timing))
             if return_timing:
                 return train_x, train_y, timing
             return train_x, train_y
@@ -223,21 +210,15 @@ class SuperbatchBuffer:
         with self._lock:
             resident = self._resident
             expected_step = (
-                resident.start_step + resident.offset
-                if resident is not None
-                else None
+                resident.start_step + resident.offset if resident is not None else None
             )
             valid = (
-                resident is not None
-                and resident.batch_size == batch_size
-                and expected_step == step
+                resident is not None and resident.batch_size == batch_size and expected_step == step
             )
         if not valid:
             if resident is not None:
                 self._reset_for_request()
-            resident, wait_s = self._activate(
-                step, batch_size, bool(return_timing)
-            )
+            resident, wait_s = self._activate(step, batch_size, bool(return_timing))
 
         self._wait_for_consumer(resident)
         slice_t0 = time.perf_counter()

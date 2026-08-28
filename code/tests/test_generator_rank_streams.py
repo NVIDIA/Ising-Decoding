@@ -43,6 +43,7 @@ def _seeder(*, base_seed, global_rank, mixed=True):
 
 
 class TestGeneratorRankStreams(unittest.TestCase):
+
     def test_same_rank_and_step_replays(self):
         first = _seeder(base_seed=42, global_rank=5)
         second = _seeder(base_seed=42, global_rank=5)
@@ -67,8 +68,7 @@ class TestGeneratorRankStreams(unittest.TestCase):
         # 8 nodes x 4 GPUs: local rank 0 appears as global ranks 0, 4, 8, ...
         local_zero_ranks = [node * 4 for node in range(8)]
         seeds = [
-            _seeder(base_seed=42, global_rank=rank)._seed_for_step(0)
-            for rank in local_zero_ranks
+            _seeder(base_seed=42, global_rank=rank)._seed_for_step(0) for rank in local_zero_ranks
         ]
         self.assertEqual(len(set(seeds)), len(seeds))
 
@@ -80,7 +80,9 @@ class TestGeneratorRankStreams(unittest.TestCase):
         self.assertTrue(train_seeds.isdisjoint(val_seeds))
 
     def test_x_and_z_streams_are_distinct(self):
+
         class _BasisSim:
+
             def __init__(self, marker):
                 self.marker = marker
 

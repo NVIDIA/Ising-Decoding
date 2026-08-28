@@ -26,15 +26,14 @@ WORLD_SIZE = 32
 
 
 class TestReferenceAccounting(unittest.TestCase):
+
     @classmethod
     def setUpClass(cls):
         cls.cfg = OmegaConf.load(CONFIG_PATH)
 
     def _plan(self, epoch):
         per_device = get_current_per_device_batch_size(epoch, self.cfg)
-        iterations = compute_batches_per_epoch(
-            self.cfg.train.num_samples, per_device, WORLD_SIZE
-        )
+        iterations = compute_batches_per_epoch(self.cfg.train.num_samples, per_device, WORLD_SIZE)
         updates = iterations // self.cfg.train.accumulate_steps
         return per_device, iterations, updates
 
@@ -60,16 +59,15 @@ class TestReferenceAccounting(unittest.TestCase):
     def test_epoch_consumes_every_configured_sample(self):
         for epoch in (0, 1):
             per_device, iterations, _ = self._plan(epoch)
-            self.assertEqual(
-                iterations * per_device * WORLD_SIZE, self.cfg.train.num_samples
-            )
+            self.assertEqual(iterations * per_device * WORLD_SIZE, self.cfg.train.num_samples)
 
     def test_superbatch_divides_both_scheduled_batch_sizes(self):
         superbatch_size = int(self.cfg.data.superbatch_size)
         for epoch in (0, 1):
             per_device, _, _ = self._plan(epoch)
             self.assertEqual(
-                superbatch_size % per_device, 0,
+                superbatch_size % per_device,
+                0,
                 f"superbatch {superbatch_size} must divide per-rank batch {per_device}",
             )
 

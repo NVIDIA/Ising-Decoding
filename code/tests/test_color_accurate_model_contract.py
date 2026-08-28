@@ -33,6 +33,7 @@ def _build_model():
 
 
 class TestColorAccurateModelContract(unittest.TestCase):
+
     @classmethod
     def setUpClass(cls):
         cls.model = _build_model()

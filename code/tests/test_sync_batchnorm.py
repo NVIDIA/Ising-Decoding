@@ -36,29 +36,21 @@ def _small_bn_model():
 
 
 def _batchnorm_types(module):
-    return [
-        type(m) for m in module.modules()
-        if isinstance(m, nn.modules.batchnorm._BatchNorm)
-    ]
+    return [type(m) for m in module.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
 
 
 class TestSyncBatchNormConversion(unittest.TestCase):
+
     def test_conversion_is_opt_in(self):
-        unchanged = maybe_convert_sync_batchnorm(
-            _small_bn_model(), enabled=False, world_size=4
-        )
+        unchanged = maybe_convert_sync_batchnorm(_small_bn_model(), enabled=False, world_size=4)
         self.assertTrue(all(t is nn.BatchNorm3d for t in _batchnorm_types(unchanged)))
 
     def test_conversion_is_distributed_only(self):
-        unchanged = maybe_convert_sync_batchnorm(
-            _small_bn_model(), enabled=True, world_size=1
-        )
+        unchanged = maybe_convert_sync_batchnorm(_small_bn_model(), enabled=True, world_size=1)
         self.assertTrue(all(t is nn.BatchNorm3d for t in _batchnorm_types(unchanged)))
 
     def test_all_batchnorms_converted_when_enabled(self):
-        converted = maybe_convert_sync_batchnorm(
-            _small_bn_model(), enabled=True, world_size=2
-        )
+        converted = maybe_convert_sync_batchnorm(_small_bn_model(), enabled=True, world_size=2)
         types_ = _batchnorm_types(converted)
         self.assertTrue(types_, "expected BatchNorm layers in the model")
         self.assertTrue(all(t is nn.SyncBatchNorm for t in types_))
@@ -75,9 +67,7 @@ class TestSyncBatchNormConversion(unittest.TestCase):
 
     def test_state_dict_keys_unchanged(self):
         plain = _small_bn_model()
-        synced = maybe_convert_sync_batchnorm(
-            _small_bn_model(), enabled=True, world_size=2
-        )
+        synced = maybe_convert_sync_batchnorm(_small_bn_model(), enabled=True, world_size=2)
         self.assertEqual(set(plain.state_dict().keys()), set(synced.state_dict().keys()))
 
     def test_checkpoint_roundtrip_between_variants(self):
@@ -85,16 +75,13 @@ class TestSyncBatchNormConversion(unittest.TestCase):
         # Perturb running stats so the load is meaningful
         with torch.no_grad():
             plain(torch.randn(2, 2, 4, 4, 4))
-        synced = maybe_convert_sync_batchnorm(
-            _small_bn_model(), enabled=True, world_size=2
-        )
+        synced = maybe_convert_sync_batchnorm(_small_bn_model(), enabled=True, world_size=2)
         synced.load_state_dict(plain.state_dict())
         back = _small_bn_model()
         back.load_state_dict(synced.state_dict())
         for key, value in plain.state_dict().items():
             if value.dtype.is_floating_point:
                 torch.testing.assert_close(back.state_dict()[key], value)
-
 
 
 def _fresh_rendezvous_file():
@@ -140,6 +127,7 @@ def _worker_sync_batchnorm_stats(rank, world_size, init_file, result_path):
 
 @unittest.skipUnless(torch.cuda.is_available(), "CUDA required for SyncBatchNorm")
 class TestSyncBatchNormAcrossRanks(unittest.TestCase):
+
     def test_running_stats_are_identical_across_ranks(self):
         """Ranks fed different data must end with the same running statistics."""
         import tempfile

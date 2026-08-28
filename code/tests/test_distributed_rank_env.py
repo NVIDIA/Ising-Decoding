@@ -32,6 +32,7 @@ def _with_rank_env(**overrides):
 
 
 class TestDistributedRankEnv(unittest.TestCase):
+
     def test_global_rank_is_independent_of_local_rank(self):
         # Node 3 of an 8-node x 4-GPU job, second GPU on that node.
         with _with_rank_env(RANK="13", LOCAL_RANK="1", WORLD_SIZE="32"):

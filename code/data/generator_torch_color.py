@@ -184,9 +184,8 @@ class ColorQCDataGeneratorTorch:
                 return sim.generate_batch(int(batch_size), seed=seed)
         return sim.generate_batch(int(batch_size), seed=seed)
 
-    def _generate_direct(
-        self, step: int, batch_size: int, collect_timing: bool
-    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+    def _generate_direct(self, step: int, batch_size: int,
+                         collect_timing: bool) -> Tuple[torch.Tensor, torch.Tensor, dict]:
         t0 = time.perf_counter()
         if self._mixed:
             sim = self.sim_X if int(step) % 2 == 0 else self.sim_Z
@@ -198,9 +197,8 @@ class ColorQCDataGeneratorTorch:
             timing["generator_total_s"] = time.perf_counter() - t0
         return train_x, train_y, timing
 
-    def _build_superbatch(
-        self, start_step: int, sample_count: int, collect_timing: bool
-    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+    def _build_superbatch(self, start_step: int, sample_count: int,
+                          collect_timing: bool) -> Tuple[torch.Tensor, torch.Tensor, dict]:
         """Build one superbatch, interleaving bases so every slice stays balanced.
 
         Direct generation alternates X and Z per step. A superbatch covers many
@@ -208,9 +206,7 @@ class ColorQCDataGeneratorTorch:
         row-by-row; any contiguous even-sized slice then holds equal X and Z.
         """
         if not self._mixed:
-            return self._generate_direct(
-                int(start_step), int(sample_count), collect_timing
-            )
+            return self._generate_direct(int(start_step), int(sample_count), collect_timing)
         if sample_count % 2:
             raise ValueError("mixed-basis color superbatches require an even size")
 

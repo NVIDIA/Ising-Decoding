@@ -455,9 +455,7 @@ def train_epoch(
     if rank == 0 and not use_outer_prefetch:
         superbatch_active = getattr(generator, "superbatch_active", None)
         if callable(superbatch_active) and superbatch_active():
-            print(
-                "[Train] Generator superbatch active; disabling outer minibatch prefetch."
-            )
+            print("[Train] Generator superbatch active; disabling outer minibatch prefetch.")
         else:
             print(
                 "[Train] Compiled data generation detected; disabling outer batch "
