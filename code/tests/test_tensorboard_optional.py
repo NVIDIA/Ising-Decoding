@@ -12,8 +12,8 @@ made a run without tensorboard die partway through the first epoch:
 CI never caught this because every job that actually trains installs
 requirements_public_train-cu*.txt, which pulls in tensorboard.
 
-This drives train_epoch with tb_writer=None on CPU, so it fails on the
-unguarded code and passes once the guards are in place.
+This drives train_epoch with tb_writer=None, so it fails on the unguarded
+code and passes once the guards are in place.
 """
 
 import sys
@@ -29,17 +29,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from training.train import train_epoch
 
 
-class _TinyGenerator:
-    """Minimal generator matching the train_epoch contract."""
+def _device():
+    """Run on CUDA when present: the profiling path synchronizes the CUDA
+    device whenever CUDA is available, regardless of the tensor device."""
+    return torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
 
-    def __init__(self, batch_shape, label_shape):
+
+class _TinyGenerator:
+    """Minimal generator matching the train_epoch contract.
+
+    Real generators emit batches already on the training device, so this does
+    the same rather than relying on train_epoch to move them.
+    """
+
+    def __init__(self, batch_shape, label_shape, device):
         self.batch_shape = batch_shape
         self.label_shape = label_shape
+        self.device = device
 
     def generate_batch(self, step, batch_size, return_timing=False, **kwargs):
         torch.manual_seed(step)
-        x = torch.randn(batch_size, *self.batch_shape)
-        y = torch.randint(0, 2, (batch_size, *self.label_shape)).float()
+        x = torch.randn(batch_size, *self.batch_shape, device=self.device)
+        y = torch.randint(0, 2, (batch_size, *self.label_shape), device=self.device).float()
         if return_timing:
             return x, y, {}
         return x, y
@@ -48,16 +59,16 @@ class _TinyGenerator:
 class TestTrainingWithoutTensorboard(unittest.TestCase):
 
     def test_train_epoch_runs_with_null_writer(self):
-        device = torch.device("cpu")
+        device = _device()
         batch_size = 2
         steps_per_epoch = 4
         accumulate_steps = 2
 
-        model = nn.Conv3d(2, 2, kernel_size=1)
+        model = nn.Conv3d(2, 2, kernel_size=1).to(device)
         optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
         scaler = torch.amp.GradScaler("cuda", enabled=False)
-        generator = _TinyGenerator(batch_shape=(2, 2, 2, 2), label_shape=(2, 2, 2, 2))
+        generator = _TinyGenerator((2, 2, 2, 2), (2, 2, 2, 2), device)
 
         avg_loss, global_step = train_epoch(
             generator=generator,
@@ -83,12 +94,12 @@ class TestTrainingWithoutTensorboard(unittest.TestCase):
 
     def test_train_epoch_runs_with_null_writer_while_profiling(self):
         """The profiling branch logs its own timing scalars — also guard those."""
-        device = torch.device("cpu")
-        model = nn.Conv3d(2, 2, kernel_size=1)
+        device = _device()
+        model = nn.Conv3d(2, 2, kernel_size=1).to(device)
         optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
         scaler = torch.amp.GradScaler("cuda", enabled=False)
-        generator = _TinyGenerator(batch_shape=(2, 2, 2, 2), label_shape=(2, 2, 2, 2))
+        generator = _TinyGenerator((2, 2, 2, 2), (2, 2, 2, 2), device)
 
         avg_loss, _ = train_epoch(
             generator=generator,
