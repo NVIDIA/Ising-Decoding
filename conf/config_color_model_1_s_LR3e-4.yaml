@@ -56,6 +56,11 @@ data:
   max_passes_w3: 4
   decompose_y: false
 
+  # Fixed-size superbatch generation (0 disables buffering and generates each
+  # minibatch directly; the size must divide every scheduled per-rank batch size).
+  superbatch_size: 0
+  superbatch_prefetch: false
+
   # Noise
   p_error: null
   p_min: 0.0029

@@ -349,6 +349,20 @@ def validation_step(
     return avg_vloss
 
 
+def _parse_superbatch_size(value) -> int:
+    """Parse data.superbatch_size into a non-negative integer."""
+    if isinstance(value, str):
+        value = value.strip()
+        if value.lower() == "auto":
+            raise ValueError(
+                "data.superbatch_size='auto' is not implemented; use 0 or a fixed integer"
+            )
+    size = int(value or 0)
+    if size < 0:
+        raise ValueError(f"data.superbatch_size must be non-negative, got {size}")
+    return size
+
+
 def _generator_uses_compiled_generation(generator) -> bool:
     """True if the generator runs torch.compile'd HE during batch generation.
 
@@ -366,7 +380,10 @@ def _generator_uses_compiled_generation(generator) -> bool:
 
 
 def _should_use_outer_batch_prefetch(generator) -> bool:
-    """Outer ThreadPoolExecutor batch prefetch is safe only with eager generation."""
+    """Use exactly one prefetch layer, and never thread compiled generation."""
+    superbatch_active = getattr(generator, "superbatch_active", None)
+    if callable(superbatch_active) and superbatch_active():
+        return False
     return not _generator_uses_compiled_generation(generator)
 
 
@@ -429,10 +446,16 @@ def train_epoch(
     # when generation is eager.
     use_outer_prefetch = _should_use_outer_batch_prefetch(generator)
     if rank == 0 and not use_outer_prefetch:
-        print(
-            "[Train] Compiled data generation detected; disabling outer batch "
-            "prefetch (generation runs on the main thread)."
-        )
+        superbatch_active = getattr(generator, "superbatch_active", None)
+        if callable(superbatch_active) and superbatch_active():
+            print(
+                "[Train] Generator superbatch active; disabling outer minibatch prefetch."
+            )
+        else:
+            print(
+                "[Train] Compiled data generation detected; disabling outer batch "
+                "prefetch (generation runs on the main thread)."
+            )
 
     with ThreadPoolExecutor(max_workers=1) as prefetch_pool:
         for step in range(steps_per_epoch):
@@ -1035,6 +1058,17 @@ def main(cfg: DictConfig) -> None:
                     "augmented DEM bundle (see qec.precompute_dem --code color)."
                 )
             from data.generator_torch_color import ColorQCDataGeneratorTorch
+            color_superbatch_size = _parse_superbatch_size(
+                OmegaConf.select(cfg, "data.superbatch_size", default=0)
+            )
+            color_superbatch_prefetch = bool(
+                OmegaConf.select(cfg, "data.superbatch_prefetch", default=False)
+            )
+            if dist.rank == 0 and color_superbatch_size > 0:
+                print(
+                    "[Train] Color superbatching enabled: "
+                    f"size={color_superbatch_size}, prefetch={color_superbatch_prefetch}"
+                )
             train_generator = ColorQCDataGeneratorTorch(
                 distance=cfg.distance,
                 n_rounds=cfg.n_rounds,
@@ -1054,7 +1088,11 @@ def main(cfg: DictConfig) -> None:
                 p_error=p_error_value,
                 p_min=p_min_value,
                 p_max=p_max_value,
+                superbatch_size=color_superbatch_size,
+                superbatch_prefetch=color_superbatch_prefetch,
             )
+            # Validation generates directly: its steps are not contiguous with
+            # training's, so a resident buffer would be discarded every call.
             val_generator = ColorQCDataGeneratorTorch(
                 distance=cfg.distance,
                 n_rounds=cfg.n_rounds,
@@ -1074,6 +1112,8 @@ def main(cfg: DictConfig) -> None:
                 p_error=p_error_value,
                 p_min=p_min_value,
                 p_max=p_max_value,
+                superbatch_size=0,
+                superbatch_prefetch=False,
             )
         else:
             # Surface code: Torch-only path (matches public/main).
@@ -1197,7 +1237,12 @@ def main(cfg: DictConfig) -> None:
         print("=" * 80)
 
     # Generate sample batch for shape info
-    sample_trainX, sample_trainY = train_generator.generate_batch(step=0, batch_size=1)
+    # Probe shapes directly: a batch_size of 1 does not divide the superbatch,
+    # and consuming a buffered slice here would desynchronize step accounting.
+    probe_generate = getattr(
+        train_generator, "generate_direct_batch", train_generator.generate_batch
+    )
+    sample_trainX, sample_trainY = probe_generate(step=0, batch_size=1)
     cfg.model.input_channels = sample_trainX.shape[1]
     cfg.model.out_channels = sample_trainY.shape[1]
 
@@ -1497,6 +1542,10 @@ def main(cfg: DictConfig) -> None:
         )
 
         cumulative_steps += steps_per_epoch
+        # Free resident superbatch memory before validation allocates its own.
+        release_superbatch = getattr(train_generator, "release_superbatch", None)
+        if callable(release_superbatch):
+            release_superbatch(wait=True)
 
         model.eval()
         model_to_eval = ema_model if cfg.ema.use_ema else model
@@ -1730,6 +1779,11 @@ def main(cfg: DictConfig) -> None:
                 metadata={"epochs_completed": epoch + 1},
                 global_step=global_step,
             )
+
+    for generator in (train_generator, val_generator):
+        close_generator = getattr(generator, "close", None)
+        if callable(close_generator):
+            close_generator()
 
 
 if __name__ == "__main__":

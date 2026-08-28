@@ -38,6 +38,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from data.superbatch import SuperbatchBuffer
 from qec.color_code.memory_circuit_torch import ColorMemoryCircuitTorch
 
 
@@ -67,6 +68,8 @@ class ColorQCDataGeneratorTorch:
         p_error: Optional[float] = None,
         p_min: Optional[float] = None,
         p_max: Optional[float] = None,
+        superbatch_size: int = 0,
+        superbatch_prefetch: bool = False,
     ) -> None:
         if device is None:
             # Resolve to a concrete device index (not the index-less "cuda"): data
@@ -130,6 +133,13 @@ class ColorQCDataGeneratorTorch:
             self.sim_X = self.sim if self.measure_basis == "X" else None
             self.sim_Z = self.sim if self.measure_basis == "Z" else None
 
+        self._superbatch_buffer = SuperbatchBuffer(
+            superbatch_size=int(superbatch_size),
+            prefetch=bool(superbatch_prefetch),
+            device=self.device,
+            build_fn=self._build_superbatch,
+        )
+
         if verbose and self.rank == 0:
             ref = self.sim_X if self._mixed else self.sim
             nm_tag = (f" noise_model={noise_model.sha256()[:8]}" if noise_model is not None else "")
@@ -164,6 +174,84 @@ class ColorQCDataGeneratorTorch:
         ref = self.sim_X if self._mixed else self.sim
         return ref.active_p_nominal
 
+    def _seed_for_step(self, step: int) -> int:
+        return (self.base_seed + self._step_seed_offset + int(step)) & 0x7FFFFFFF
+
+    def _generate_with_sim(self, sim, step: int, batch_size: int):
+        seed = self._seed_for_step(step)
+        if self.device.type == "cuda":
+            with torch.cuda.device(self.device):
+                return sim.generate_batch(int(batch_size), seed=seed)
+        return sim.generate_batch(int(batch_size), seed=seed)
+
+    def _generate_direct(
+        self, step: int, batch_size: int, collect_timing: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+        t0 = time.perf_counter()
+        if self._mixed:
+            sim = self.sim_X if int(step) % 2 == 0 else self.sim_Z
+        else:
+            sim = self.sim
+        train_x, train_y = self._generate_with_sim(sim, int(step), int(batch_size))
+        timing = {}
+        if collect_timing:
+            timing["generator_total_s"] = time.perf_counter() - t0
+        return train_x, train_y, timing
+
+    def _build_superbatch(
+        self, start_step: int, sample_count: int, collect_timing: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+        """Build one superbatch, interleaving bases so every slice stays balanced.
+
+        Direct generation alternates X and Z per step. A superbatch covers many
+        steps at once, so the two bases are generated in halves and interleaved
+        row-by-row; any contiguous even-sized slice then holds equal X and Z.
+        """
+        if not self._mixed:
+            return self._generate_direct(
+                int(start_step), int(sample_count), collect_timing
+            )
+        if sample_count % 2:
+            raise ValueError("mixed-basis color superbatches require an even size")
+
+        t0 = time.perf_counter()
+        first_sim, second_sim = (
+            (self.sim_X, self.sim_Z) if int(start_step) % 2 == 0 else (self.sim_Z, self.sim_X)
+        )
+        half = int(sample_count) // 2
+        first_x, first_y = self._generate_with_sim(first_sim, int(start_step), half)
+        second_x, second_y = self._generate_with_sim(second_sim, int(start_step) + 1, half)
+        train_x = torch.empty(
+            (sample_count, *first_x.shape[1:]), dtype=first_x.dtype, device=first_x.device
+        )
+        train_y = torch.empty(
+            (sample_count, *first_y.shape[1:]), dtype=first_y.dtype, device=first_y.device
+        )
+        train_x[0::2].copy_(first_x)
+        train_x[1::2].copy_(second_x)
+        train_y[0::2].copy_(first_y)
+        train_y[1::2].copy_(second_y)
+        timing = {}
+        if collect_timing:
+            timing["generator_total_s"] = time.perf_counter() - t0
+        return train_x, train_y, timing
+
+    def generate_direct_batch(
+        self,
+        step: int,
+        batch_size: int,
+        return_timing: bool = False,
+        profile_generator_subphases: bool = False,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, dict]]:
+        """Generate one batch, bypassing the superbatch buffer."""
+        del profile_generator_subphases
+        train_x, train_y, timing = self._generate_direct(
+            int(step), int(batch_size), bool(return_timing)
+        )
+        if return_timing:
+            return train_x, train_y, timing
+        return train_x, train_y
+
     def generate_batch(
         self,
         step: int,
@@ -172,20 +260,26 @@ class ColorQCDataGeneratorTorch:
         profile_generator_subphases: bool = False,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, dict]]:
         del profile_generator_subphases
-        t0 = time.perf_counter() if return_timing else None
+        return self._superbatch_buffer.generate(
+            step=int(step),
+            batch_size=int(batch_size),
+            return_timing=bool(return_timing),
+            direct_fn=self._generate_direct,
+        )
 
-        seed = (self.base_seed + self._step_seed_offset + int(step)) & 0x7FFFFFFF
-        if self._mixed:
-            sim = self.sim_X if (int(step) % 2 == 0) else self.sim_Z
-        else:
-            sim = self.sim
-        if self.device.type == "cuda":
-            with torch.cuda.device(self.device):
-                trainX, trainY = sim.generate_batch(int(batch_size), seed=seed)
-        else:
-            trainX, trainY = sim.generate_batch(int(batch_size), seed=seed)
+    def superbatch_active(self) -> bool:
+        return self._superbatch_buffer.active
 
-        if return_timing:
-            timing = {"generator_total_s": time.perf_counter() - t0}
-            return trainX, trainY, timing
-        return trainX, trainY
+    def release_superbatch(self, *, wait: bool = True) -> None:
+        self._superbatch_buffer.release(wait=wait)
+
+    def close(self) -> None:
+        self._superbatch_buffer.close()
+
+    def __del__(self):
+        buffer = getattr(self, "_superbatch_buffer", None)
+        if buffer is not None:
+            try:
+                buffer.close()
+            except Exception:
+                pass

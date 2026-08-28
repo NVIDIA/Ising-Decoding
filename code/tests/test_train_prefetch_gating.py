@@ -65,3 +65,13 @@ def test_generator_without_sims_defaults_to_prefetch():
     g = types.SimpleNamespace()
     assert _generator_uses_compiled_generation(g) is False
     assert _should_use_outer_batch_prefetch(g) is True
+
+
+def test_active_superbatch_disables_outer_prefetch():
+    g = types.SimpleNamespace(superbatch_active=lambda: True)
+    assert _should_use_outer_batch_prefetch(g) is False
+
+
+def test_inactive_superbatch_keeps_outer_prefetch():
+    g = types.SimpleNamespace(superbatch_active=lambda: False)
+    assert _should_use_outer_batch_prefetch(g) is True
