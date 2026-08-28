@@ -82,8 +82,14 @@ from qec.surface_code.data_mapping import (
 
 
 def _sync_cuda_if_needed(device=None):
-    if torch.cuda.is_available():
-        torch.cuda.synchronize(device=device)
+    # Both conditions matter: CUDA being available says nothing about where this
+    # run's tensors live. Synchronizing a CPU device raises "Expected a cuda
+    # device", so a CPU run on a GPU machine would crash here.
+    if not torch.cuda.is_available():
+        return
+    if device is not None and torch.device(device).type != "cuda":
+        return
+    torch.cuda.synchronize(device=device)
 
 
 def _accumulate_numeric_timing(accumulator, sample):

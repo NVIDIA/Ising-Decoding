@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Training must work when tensorboard is not installed.
+"""Training must work without tensorboard, and on CPU while a GPU is present.
 
 `SummaryWriter` is imported under try/except and the writer is left as None
 when the import fails, so every logging call site has to tolerate None. The
@@ -12,8 +12,11 @@ made a run without tensorboard die partway through the first epoch:
 CI never caught this because every job that actually trains installs
 requirements_public_train-cu*.txt, which pulls in tensorboard.
 
-This drives train_epoch with tb_writer=None, so it fails on the unguarded
-code and passes once the guards are in place.
+These drive train_epoch with tb_writer=None on CPU. Running on CPU is
+deliberate even when CUDA is present: the profiling path synchronizes the
+CUDA device, and it used to key that on CUDA being available rather than on
+the run's device, so a CPU run on a GPU machine died with
+"ValueError: Expected a cuda device, but got: cpu".
 """
 
 import sys
@@ -27,12 +30,6 @@ import torch.nn as nn
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from training.train import train_epoch
-
-
-def _device():
-    """Run on CUDA when present: the profiling path synchronizes the CUDA
-    device whenever CUDA is available, regardless of the tensor device."""
-    return torch.device("cuda", 0) if torch.cuda.is_available() else torch.device("cpu")
 
 
 class _TinyGenerator:
@@ -59,7 +56,7 @@ class _TinyGenerator:
 class TestTrainingWithoutTensorboard(unittest.TestCase):
 
     def test_train_epoch_runs_with_null_writer(self):
-        device = _device()
+        device = torch.device("cpu")
         batch_size = 2
         steps_per_epoch = 4
         accumulate_steps = 2
@@ -94,7 +91,7 @@ class TestTrainingWithoutTensorboard(unittest.TestCase):
 
     def test_train_epoch_runs_with_null_writer_while_profiling(self):
         """The profiling branch logs its own timing scalars — also guard those."""
-        device = _device()
+        device = torch.device("cpu")
         model = nn.Conv3d(2, 2, kernel_size=1).to(device)
         optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
