@@ -1,0 +1,160 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Config for: color-code accurate cascade model, distance 17.
+# Architecture: plain Conv3d stem + 11 cascade bottleneck blocks + 1x1x1 output
+# projection (25,397,764 parameters; the cascade blocks use SiLU internally).
+# Reference training setup: 32 global ranks (8 nodes x 4 GPUs), BF16 autocast,
+# no torch.compile, TF32 disabled, synchronized BatchNorm.
+
+exp_tag: color_accurate_d17r17
+output: /tmp/predecoder_${exp_tag}
+resume_dir: ${output}/models
+
+hydra:
+  run:
+    dir: ${output}
+  output_subdir: hydra
+
+enable_fp16: false
+enable_bf16: true
+enable_matmul_tf32: false
+enable_cudnn_tf32: false
+enable_cudnn_benchmark: false
+torch_compile: false
+torch_compile_mode: default
+sync_batchnorm: true # Convert BatchNorm to SyncBatchNorm for multi-GPU training
+load_checkpoint: false
+
+# Code-family
+code: color
+distance: 17
+n_rounds: 17
+meas_basis: both
+
+workflow:
+  task: train
+
+data:
+  superdense: true
+  schedule: nearest-neighbor
+  enable_z_feedforward: true
+  apply_data_x_override: true
+
+  # Fixed-size superbatch generation (0 disables buffering and generates each
+  # minibatch directly). 1024 divides both scheduled per-rank batch sizes
+  # (32 and 128), so no tail samples are discarded.
+  superbatch_size: 1024
+  superbatch_prefetch: true
+
+  # HE settings
+  timelike_he: false
+  num_he_cycles: 1
+  use_weight2_timelike: false
+  use_weight3_timelike: false
+  max_passes_w1: 8
+  max_passes_w2: 4
+  max_passes_w3: 4
+  decompose_y: false
+
+  # Noise
+  p_error: null
+  p_min: 0.0029
+  p_max: 0.0031
+  error_mode: circuit_level_color_code
+  precomputed_frames_dir: null
+
+model:
+  version: predecoder_memory_cascade
+  plain_stem: true
+  dropout_p: 0.001 # informational — the cascade blocks do not apply dropout
+  activation: silu # informational — the cascade blocks use SiLU internally
+  embed_dim: 1024
+  num_blocks: 12
+  bottleneck_ratio: 4
+  kernel_size: 3
+  input_channels: 4
+  out_channels: 4
+
+datapipe: memory
+data_method: train
+
+train:
+  # Global samples per epoch across all ranks.
+  # On 32 ranks with accumulate_steps 2 this yields 8,192 microbatch
+  # iterations / 4,096 optimizer updates at per-rank batch 32 (epoch 0), and
+  # 2,048 iterations / 1,024 updates at per-rank batch 128 (epoch 1 onward).
+  num_samples: 8388608
+  accumulate_steps: 2
+  checkpoint_interval: 1
+  save_every_datasets: 0
+  epochs: 100
+
+val:
+  num_samples: 65536
+  threshold: 0.0
+  trials: 1
+
+# Optimizer/scheduler follow the repository's color training defaults.
+optimizer_type: Lion
+optimizer:
+  lr: 3e-4
+  weight_decay: 1e-7
+  beta2: 0.95
+
+lr_scheduler:
+  type: warmup_then_decay
+  warmup_steps: 100
+  milestones: [0.25, 0.5, 1.0]
+  gamma: 0.7
+  min_lr: 1e-6
+
+batch_schedule:
+  enabled: true
+  initial: 32
+  final: 128
+  start_epoch: 0
+  end_epoch: 1
+
+validation_ler: true
+early_stopping:
+  enabled: false
+  patience: 999
+
+time_based_early_stopping:
+  enabled: false
+  safety_margin_minutes: 5
+
+ema:
+  use_ema: true
+  decay: 0.0001
+
+test:
+  num_samples: 262144
+  trials: 1
+  distance: 17
+  n_rounds: 17
+  noise_model: none
+  p_error: 0.001
+  meas_basis_test: both
+  use_model_checkpoint: 0
+  th_data: 0.0
+  th_syn: 0.0
+  sampling_mode: threshold
+  temperature: 1.0
+  dataloader:
+    batch_size: 1024
+    num_workers: 0
+    pin_memory: true
