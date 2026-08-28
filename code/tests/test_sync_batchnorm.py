@@ -9,6 +9,7 @@ Verifies:
      between single-GPU (BatchNorm) and multi-GPU (SyncBatchNorm) runs
 """
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -93,6 +94,72 @@ class TestSyncBatchNormConversion(unittest.TestCase):
         for key, value in plain.state_dict().items():
             if value.dtype.is_floating_point:
                 torch.testing.assert_close(back.state_dict()[key], value)
+
+
+
+def _fresh_rendezvous_file():
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".rendezvous")
+    os.close(fd)
+    os.remove(path)
+    return path
+
+
+def _worker_sync_batchnorm_stats(rank, world_size, init_file, result_path):
+    """Run one rank of a SyncBatchNorm forward/backward on distinct data."""
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    import torch.distributed as dist
+    from training.train import maybe_convert_sync_batchnorm
+
+    # Both ranks share cuda:0 so this exercises the real sync path on a
+    # single-GPU machine; gloo carries the CUDA tensors.
+    dist.init_process_group(
+        backend="gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size
+    )
+    device = torch.device("cuda", 0)
+    torch.manual_seed(0)
+
+    model = nn.Sequential(nn.Conv3d(2, 4, kernel_size=3, padding=1), nn.BatchNorm3d(4))
+    model = maybe_convert_sync_batchnorm(model, enabled=True, world_size=world_size)
+    model = model.to(device)
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[0], output_device=0)
+
+    # Offset each rank's data so per-rank statistics would diverge without sync.
+    x = (torch.randn(4, 2, 3, 3, 3) + rank * 10.0).to(device)
+    model(x).sum().backward()
+
+    bn = next(m for m in model.modules() if isinstance(m, nn.SyncBatchNorm))
+    if rank == 0:
+        torch.save(bn.running_mean.cpu(), result_path + ".0")
+    else:
+        torch.save(bn.running_mean.cpu(), result_path + ".1")
+    dist.barrier()
+    dist.destroy_process_group()
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA required for SyncBatchNorm")
+class TestSyncBatchNormAcrossRanks(unittest.TestCase):
+    def test_running_stats_are_identical_across_ranks(self):
+        """Ranks fed different data must end with the same running statistics."""
+        import tempfile
+
+        import torch.multiprocessing as mp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = os.path.join(tmp, "running_mean")
+            mp.spawn(
+                _worker_sync_batchnorm_stats,
+                args=(2, _fresh_rendezvous_file(), result_path),
+                nprocs=2,
+                join=True,
+            )
+            rank0 = torch.load(result_path + ".0")
+            rank1 = torch.load(result_path + ".1")
+
+        torch.testing.assert_close(rank0, rank1)
+        # Guard against the stats being trivially zero (i.e. never updated).
+        self.assertGreater(float(rank0.abs().sum()), 0.0)
 
 
 if __name__ == "__main__":
