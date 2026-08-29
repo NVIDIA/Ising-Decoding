@@ -1339,12 +1339,18 @@ def main(cfg: DictConfig) -> None:
 
     # Print model summary (skipped if torchinfo isn't installed)
     if dist.rank == 0 and torchinfo is not None:
+        summary_model = ema_model if cfg.ema.use_ema else base_model
         summary_input = sample_trainX.to(dist.device)
-        # Leave summary_input fp32; autocast handles precision. Match layout only.
+        # torchinfo runs a real forward pass outside autocast, so the input has to
+        # match the parameter dtype. Under enable_bf16 the default dtype makes the
+        # parameters bf16 while the generator still emits fp32.
+        summary_dtype = next(summary_model.parameters()).dtype
+        if summary_input.dtype != summary_dtype:
+            summary_input = summary_input.to(summary_dtype)
         summary_input = input_to_channels_last_3d(summary_input, use_channels_last_3d)
 
         summary = torchinfo.summary(
-            ema_model if cfg.ema.use_ema else base_model,
+            summary_model,
             input_data=summary_input,
             verbose=0,
             depth=2,
