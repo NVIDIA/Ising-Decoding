@@ -47,6 +47,7 @@ from training.precision import (
     module_to_channels_last_3d,
     input_to_channels_last_3d,
     targets_for_bce,
+    validate_precision_flags,
 )
 from torch.nn.parallel import DistributedDataParallel as DDP
 try:
@@ -754,11 +755,12 @@ def main(cfg: DictConfig) -> None:
     torch.backends.cuda.matmul.allow_tf32 = cfg.enable_matmul_tf32
     torch.backends.cudnn.allow_tf32 = cfg.enable_cudnn_tf32
 
-    # Set global precision
-    if cfg.enable_fp16:
-        torch.set_default_dtype(torch.float16)
-    elif getattr(cfg, 'enable_bf16', False):
-        torch.set_default_dtype(torch.bfloat16)
+    # Mixed precision is real AMP: parameters, BatchNorm running statistics and
+    # optimizer state stay fp32 and only the train/val forward passes run under
+    # autocast (see autocast_for_precision). The default dtype is left alone —
+    # switching it to bf16/fp16 would train native half-precision weights, which
+    # is not what the reference runs did and what the GradScaler setup assumes.
+    validate_precision_flags(cfg.enable_fp16, getattr(cfg, 'enable_bf16', False))
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = bool(cfg.enable_cudnn_benchmark)
@@ -1340,13 +1342,9 @@ def main(cfg: DictConfig) -> None:
     # Print model summary (skipped if torchinfo isn't installed)
     if dist.rank == 0 and torchinfo is not None:
         summary_model = ema_model if cfg.ema.use_ema else base_model
+        # torchinfo runs a real forward pass outside autocast; parameters are
+        # fp32 (real AMP), so the generator's fp32 sample matches as is.
         summary_input = sample_trainX.to(dist.device)
-        # torchinfo runs a real forward pass outside autocast, so the input has to
-        # match the parameter dtype. Under enable_bf16 the default dtype makes the
-        # parameters bf16 while the generator still emits fp32.
-        summary_dtype = next(summary_model.parameters()).dtype
-        if summary_input.dtype != summary_dtype:
-            summary_input = summary_input.to(summary_dtype)
         summary_input = input_to_channels_last_3d(summary_input, use_channels_last_3d)
 
         summary = torchinfo.summary(
@@ -1568,9 +1566,12 @@ def main(cfg: DictConfig) -> None:
 
         cumulative_steps += steps_per_epoch
         # Free resident superbatch memory before validation allocates its own.
+        # The prefetched next superbatch is kept: it is the next epoch's first
+        # superbatch when the batch size does not change, and it is discarded
+        # by the buffer itself otherwise.
         release_superbatch = getattr(train_generator, "release_superbatch", None)
         if callable(release_superbatch):
-            release_superbatch(wait=True)
+            release_superbatch(wait=True, keep_pending=True)
 
         model.eval()
         model_to_eval = ema_model if cfg.ema.use_ema else model
