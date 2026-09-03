@@ -174,11 +174,29 @@ class ColorQCDataGeneratorTorch:
         ref = self.sim_X if self._mixed else self.sim
         return ref.active_p_nominal
 
+    # Mixed-basis superbatches draw two seeds per build (one per basis). They
+    # live in their own seed range so that no two builds — and no build and a
+    # direct-generation step — ever hand the same seed to the same simulator.
+    _SUPERBATCH_SEED_SALT = 0x2545F491
+
     def _seed_for_step(self, step: int) -> int:
         return (self.base_seed + self._step_seed_offset + int(step)) & 0x7FFFFFFF
 
-    def _generate_with_sim(self, sim, step: int, batch_size: int):
-        seed = self._seed_for_step(step)
+    def _seed_for_superbatch_basis(self, start_step: int, basis_index: int) -> int:
+        """Seed for one basis of the superbatch that starts at ``start_step``.
+
+        Keyed by (start_step, basis) with stride 2, so consecutive superbatches
+        never reuse a seed even when a superbatch holds a single minibatch
+        (superbatch_size == batch_size), where ``start_step`` advances by 1.
+        """
+        return (
+            self.base_seed + self._step_seed_offset + self._SUPERBATCH_SEED_SALT +
+            2 * int(start_step) + int(basis_index)
+        ) & 0x7FFFFFFF
+
+    def _generate_with_sim(self, sim, step: int, batch_size: int, *, seed: int | None = None):
+        if seed is None:
+            seed = self._seed_for_step(step)
         if self.device.type == "cuda":
             with torch.cuda.device(self.device):
                 return sim.generate_batch(int(batch_size), seed=seed)
@@ -215,8 +233,18 @@ class ColorQCDataGeneratorTorch:
             (self.sim_X, self.sim_Z) if int(start_step) % 2 == 0 else (self.sim_Z, self.sim_X)
         )
         half = int(sample_count) // 2
-        first_x, first_y = self._generate_with_sim(first_sim, int(start_step), half)
-        second_x, second_y = self._generate_with_sim(second_sim, int(start_step) + 1, half)
+        first_x, first_y = self._generate_with_sim(
+            first_sim,
+            int(start_step),
+            half,
+            seed=self._seed_for_superbatch_basis(int(start_step), 0),
+        )
+        second_x, second_y = self._generate_with_sim(
+            second_sim,
+            int(start_step),
+            half,
+            seed=self._seed_for_superbatch_basis(int(start_step), 1),
+        )
         train_x = torch.empty(
             (sample_count, *first_x.shape[1:]), dtype=first_x.dtype, device=first_x.device
         )
@@ -266,8 +294,8 @@ class ColorQCDataGeneratorTorch:
     def superbatch_active(self) -> bool:
         return self._superbatch_buffer.active
 
-    def release_superbatch(self, *, wait: bool = True) -> None:
-        self._superbatch_buffer.release(wait=wait)
+    def release_superbatch(self, *, wait: bool = True, keep_pending: bool = False) -> None:
+        self._superbatch_buffer.release(wait=wait, keep_pending=keep_pending)
 
     def close(self) -> None:
         self._superbatch_buffer.close()
