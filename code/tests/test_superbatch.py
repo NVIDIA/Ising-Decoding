@@ -125,118 +125,25 @@ def test_timing_is_attributed_to_first_slice_only():
         buffer.close()
 
 
-def test_color_superbatch_balances_mixed_bases_in_every_slice():
-    from data.generator_torch_color import ColorQCDataGeneratorTorch
+class _MarkerSim:
+    """Emits a constant per basis so slices reveal their basis composition."""
 
-    class _BasisSim:
+    def __init__(self, marker):
+        self.marker = marker
 
-        def __init__(self, marker):
-            self.marker = marker
-
-        def generate_batch(self, batch_size, *, seed):
-            del seed
-            x = torch.full((batch_size, 1), self.marker)
-            return x, x + 10
-
-    generator = object.__new__(ColorQCDataGeneratorTorch)
-    generator.base_seed = 7
-    generator._step_seed_offset = 1_000_003
-    generator._mixed = True
-    generator.sim_X = _BasisSim(0)
-    generator.sim_Z = _BasisSim(1)
-    generator.device = torch.device("cpu")
-    generator._superbatch_buffer = SuperbatchBuffer(
-        superbatch_size=8,
-        prefetch=False,
-        device=generator.device,
-        build_fn=generator._build_superbatch,
-    )
-    try:
-        first_x, first_y = generator.generate_batch(0, 4)
-        second_x, _ = generator.generate_batch(1, 4)
-        direct_x, _ = generator.generate_direct_batch(1, 4)
-
-        assert first_x[:, 0].tolist() == [0, 1, 0, 1]
-        assert first_y[:, 0].tolist() == [10, 11, 10, 11]
-        assert second_x[:, 0].tolist() == [0, 1, 0, 1]
-        assert direct_x[:, 0].tolist() == [1, 1, 1, 1]
-    finally:
-        generator.close()
+    def generate_batch(self, batch_size, *, seed):
+        del seed
+        x = torch.full((batch_size, 1), float(self.marker))
+        return x, x + 10
 
 
-def test_color_superbatch_replay_is_deterministic():
-    """Two identically seeded generators produce the same buffered sequence."""
-    from data.generator_torch_color import ColorQCDataGeneratorTorch
+class _SeedSim:
+    """Output depends on seed and batch size: seeded rand."""
 
-    class _SeedSim:
-
-        def generate_batch(self, batch_size, *, seed):
-            g = torch.Generator().manual_seed(int(seed))
-            x = torch.rand((batch_size, 1), generator=g)
-            return x, x + 0.5
-
-    def _make(superbatch_size):
-        gen = object.__new__(ColorQCDataGeneratorTorch)
-        gen.base_seed = 7
-        gen._step_seed_offset = 1_000_003
-        gen._mixed = False
-        gen.sim = _SeedSim()
-        gen.sim_X = gen.sim
-        gen.sim_Z = gen.sim
-        gen.device = torch.device("cpu")
-        gen._superbatch_buffer = SuperbatchBuffer(
-            superbatch_size=superbatch_size,
-            prefetch=False,
-            device=gen.device,
-            build_fn=gen._build_superbatch,
-        )
-        return gen
-
-    first = _make(8)
-    second = _make(8)
-    try:
-        for step in range(4):
-            ax, ay = first.generate_batch(step, 4)
-            bx, by = second.generate_batch(step, 4)
-            assert torch.equal(ax, bx)
-            assert torch.equal(ay, by)
-    finally:
-        first.close()
-        second.close()
-
-
-def test_color_superbatch_slices_do_not_overlap():
-    """Consecutive buffered steps return disjoint, ordered slices."""
-    from data.generator_torch_color import ColorQCDataGeneratorTorch
-
-    class _CountingSim:
-
-        def generate_batch(self, batch_size, *, seed):
-            base = torch.arange(batch_size, dtype=torch.float32) + int(seed) % 1000
-            return base[:, None], base[:, None] + 0.5
-
-    gen = object.__new__(ColorQCDataGeneratorTorch)
-    gen.base_seed = 7
-    gen._step_seed_offset = 1_000_003
-    gen._mixed = False
-    gen.sim = _CountingSim()
-    gen.sim_X = gen.sim
-    gen.sim_Z = gen.sim
-    gen.device = torch.device("cpu")
-    gen._superbatch_buffer = SuperbatchBuffer(
-        superbatch_size=8,
-        prefetch=False,
-        device=gen.device,
-        build_fn=gen._build_superbatch,
-    )
-    try:
-        first, _ = gen.generate_batch(0, 4)
-        second, _ = gen.generate_batch(1, 4)
-        assert set(first[:, 0].tolist()).isdisjoint(second[:, 0].tolist())
-        assert first[:, 0].tolist() == sorted(first[:, 0].tolist())
-        assert second[:, 0].tolist() == sorted(second[:, 0].tolist())
-    finally:
-        gen.close()
+    def generate_batch(self, batch_size, *, seed):
+        g = torch.Generator().manual_seed(int(seed))
+        x = torch.rand((batch_size, 1), generator=g)
+        return x, x + 0.5
 
 
 class _RecordingSim:
@@ -254,28 +161,89 @@ class _RecordingSim:
         return x, x + 10
 
 
-def _mixed_generator(superbatch_size, log, lock, prefetch=False):
+def _color_generator(*, sim_x, sim_z=None, superbatch_size, prefetch=False, interleave=False):
+    """Generator shell exposing only the seeding/buffering logic under test."""
     from data.generator_torch_color import ColorQCDataGeneratorTorch
 
     gen = object.__new__(ColorQCDataGeneratorTorch)
     gen.base_seed = 7
     gen._step_seed_offset = 1_000_003
-    gen._mixed = True
-    gen.sim_X = _RecordingSim("X", log, lock)
-    gen.sim_Z = _RecordingSim("Z", log, lock)
     gen.device = torch.device("cpu")
-    gen._superbatch_buffer = SuperbatchBuffer(
-        superbatch_size=superbatch_size,
-        prefetch=prefetch,
-        device=gen.device,
-        build_fn=gen._build_superbatch,
+    if sim_z is None:
+        gen._mixed = False
+        gen.measure_basis = "X"
+        gen.sim = sim_x
+        gen.sim_X = sim_x
+        gen.sim_Z = None
+    else:
+        gen._mixed = True
+        gen.measure_basis = "both"
+        gen.sim = None
+        gen.sim_X = sim_x
+        gen.sim_Z = sim_z
+    gen._init_superbatching(
+        superbatch_size=superbatch_size, prefetch=prefetch, interleave_bases=interleave
     )
     return gen
 
 
+def test_basis_local_default_keeps_every_minibatch_single_basis():
+    """Default mixed mode: even steps are all-X, odd steps all-Z, like direct."""
+    gen = _color_generator(sim_x=_MarkerSim(0), sim_z=_MarkerSim(1), superbatch_size=8)
+    try:
+        for step in range(8):
+            buffered, _ = gen.generate_batch(step, 4)
+            direct, _ = gen.generate_direct_batch(step, 4)
+            expected = [0.0] * 4 if step % 2 == 0 else [1.0] * 4
+            assert buffered[:, 0].tolist() == expected, step
+            assert torch.equal(buffered, direct), step
+        assert set(gen._superbatch_buffers) == {"X", "Z"}
+    finally:
+        gen.close()
+
+
+@pytest.mark.parametrize("batch_size", [2, 4])
+def test_basis_local_superbatch_equal_to_batch_reproduces_direct_samples(batch_size):
+    """superbatch_size == batch_size: buffered and direct runs are sample-identical."""
+    buffered = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=batch_size)
+    direct = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=0)
+    try:
+        for step in range(8):
+            bx, by = buffered.generate_batch(step, batch_size)
+            dx, dy = direct.generate_batch(step, batch_size)
+            assert torch.equal(bx, dx), step
+            assert torch.equal(by, dy), step
+    finally:
+        buffered.close()
+        direct.close()
+
+
+def test_basis_local_chunks_are_seeded_by_their_first_step():
+    """Each chunk uses the direct seed of the first step it serves; no seed repeats."""
+    log, lock = [], threading.Lock()
+    gen = _color_generator(
+        sim_x=_RecordingSim("X", log, lock),
+        sim_z=_RecordingSim("Z", log, lock),
+        superbatch_size=8,
+    )
+    try:
+        for step in range(16):
+            gen.generate_batch(step, 2)  # 4 slices per chunk -> chunk starts at X 0, 8; Z 1, 9
+        expected = {
+            ("X", gen._seed_for_step(0)),
+            ("X", gen._seed_for_step(8)),
+            ("Z", gen._seed_for_step(1)),
+            ("Z", gen._seed_for_step(9)),
+        }
+        assert set(log) == expected
+        assert len(log) == len(set(log))
+    finally:
+        gen.close()
+
+
 @pytest.mark.parametrize("superbatch_size", [2, 4, 8])
-def test_mixed_superbatch_seeds_never_repeat_across_builds(superbatch_size):
-    """Each (basis, seed) pair is drawn once, including superbatch_size == batch_size.
+def test_interleaved_superbatch_seeds_never_repeat_across_builds(superbatch_size):
+    """Interleaved mode: each (basis, seed) pair is drawn once, including size == batch.
 
     With one minibatch per superbatch the start step advances by one per build;
     seeding the two bases with start_step and start_step + 1 made consecutive
@@ -283,20 +251,29 @@ def test_mixed_superbatch_seeds_never_repeat_across_builds(superbatch_size):
     generated twice.
     """
     log, lock = [], threading.Lock()
-    gen = _mixed_generator(superbatch_size, log, lock)
+    gen = _color_generator(
+        sim_x=_RecordingSim("X", log, lock),
+        sim_z=_RecordingSim("Z", log, lock),
+        superbatch_size=superbatch_size,
+        interleave=True,
+    )
     try:
         for step in range(8):
             gen.generate_batch(step, 2)
         assert len(log) == len(set(log)), f"duplicate (basis, seed) draws: {log}"
-        # Every build draws exactly one seed per basis.
         assert sum(1 for m, _ in log if m == "X") == sum(1 for m, _ in log if m == "Z")
     finally:
         gen.close()
 
 
-def test_mixed_superbatch_seeds_are_disjoint_from_direct_generation():
+def test_interleaved_superbatch_seeds_are_disjoint_from_direct_generation():
     log, lock = [], threading.Lock()
-    gen = _mixed_generator(4, log, lock)
+    gen = _color_generator(
+        sim_x=_RecordingSim("X", log, lock),
+        sim_z=_RecordingSim("Z", log, lock),
+        superbatch_size=4,
+        interleave=True,
+    )
     try:
         for step in range(8):
             gen.generate_batch(step, 2)
@@ -304,10 +281,111 @@ def test_mixed_superbatch_seeds_are_disjoint_from_direct_generation():
         log.clear()
         for step in range(8):
             gen.generate_direct_batch(step, 2)
-        direct = set(log)
-        assert buffered.isdisjoint(direct)
+        assert buffered.isdisjoint(set(log))
     finally:
         gen.close()
+
+
+def test_interleaved_superbatch_balances_mixed_bases_in_every_slice():
+    """Opt-in interleaving: every slice is half X, half Z (unlike direct)."""
+    gen = _color_generator(
+        sim_x=_MarkerSim(0), sim_z=_MarkerSim(1), superbatch_size=8, interleave=True
+    )
+    try:
+        first_x, first_y = gen.generate_batch(0, 4)
+        second_x, _ = gen.generate_batch(1, 4)
+        direct_x, _ = gen.generate_direct_batch(1, 4)
+
+        assert first_x[:, 0].tolist() == [0, 1, 0, 1]
+        assert first_y[:, 0].tolist() == [10, 11, 10, 11]
+        assert second_x[:, 0].tolist() == [0, 1, 0, 1]
+        assert direct_x[:, 0].tolist() == [1, 1, 1, 1]
+        assert set(gen._superbatch_buffers) == {"ALL"}
+    finally:
+        gen.close()
+
+
+def test_interleave_flag_is_ignored_for_a_single_basis():
+    gen = _color_generator(sim_x=_SeedSim(), superbatch_size=8, interleave=True)
+    try:
+        assert gen._superbatch_interleave is False
+        assert set(gen._superbatch_buffers) == {"ALL"}
+    finally:
+        gen.close()
+
+
+def test_color_superbatch_replay_is_deterministic():
+    """Two identically seeded generators produce the same buffered sequence."""
+    first = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=8)
+    second = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=8)
+    try:
+        for step in range(8):
+            ax, ay = first.generate_batch(step, 4)
+            bx, by = second.generate_batch(step, 4)
+            assert torch.equal(ax, bx)
+            assert torch.equal(ay, by)
+    finally:
+        first.close()
+        second.close()
+
+
+def test_color_superbatch_slices_do_not_overlap():
+    """Consecutive buffered steps of one basis return disjoint, ordered slices."""
+
+    class _CountingSim:
+
+        def generate_batch(self, batch_size, *, seed):
+            base = torch.arange(batch_size, dtype=torch.float32) + int(seed) % 1000
+            return base[:, None], base[:, None] + 0.5
+
+    gen = _color_generator(sim_x=_CountingSim(), superbatch_size=8)
+    try:
+        first, _ = gen.generate_batch(0, 4)
+        second, _ = gen.generate_batch(1, 4)
+        assert set(first[:, 0].tolist()).isdisjoint(second[:, 0].tolist())
+        assert first[:, 0].tolist() == sorted(first[:, 0].tolist())
+        assert second[:, 0].tolist() == sorted(second[:, 0].tolist())
+    finally:
+        gen.close()
+
+
+def test_color_release_reprimes_both_bases_across_an_epoch_boundary():
+    """release(keep_pending) between epochs: both basis buffers continue the sequence."""
+    resumed = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=8, prefetch=True)
+    straight = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=8)
+    try:
+        for step in range(8):  # epoch 0: fills X (steps 0,2,4,6) and Z (1,3,5,7) once each
+            resumed.generate_batch(step, 2)
+            straight.generate_batch(step, 2)
+        resumed.release_superbatch(wait=True, keep_pending=True)
+        for buffer in resumed._superbatch_buffers.values():
+            assert buffer._resident is None
+        for step in range(8, 16):  # epoch 1 continues the step sequence
+            rx, ry = resumed.generate_batch(step, 2)
+            sx, sy = straight.generate_batch(step, 2)
+            assert torch.equal(rx, sx), step
+            assert torch.equal(ry, sy), step
+    finally:
+        resumed.close()
+        straight.close()
+
+
+def test_color_release_without_keep_pending_then_reprime_matches_direct():
+    """A hard release (no pending kept) re-primes from the requested step."""
+    gen = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=4)
+    direct = _color_generator(sim_x=_SeedSim(), sim_z=_SeedSim(), superbatch_size=0)
+    try:
+        for step in range(4):
+            gen.generate_batch(step, 4)
+        gen.release_superbatch(wait=True)
+        # superbatch_size == batch_size here, so values must equal direct's.
+        for step in range(4, 8):
+            gx, _ = gen.generate_batch(step, 4)
+            dx, _ = direct.generate_batch(step, 4)
+            assert torch.equal(gx, dx), step
+    finally:
+        gen.close()
+        direct.close()
 
 
 def test_release_keep_pending_reuses_prefetched_build_at_epoch_boundary():

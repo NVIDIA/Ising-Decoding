@@ -33,6 +33,7 @@ multiple bundles.
 
 from __future__ import annotations
 
+import functools
 import time
 from typing import Optional, Tuple, Union
 
@@ -76,6 +77,7 @@ class ColorQCDataGeneratorTorch:
         p_max: Optional[float] = None,
         superbatch_size: int = 0,
         superbatch_prefetch: bool = False,
+        superbatch_interleave_bases: bool = False,
     ) -> None:
         if device is None:
             # Resolve to a concrete device index (not the index-less "cuda"): data
@@ -139,11 +141,10 @@ class ColorQCDataGeneratorTorch:
             self.sim_X = self.sim if self.measure_basis == "X" else None
             self.sim_Z = self.sim if self.measure_basis == "Z" else None
 
-        self._superbatch_buffer = SuperbatchBuffer(
+        self._init_superbatching(
             superbatch_size=int(superbatch_size),
             prefetch=bool(superbatch_prefetch),
-            device=self.device,
-            build_fn=self._build_superbatch,
+            interleave_bases=bool(superbatch_interleave_bases),
         )
 
         if verbose and self.rank == 0:
@@ -180,16 +181,58 @@ class ColorQCDataGeneratorTorch:
         ref = self.sim_X if self._mixed else self.sim
         return ref.active_p_nominal
 
-    # Mixed-basis superbatches draw two seeds per build (one per basis). They
-    # live in their own seed range so that no two builds — and no build and a
-    # direct-generation step — ever hand the same seed to the same simulator.
+    # Interleaved mixed-basis superbatches draw two seeds per build (one per
+    # basis). They live in their own seed range so that no two builds — and no
+    # build and a direct-generation step — ever hand the same seed to the same
+    # simulator.
     _SUPERBATCH_SEED_SALT = 0x2545F491
+
+    def _init_superbatching(
+        self, *, superbatch_size: int, prefetch: bool, interleave_bases: bool
+    ) -> None:
+        """Create the superbatch buffers.
+
+        Default (basis-local): in mixed X/Z mode each basis has its own buffer.
+        Step k takes a slice from the X buffer when k is even and from the Z
+        buffer when k is odd, exactly like direct generation, so every
+        minibatch is single-basis and ``superbatch_size`` only changes how
+        many minibatches are generated per call. The chunk covering steps
+        k0, k0+2, ... is seeded with step k0's seed: with
+        ``superbatch_size == batch_size`` the buffered run is sample-for-sample
+        identical to the direct one.
+
+        ``interleave_bases``: one buffer holds both bases interleaved row by
+        row, so every minibatch is half X and half Z. This changes the
+        per-minibatch basis composition (and thus BatchNorm statistics)
+        relative to direct generation; opt in deliberately.
+        """
+        self._superbatch_interleave = bool(interleave_bases) and self._mixed
+        if self._mixed and not self._superbatch_interleave:
+            self._superbatch_buffers = {
+                basis:
+                    SuperbatchBuffer(
+                        superbatch_size=int(superbatch_size),
+                        prefetch=bool(prefetch),
+                        device=self.device,
+                        build_fn=functools.partial(self._build_basis_superbatch, basis),
+                    ) for basis in ("X", "Z")
+            }
+        else:
+            self._superbatch_buffers = {
+                "ALL":
+                    SuperbatchBuffer(
+                        superbatch_size=int(superbatch_size),
+                        prefetch=bool(prefetch),
+                        device=self.device,
+                        build_fn=self._build_superbatch,
+                    )
+            }
 
     def _seed_for_step(self, step: int) -> int:
         return (self.base_seed + self._step_seed_offset + int(step)) & 0x7FFFFFFF
 
     def _seed_for_superbatch_basis(self, start_step: int, basis_index: int) -> int:
-        """Seed for one basis of the superbatch that starts at ``start_step``.
+        """Seed for one basis of an *interleaved* superbatch starting at ``start_step``.
 
         Keyed by (start_step, basis) with stride 2, so consecutive superbatches
         never reuse a seed even when a superbatch holds a single minibatch
@@ -203,10 +246,11 @@ class ColorQCDataGeneratorTorch:
     def max_generator_steps(self) -> int:
         """Largest generator step count that keeps this rank inside its seed range.
 
-        Direct generation uses one seed per step; mixed-basis superbatch builds
-        use two seeds per start step (stride 2), which halves the budget.
+        Direct generation and basis-local superbatches use one step seed per
+        chunk; interleaved mixed-basis builds use two seeds per start step
+        (stride 2), which halves the budget.
         """
-        if self._mixed and self.superbatch_active():
+        if self._superbatch_interleave and self.superbatch_active():
             return RANK_STREAM_STRIDE // 2
         return RANK_STREAM_STRIDE
 
@@ -219,9 +263,9 @@ class ColorQCDataGeneratorTorch:
         """
         limit = self.max_generator_steps()
         if int(total_generator_steps) > limit:
-            mode = "mixed-basis superbatching (two seeds per build)" if (
-                self._mixed and self.superbatch_active()
-            ) else "direct generation (one seed per step)"
+            mode = "interleaved mixed-basis superbatching (two seeds per build)" if (
+                self._superbatch_interleave and self.superbatch_active()
+            ) else "one seed per step"
             raise ValueError(
                 f"Training would take {int(total_generator_steps):,} generator steps, but with "
                 f"{mode} a rank's seed range holds only {limit:,}; beyond that its stream "
@@ -237,6 +281,11 @@ class ColorQCDataGeneratorTorch:
                 return sim.generate_batch(int(batch_size), seed=seed)
         return sim.generate_batch(int(batch_size), seed=seed)
 
+    def _basis_for_step(self, step: int) -> str:
+        if not self._mixed:
+            return str(self.measure_basis).upper()
+        return "X" if int(step) % 2 == 0 else "Z"
+
     def _generate_direct(self, step: int, batch_size: int,
                          collect_timing: bool) -> Tuple[torch.Tensor, torch.Tensor, dict]:
         t0 = time.perf_counter()
@@ -250,13 +299,35 @@ class ColorQCDataGeneratorTorch:
             timing["generator_total_s"] = time.perf_counter() - t0
         return train_x, train_y, timing
 
+    def _build_basis_superbatch(
+        self, basis: str, start_basis_step: int, sample_count: int, collect_timing: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+        """Build one basis-local superbatch (default mixed-basis mode).
+
+        The buffer for basis ``b`` counts its own steps j = 0, 1, 2, ...; the
+        j-th X slice serves global step 2j and the j-th Z slice serves 2j+1.
+        The chunk is seeded with the seed of the first global step it covers,
+        so seeds coincide with direct generation's and never repeat: each X
+        chunk starts at a distinct even step, each Z chunk at a distinct odd one.
+        """
+        t0 = time.perf_counter()
+        sim = self.sim_X if basis == "X" else self.sim_Z
+        first_step = 2 * int(start_basis_step) + (0 if basis == "X" else 1)
+        train_x, train_y = self._generate_with_sim(sim, first_step, int(sample_count))
+        timing = {}
+        if collect_timing:
+            timing["generator_total_s"] = time.perf_counter() - t0
+            timing["superbatch_basis"] = basis
+        return train_x, train_y, timing
+
     def _build_superbatch(self, start_step: int, sample_count: int,
                           collect_timing: bool) -> Tuple[torch.Tensor, torch.Tensor, dict]:
-        """Build one superbatch, interleaving bases so every slice stays balanced.
+        """Build one single-stream superbatch: single basis, or interleaved X/Z.
 
-        Direct generation alternates X and Z per step. A superbatch covers many
-        steps at once, so the two bases are generated in halves and interleaved
-        row-by-row; any contiguous even-sized slice then holds equal X and Z.
+        Single basis delegates to direct generation of ``sample_count`` samples
+        seeded by ``start_step``. In interleaved mixed mode the two bases are
+        generated in halves and interleaved row by row, so any contiguous
+        even-sized slice holds equal X and Z.
         """
         if not self._mixed:
             return self._generate_direct(int(start_step), int(sample_count), collect_timing)
@@ -311,6 +382,12 @@ class ColorQCDataGeneratorTorch:
             return train_x, train_y, timing
         return train_x, train_y
 
+    def _buffer_for_step(self, step: int) -> Tuple[SuperbatchBuffer, int]:
+        """Return the buffer serving ``step`` and the step index within that buffer."""
+        if "ALL" in self._superbatch_buffers:
+            return self._superbatch_buffers["ALL"], int(step)
+        return self._superbatch_buffers[self._basis_for_step(step)], int(step) // 2
+
     def generate_batch(
         self,
         step: int,
@@ -319,25 +396,30 @@ class ColorQCDataGeneratorTorch:
         profile_generator_subphases: bool = False,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, dict]]:
         del profile_generator_subphases
-        return self._superbatch_buffer.generate(
-            step=int(step),
+        if not self.superbatch_active():
+            return self.generate_direct_batch(step, batch_size, return_timing=return_timing)
+        buffer, buffer_step = self._buffer_for_step(step)
+        return buffer.generate(
+            step=buffer_step,
             batch_size=int(batch_size),
             return_timing=bool(return_timing),
             direct_fn=self._generate_direct,
         )
 
     def superbatch_active(self) -> bool:
-        return self._superbatch_buffer.active
+        return any(buffer.active for buffer in self._superbatch_buffers.values())
 
     def release_superbatch(self, *, wait: bool = True, keep_pending: bool = False) -> None:
-        self._superbatch_buffer.release(wait=wait, keep_pending=keep_pending)
+        for buffer in self._superbatch_buffers.values():
+            buffer.release(wait=wait, keep_pending=keep_pending)
 
     def close(self) -> None:
-        self._superbatch_buffer.close()
+        for buffer in self._superbatch_buffers.values():
+            buffer.close()
 
     def __del__(self):
-        buffer = getattr(self, "_superbatch_buffer", None)
-        if buffer is not None:
+        buffers = getattr(self, "_superbatch_buffers", None) or {}
+        for buffer in buffers.values():
             try:
                 buffer.close()
             except Exception:

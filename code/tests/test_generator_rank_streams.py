@@ -109,13 +109,11 @@ if __name__ == "__main__":
 class TestStepBudget(unittest.TestCase):
     """The per-rank seed ranges are finite; a run must be told when it would leave them."""
 
-    def _with_buffer(self, gen, superbatch_size):
-        from data.superbatch import SuperbatchBuffer
-        gen._superbatch_buffer = SuperbatchBuffer(
-            superbatch_size=superbatch_size,
-            prefetch=False,
-            device=gen.device,
-            build_fn=gen._build_superbatch,
+    def _with_buffer(self, gen, superbatch_size, interleave=False):
+        gen.measure_basis = "both" if gen._mixed else "X"
+        gen.sim = gen.sim_X = gen.sim_Z = None
+        gen._init_superbatching(
+            superbatch_size=superbatch_size, prefetch=False, interleave_bases=interleave
         )
         return gen
 
@@ -127,13 +125,21 @@ class TestStepBudget(unittest.TestCase):
         with self.assertRaises(ValueError):
             gen.check_step_budget(RANK_STREAM_STRIDE + 1)
 
-    def test_mixed_superbatch_budget_is_half_a_stride(self):
+    def test_interleaved_superbatch_budget_is_half_a_stride(self):
         from data.generator_torch_color import RANK_STREAM_STRIDE
-        gen = self._with_buffer(_seeder(base_seed=42, global_rank=3, mixed=True), 8)
+        gen = self._with_buffer(
+            _seeder(base_seed=42, global_rank=3, mixed=True), 8, interleave=True
+        )
         self.assertEqual(gen.max_generator_steps(), RANK_STREAM_STRIDE // 2)
         gen.check_step_budget(RANK_STREAM_STRIDE // 2)
         with self.assertRaises(ValueError):
             gen.check_step_budget(RANK_STREAM_STRIDE // 2 + 1)
+
+    def test_basis_local_superbatch_keeps_the_direct_budget(self):
+        """Basis-local chunks reuse direct step seeds, so the budget is one stride."""
+        from data.generator_torch_color import RANK_STREAM_STRIDE
+        gen = self._with_buffer(_seeder(base_seed=42, global_rank=3, mixed=True), 8)
+        self.assertEqual(gen.max_generator_steps(), RANK_STREAM_STRIDE)
 
     def test_single_basis_superbatch_keeps_the_direct_budget(self):
         from data.generator_torch_color import RANK_STREAM_STRIDE
@@ -147,7 +153,7 @@ class TestStepBudget(unittest.TestCase):
         hi = _seeder(base_seed=42, global_rank=4)
         self.assertNotEqual(lo._seed_for_step(RANK_STREAM_STRIDE - 1), hi._seed_for_step(0))
         self.assertEqual(lo._seed_for_step(RANK_STREAM_STRIDE), hi._seed_for_step(0))
-        # Superbatch builds: two seeds per start step, so the crossing is at half.
+        # Interleaved builds: two seeds per start step, so the crossing is at half.
         half = RANK_STREAM_STRIDE // 2
         self.assertEqual(
             lo._seed_for_superbatch_basis(half, 1),
@@ -160,5 +166,8 @@ class TestStepBudget(unittest.TestCase):
 
     def test_reference_run_fits_the_budget(self):
         """8,192 + 99 x 2,048 generator steps on 32 ranks stays well inside."""
-        gen = self._with_buffer(_seeder(base_seed=42, global_rank=31, mixed=True), 1024)
-        gen.check_step_budget(8192 + 99 * 2048)
+        for interleave in (False, True):
+            gen = self._with_buffer(
+                _seeder(base_seed=42, global_rank=31, mixed=True), 1024, interleave=interleave
+            )
+            gen.check_step_budget(8192 + 99 * 2048)

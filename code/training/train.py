@@ -1071,10 +1071,15 @@ def main(cfg: DictConfig) -> None:
             color_superbatch_prefetch = bool(
                 OmegaConf.select(cfg, "data.superbatch_prefetch", default=False)
             )
+            color_superbatch_interleave = bool(
+                OmegaConf.select(cfg, "data.superbatch_interleave_bases", default=False)
+            )
             if dist.rank == 0 and color_superbatch_size > 0:
+                bases_mode = "interleaved X/Z" if color_superbatch_interleave else "basis-local"
                 print(
                     "[Train] Color superbatching enabled: "
-                    f"size={color_superbatch_size}, prefetch={color_superbatch_prefetch}"
+                    f"size={color_superbatch_size}, prefetch={color_superbatch_prefetch}, "
+                    f"bases={bases_mode}"
                 )
             train_generator = ColorQCDataGeneratorTorch(
                 distance=cfg.distance,
@@ -1097,6 +1102,7 @@ def main(cfg: DictConfig) -> None:
                 p_max=p_max_value,
                 superbatch_size=color_superbatch_size,
                 superbatch_prefetch=color_superbatch_prefetch,
+                superbatch_interleave_bases=color_superbatch_interleave,
             )
             # Validation generates directly: its steps are not contiguous with
             # training's, so a resident buffer would be discarded every call.

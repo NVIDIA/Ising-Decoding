@@ -55,9 +55,15 @@ data:
 
   # Fixed-size superbatch generation (0 disables buffering and generates each
   # minibatch directly). 1024 divides both scheduled per-rank batch sizes
-  # (32 and 128), so no tail samples are discarded.
+  # (32 and 128), so no tail samples are discarded. Buffers are basis-local,
+  # as in the reference run: even steps take an X minibatch, odd steps a Z
+  # minibatch, so every minibatch is single-basis exactly like direct
+  # generation and this knob only affects throughput.
+  # superbatch_interleave_bases: true would instead serve half-X/half-Z
+  # minibatches from one buffer (changes per-minibatch BatchNorm statistics).
   superbatch_size: 1024
   superbatch_prefetch: true
+  superbatch_interleave_bases: false
 
   # HE settings
   timelike_he: false
