@@ -237,3 +237,180 @@ def test_color_superbatch_slices_do_not_overlap():
         assert second[:, 0].tolist() == sorted(second[:, 0].tolist())
     finally:
         gen.close()
+
+
+class _RecordingSim:
+    """Records every (marker, seed) the generator asks for."""
+
+    def __init__(self, marker, log, lock):
+        self.marker = marker
+        self.log = log
+        self.lock = lock
+
+    def generate_batch(self, batch_size, *, seed):
+        with self.lock:
+            self.log.append((self.marker, int(seed)))
+        x = torch.full((batch_size, 1), 0.0 if self.marker == "X" else 1.0)
+        return x, x + 10
+
+
+def _mixed_generator(superbatch_size, log, lock, prefetch=False):
+    from data.generator_torch_color import ColorQCDataGeneratorTorch
+
+    gen = object.__new__(ColorQCDataGeneratorTorch)
+    gen.base_seed = 7
+    gen._step_seed_offset = 1_000_003
+    gen._mixed = True
+    gen.sim_X = _RecordingSim("X", log, lock)
+    gen.sim_Z = _RecordingSim("Z", log, lock)
+    gen.device = torch.device("cpu")
+    gen._superbatch_buffer = SuperbatchBuffer(
+        superbatch_size=superbatch_size,
+        prefetch=prefetch,
+        device=gen.device,
+        build_fn=gen._build_superbatch,
+    )
+    return gen
+
+
+@pytest.mark.parametrize("superbatch_size", [2, 4, 8])
+def test_mixed_superbatch_seeds_never_repeat_across_builds(superbatch_size):
+    """Each (basis, seed) pair is drawn once, including superbatch_size == batch_size.
+
+    With one minibatch per superbatch the start step advances by one per build;
+    seeding the two bases with start_step and start_step + 1 made consecutive
+    builds hand the same seed to the same simulator, so every sample was
+    generated twice.
+    """
+    log, lock = [], threading.Lock()
+    gen = _mixed_generator(superbatch_size, log, lock)
+    try:
+        for step in range(8):
+            gen.generate_batch(step, 2)
+        assert len(log) == len(set(log)), f"duplicate (basis, seed) draws: {log}"
+        # Every build draws exactly one seed per basis.
+        assert sum(1 for m, _ in log if m == "X") == sum(1 for m, _ in log if m == "Z")
+    finally:
+        gen.close()
+
+
+def test_mixed_superbatch_seeds_are_disjoint_from_direct_generation():
+    log, lock = [], threading.Lock()
+    gen = _mixed_generator(4, log, lock)
+    try:
+        for step in range(8):
+            gen.generate_batch(step, 2)
+        buffered = set(log)
+        log.clear()
+        for step in range(8):
+            gen.generate_direct_batch(step, 2)
+        direct = set(log)
+        assert buffered.isdisjoint(direct)
+    finally:
+        gen.close()
+
+
+def test_release_keep_pending_reuses_prefetched_build_at_epoch_boundary():
+    builder = _Builder()
+    buffer = SuperbatchBuffer(
+        superbatch_size=4,
+        prefetch=True,
+        device=torch.device("cpu"),
+        build_fn=builder,
+    )
+    try:
+        buffer.generate(step=0, batch_size=2, return_timing=False, direct_fn=builder)
+        buffer.generate(step=1, batch_size=2, return_timing=False, direct_fn=builder)
+        # Epoch boundary: drop resident data, keep the prefetch for step 2.
+        buffer.release(wait=True, keep_pending=True)
+        assert buffer._resident is None
+        assert buffer._future_key == (2, 2)
+
+        x, _ = buffer.generate(step=2, batch_size=2, return_timing=False, direct_fn=builder)
+        assert x[:, 0].tolist() == [200.0, 201.0]
+        # No rebuild: the builds are the initial one and the single prefetch
+        # for step 2 (plus the prefetch for step 4 that serving step 2 queues).
+        assert [c[0] for c in builder.calls][:2] == [0, 2]
+        assert builder.calls.count((2, 4, False)) == 1
+    finally:
+        buffer.close()
+
+
+def test_release_keep_pending_rebuilds_when_batch_size_changes():
+    builder = _Builder()
+    buffer = SuperbatchBuffer(
+        superbatch_size=8,
+        prefetch=True,
+        device=torch.device("cpu"),
+        build_fn=builder,
+    )
+    try:
+        for step in range(4):
+            buffer.generate(step=step, batch_size=2, return_timing=False, direct_fn=builder)
+        buffer.release(wait=True, keep_pending=True)
+        assert buffer._future_key == (4, 2)
+
+        # Batch schedule moves 2 -> 4: the pending build no longer matches.
+        x, _ = buffer.generate(step=4, batch_size=4, return_timing=False, direct_fn=builder)
+        assert x[:, 0].tolist() == [400.0, 401.0, 402.0, 403.0]
+        assert buffer._resident is not None and buffer._resident.batch_size == 4
+    finally:
+        buffer.close()
+
+
+def test_release_without_keep_pending_drops_the_prefetch():
+    builder = _Builder()
+    buffer = SuperbatchBuffer(
+        superbatch_size=4,
+        prefetch=True,
+        device=torch.device("cpu"),
+        build_fn=builder,
+    )
+    try:
+        buffer.generate(step=0, batch_size=2, return_timing=False, direct_fn=builder)
+        buffer.release(wait=True)
+        assert buffer._resident is None and buffer._future is None and buffer._future_key is None
+    finally:
+        buffer.close()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_cuda_buffer_hands_producer_stream_data_to_the_consumer():
+    """The build runs on the producer stream; the consumer must see complete data."""
+    device = torch.device("cuda", torch.cuda.current_device())
+    seen_streams = []
+
+    def build(start_step, sample_count, collect_timing):
+        seen_streams.append(torch.cuda.current_stream(device))
+        # A long dependent chain on the producer stream, so a missing event
+        # wait would let the consumer read unfinished values.
+        values = torch.full((sample_count, 1 << 16), float(start_step), device=device)
+        for _ in range(64):
+            values = torch.sin(values) + 1.0
+        # The sin chain converges to a fixed point; the start step is added
+        # afterwards so builds stay distinguishable.
+        marker = values.mean(dim=1, keepdim=True) + float(start_step)
+        return marker, marker + 0.5, {}
+
+    buffer = SuperbatchBuffer(superbatch_size=8, prefetch=True, device=device, build_fn=build)
+    try:
+        x0, y0 = buffer.generate(step=0, batch_size=4, return_timing=False, direct_fn=build)
+        assert buffer._resident is not None and buffer._resident.ready_event is not None
+        # Consumer-side reference computed on the default stream.
+        ref = torch.full((1, 1 << 16), 0.0, device=device)
+        for _ in range(64):
+            ref = torch.sin(ref) + 1.0
+        ref = ref.mean() + 0.0
+        torch.cuda.synchronize(device)
+        assert torch.allclose(x0[:, 0], ref.expand(4), atol=1e-6)
+        assert torch.allclose(y0[:, 0] - x0[:, 0], torch.full((4,), 0.5, device=device))
+        assert seen_streams and seen_streams[0] == buffer._producer_stream
+        assert seen_streams[0] != torch.cuda.default_stream(device)
+        # Slices from the same build and from the prefetched next build.
+        x1, _ = buffer.generate(step=1, batch_size=4, return_timing=False, direct_fn=build)
+        x2, _ = buffer.generate(step=2, batch_size=4, return_timing=False, direct_fn=build)
+        torch.cuda.synchronize(device)
+        assert torch.equal(x1, x0)
+        assert not torch.equal(x2, x0)
+    finally:
+        buffer.close()

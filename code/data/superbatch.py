@@ -242,8 +242,20 @@ class SuperbatchBuffer:
             return train_x, train_y, timing
         return train_x, train_y
 
-    def release(self, *, wait: bool = True) -> None:
+    def release(self, *, wait: bool = True, keep_pending: bool = False) -> None:
+        """Drop the resident superbatch.
+
+        ``keep_pending=True`` leaves an in-flight prefetch alone: at an epoch
+        boundary the prefetched build is exactly the next epoch's first
+        superbatch whenever the step sequence continues and the batch size is
+        unchanged, so it is served from the buffer instead of being awaited and
+        thrown away. If the next request does not match it, ``generate`` cancels
+        and rebuilds as usual.
+        """
         with self._lock:
+            if keep_pending:
+                self._resident = None
+                return
             future = self._clear_locked()
         if future is not None:
             future.cancel()

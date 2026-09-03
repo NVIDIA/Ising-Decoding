@@ -1,12 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Sample accounting for the accurate d17 reference run on 32 ranks.
+"""Sample accounting of conf/config_color_accurate_d17.yaml on 32 ranks.
 
-The reference run uses 8 nodes x 4 GPUs, 8,388,608 global samples per epoch,
-gradient accumulation 2, and a per-rank batch schedule of 32 (epoch 0) then
-128 (epoch 1 onward). This pins the resulting microbatch-iteration and
-optimizer-update counts so a config or accounting change that silently
-alters epoch length is caught.
+What this test checks: that the config, run through the repository's own
+batch-schedule and epoch-length arithmetic on a 32-rank world, yields the
+iteration and update counts stated for the reference run (8 nodes x 4 GPUs;
+epoch 0: 8,192 lockstep iterations / 4,096 updates at per-rank batch 32;
+epoch 1 onward: 2,048 / 1,024 at per-rank batch 128), and that no
+accumulation window is left incomplete.
+
+What it cannot check: that those stated counts, or any other value in the
+config, match the internal training recipe itself — that provenance is the
+handoff document, not this repository. WORLD_SIZE is the reference topology,
+not a property of the config.
 """
 
 import sys
