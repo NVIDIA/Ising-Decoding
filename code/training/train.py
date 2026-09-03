@@ -1382,12 +1382,21 @@ def main(cfg: DictConfig) -> None:
         print(f"Calculating total_steps with {effective_num_samples:,} samples per epoch")
 
     total_steps = 0
+    total_generator_steps = 0
     for epoch in range(cfg.train.epochs):
         per_device_bs = get_current_per_device_batch_size(epoch, cfg)
         acc = cfg.train.accumulate_steps
         batches = compute_batches_per_epoch(effective_num_samples, per_device_bs, dist.world_size)
         steps = max(1, math.ceil(batches / acc))
         total_steps += steps
+        total_generator_steps += batches
+
+    # Per-rank data streams occupy a fixed seed range; a long run must not
+    # walk out of its own range into the next rank's. The generator knows its
+    # budget (it depends on whether superbatching is active) and fails fast.
+    check_step_budget = getattr(train_generator, "check_step_budget", None)
+    if callable(check_step_budget):
+        check_step_budget(total_generator_steps)
 
     # Quick-validation guard: keep short runs from tripping scheduler constraints.
     # Full training runs keep the default warmup.

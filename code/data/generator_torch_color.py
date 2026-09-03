@@ -41,6 +41,12 @@ import torch
 from data.superbatch import SuperbatchBuffer
 from qec.color_code.memory_circuit_torch import ColorMemoryCircuitTorch
 
+# Distance between the seed ranges of consecutive global ranks. Rank r draws
+# its step seeds from [base + (r+1)*STRIDE, base + (r+2)*STRIDE); a run whose
+# generator step count reaches the stride would silently continue into rank
+# r+1's range. ``check_step_budget`` guards that boundary at start-up.
+RANK_STREAM_STRIDE = 1_000_003
+
 
 class ColorQCDataGeneratorTorch:
     """Torch + cuStabilizer color-code training data generator."""
@@ -96,7 +102,7 @@ class ColorQCDataGeneratorTorch:
         self.rank = int(rank)
         self.global_rank = int(global_rank if global_rank is not None else rank)
         self.base_seed = int(base_seed)
-        self._step_seed_offset = (self.global_rank + 1) * 1_000_003
+        self._step_seed_offset = (self.global_rank + 1) * RANK_STREAM_STRIDE
         self.noise_model = noise_model
         # Configured nominal p (mirrors the surface QCDataGeneratorTorch convention:
         # p_error if set, else p_max). Passed to the circuit so the precomputed
@@ -193,6 +199,35 @@ class ColorQCDataGeneratorTorch:
             self.base_seed + self._step_seed_offset + self._SUPERBATCH_SEED_SALT +
             2 * int(start_step) + int(basis_index)
         ) & 0x7FFFFFFF
+
+    def max_generator_steps(self) -> int:
+        """Largest generator step count that keeps this rank inside its seed range.
+
+        Direct generation uses one seed per step; mixed-basis superbatch builds
+        use two seeds per start step (stride 2), which halves the budget.
+        """
+        if self._mixed and self.superbatch_active():
+            return RANK_STREAM_STRIDE // 2
+        return RANK_STREAM_STRIDE
+
+    def check_step_budget(self, total_generator_steps: int) -> None:
+        """Fail fast if a run would push this rank's seeds into the next rank's range.
+
+        ``total_generator_steps`` is the number of minibatches the run will
+        request from ``generate_batch`` (microbatch iterations, not optimizer
+        updates), i.e. the largest step index plus one.
+        """
+        limit = self.max_generator_steps()
+        if int(total_generator_steps) > limit:
+            mode = "mixed-basis superbatching (two seeds per build)" if (
+                self._mixed and self.superbatch_active()
+            ) else "direct generation (one seed per step)"
+            raise ValueError(
+                f"Training would take {int(total_generator_steps):,} generator steps, but with "
+                f"{mode} a rank's seed range holds only {limit:,}; beyond that its stream "
+                f"overlaps the next global rank's (stride {RANK_STREAM_STRIDE:,}). Reduce "
+                "epochs or samples per epoch, or enlarge the per-rank batch size."
+            )
 
     def _generate_with_sim(self, sim, step: int, batch_size: int, *, seed: int | None = None):
         if seed is None:
