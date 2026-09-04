@@ -106,6 +106,8 @@ train:
   accumulate_steps: 2
   checkpoint_interval: 1
   save_every_datasets: 0
+  # PROVISIONAL: the reference run used a different epoch count; replace with
+  # the value from the reference run before training.
   epochs: 100
 
 val:
@@ -114,6 +116,8 @@ val:
   trials: 1
 
 # Optimizer/scheduler follow the repository's color training defaults.
+# PROVISIONAL: the reference run used a different learning rate; replace
+# `optimizer.lr` with the value from the reference run before training.
 optimizer_type: Lion
 optimizer:
   lr: 3e-4
