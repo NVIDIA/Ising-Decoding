@@ -165,9 +165,16 @@ class TestStepBudget(unittest.TestCase):
         )
 
     def test_reference_run_fits_the_budget(self):
-        """8,192 + 99 x 2,048 generator steps on 32 ranks stays well inside."""
-        for interleave in (False, True):
-            gen = self._with_buffer(
-                _seeder(base_seed=42, global_rank=31, mixed=True), 1024, interleave=interleave
-            )
-            gen.check_step_budget(8192 + 99 * 2048)
+        """400 epochs on 32 ranks: 8,192 + 399 x 2,048 = 825,344 generator steps.
+
+        Fits the basis-local budget (one stride); it would exceed the interleaved
+        budget (half a stride), which is one reason basis-local is the default.
+        """
+        steps = 8192 + 399 * 2048
+        gen = self._with_buffer(_seeder(base_seed=42, global_rank=31, mixed=True), 1024)
+        gen.check_step_budget(steps)
+        gen = self._with_buffer(
+            _seeder(base_seed=42, global_rank=31, mixed=True), 1024, interleave=True
+        )
+        with self.assertRaises(ValueError):
+            gen.check_step_budget(steps)

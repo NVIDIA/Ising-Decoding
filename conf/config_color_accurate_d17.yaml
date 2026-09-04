@@ -77,8 +77,8 @@ data:
 
   # Noise
   p_error: null
-  p_min: 0.0029
-  p_max: 0.0031
+  p_min: 0.00399
+  p_max: 0.00401
   error_mode: circuit_level_color_code
   precomputed_frames_dir: null
 
@@ -106,23 +106,19 @@ train:
   accumulate_steps: 2
   checkpoint_interval: 1
   save_every_datasets: 0
-  # PROVISIONAL: the reference run used a different epoch count; replace with
-  # the value from the reference run before training.
-  epochs: 100
+  epochs: 400
 
 val:
   num_samples: 65536
   threshold: 0.0
   trials: 1
 
-# Optimizer/scheduler follow the repository's color training defaults.
-# PROVISIONAL: the reference run used a different learning rate; replace
-# `optimizer.lr` with the value from the reference run before training.
+# Optimizer settings of the reference run.
 optimizer_type: Lion
 optimizer:
-  lr: 3e-4
+  lr: 1e-5
   weight_decay: 1e-7
-  beta2: 0.95
+  beta2: 0.99
 
 lr_scheduler:
   type: warmup_then_decay
@@ -151,13 +147,15 @@ ema:
   use_ema: true
   decay: 0.0001
 
+# Evaluation window of the reference run. At d=17 and p=0.001 the logical
+# error rate is indistinguishable from zero at this sample count.
 test:
   num_samples: 262144
   trials: 1
-  distance: 17
-  n_rounds: 17
+  distance: 9
+  n_rounds: 9
   noise_model: none
-  p_error: 0.001
+  p_error: 0.003
   meas_basis_test: both
   use_model_checkpoint: 0
   th_data: 0.0
