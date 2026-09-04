@@ -1006,6 +1006,11 @@ def precompute_dem_bundle_surface_code(
 # =============================================================================
 
 COLOR_AUGMENTED_DEM_METADATA_VERSION = 1
+# Default ceiling for the dense uint8 response matrix H built by
+# build_color_augmented_dem_bundle_torch. Sized for PID-scale configs
+# (d = r <= 13). Larger codes are legitimate — d = r = 17 needs about 6 GiB,
+# which a training node handles — so the ceiling is a parameter
+# (`max_dense_bytes`, CLI `--max_dense_gib`) rather than a hard limit.
 COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES = 2 * 1024**3
 
 
@@ -1747,8 +1752,14 @@ def build_color_augmented_dem_bundle_torch(
     use_decomposed_errors: bool = False,
     chunk_size: int = 256,
     buffer_size: int = 1,
+    max_dense_bytes: int | None = None,
 ) -> ColorAugmentedDemBundle:
-    """Build the dense color-code augmented DEM response matrix using Torch only."""
+    """Build the dense color-code augmented DEM response matrix using Torch only.
+
+    ``max_dense_bytes`` caps the size of the dense H (default
+    ``COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES``); raise it deliberately for large
+    codes after checking the node's memory.
+    """
     if use_decomposed_errors:
         raise NotImplementedError("Torch color augmented DEM does not yet support Y decomposition")
 
@@ -1766,13 +1777,15 @@ def build_color_augmented_dem_bundle_torch(
     num_rows = frame_rows + meas_old_rows + meas_new_rows
     num_cols = 1 + n_rounds * (num_local_errors - 1)
     dense_bytes = int(num_rows) * int(num_cols) * np.dtype(np.uint8).itemsize
-    if dense_bytes > COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES:
-        max_gib = COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES / float(1024**3)
+    limit = int(COLOR_AUGMENTED_DEM_MAX_DENSE_BYTES if max_dense_bytes is None else max_dense_bytes)
+    if dense_bytes > limit:
+        max_gib = limit / float(1024**3)
         got_gib = dense_bytes / float(1024**3)
         raise MemoryError(
-            "Dense color augmented DEM precompute is intended for PID-scale "
-            f"configs up to about d=r=13. Requested H shape=({num_rows}, {num_cols}) "
-            f"would require {got_gib:.2f} GiB, above the {max_gib:.2f} GiB guard."
+            "Dense color augmented DEM precompute defaults to PID-scale configs up to "
+            f"about d=r=13. Requested H shape=({num_rows}, {num_cols}) would require "
+            f"{got_gib:.2f} GiB, above the {max_gib:.2f} GiB guard. Raise it with "
+            "max_dense_bytes / --max_dense_gib if the node has the memory."
         )
 
     H = torch.zeros((num_rows, num_cols), dtype=torch.uint8)
@@ -1845,6 +1858,7 @@ def precompute_dem_bundle_color_code(
     chunk_size: int = 256,
     buffer_size: int = 1,
     noise_model=None,
+    max_dense_bytes: int | None = None,
 ) -> Path | dict[str, torch.Tensor | int | float]:
     """Precompute a Torch-native color-code augmented DEM bundle."""
     if use_decomposed_errors:
@@ -1924,6 +1938,7 @@ def precompute_dem_bundle_color_code(
         use_decomposed_errors=bool(use_decomposed_errors),
         chunk_size=int(chunk_size),
         buffer_size=int(buffer_size),
+        max_dense_bytes=max_dense_bytes,
     )
 
     metadata_global = replicate_metadata_across_rounds(
@@ -2136,6 +2151,13 @@ def main() -> None:
         help="(--code color) Per-shot slot count for injected errors during DEM build.",
     )
     ap.add_argument(
+        "--max_dense_gib",
+        type=float,
+        default=None,
+        help="(--code color) Ceiling for the dense augmented-DEM matrix in GiB "
+        "(default 2; d=r=17 needs about 6).",
+    )
+    ap.add_argument(
         "--p", type=float, default=0.01, help="Scalar p for exporting single-p marginals"
     )
     ap.add_argument(
@@ -2198,6 +2220,9 @@ def main() -> None:
             chunk_size=int(args.chunk_size),
             buffer_size=int(args.buffer_size),
             noise_model=noise_model,
+            max_dense_bytes=(
+                int(float(args.max_dense_gib) * 1024**3) if args.max_dense_gib is not None else None
+            ),
         )
     else:
         precompute_dem_bundle_surface_code(
