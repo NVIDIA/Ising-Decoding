@@ -36,7 +36,8 @@ def _seeder(*, base_seed, global_rank, mixed=True):
     gen = object.__new__(ColorQCDataGeneratorTorch)
     gen.base_seed = int(base_seed)
     gen.global_rank = int(global_rank)
-    gen._step_seed_offset = (int(global_rank) + 1) * 1_000_003
+    gen.rank_seed_stride = 1_000_003
+    gen._step_seed_offset = (int(global_rank) + 1) * gen.rank_seed_stride
     gen._mixed = bool(mixed)
     gen.device = torch.device("cpu")
     return gen
@@ -163,6 +164,20 @@ class TestStepBudget(unittest.TestCase):
             lo._seed_for_superbatch_basis(half - 1, 1),
             hi._seed_for_superbatch_basis(0, 0),
         )
+
+    def test_custom_stride_scales_the_budget_and_the_offsets(self):
+        """Fewer ranks need more steps each; data.rank_seed_stride makes room."""
+        gen = _seeder(base_seed=42, global_rank=3)
+        gen.rank_seed_stride = 4_000_003
+        gen._step_seed_offset = (3 + 1) * gen.rank_seed_stride
+        gen.measure_basis = "both"
+        gen.sim = gen.sim_X = gen.sim_Z = None
+        gen._init_superbatching(superbatch_size=8, prefetch=False, interleave_bases=False)
+        self.assertEqual(gen.max_generator_steps(), 4_000_003)
+        gen.check_step_budget(1_650_688)  # 400 epochs on 16 ranks
+        nxt = _seeder(base_seed=42, global_rank=4)
+        nxt._step_seed_offset = (4 + 1) * 4_000_003
+        self.assertEqual(gen._seed_for_step(4_000_003), nxt._seed_for_step(0))
 
     def test_reference_run_fits_the_budget(self):
         """400 epochs on 32 ranks: 8,192 + 399 x 2,048 = 825,344 generator steps.

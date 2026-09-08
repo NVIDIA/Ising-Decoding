@@ -78,6 +78,7 @@ class ColorQCDataGeneratorTorch:
         superbatch_size: int = 0,
         superbatch_prefetch: bool = False,
         superbatch_interleave_bases: bool = False,
+        rank_seed_stride: int | None = None,
     ) -> None:
         if device is None:
             # Resolve to a concrete device index (not the index-less "cuda"): data
@@ -104,7 +105,16 @@ class ColorQCDataGeneratorTorch:
         self.rank = int(rank)
         self.global_rank = int(global_rank if global_rank is not None else rank)
         self.base_seed = int(base_seed)
-        self._step_seed_offset = (self.global_rank + 1) * RANK_STREAM_STRIDE
+        # Distance between consecutive ranks' seed ranges. The default suits
+        # the 32-rank reference run; fewer ranks take more generator steps
+        # each (the epoch is split fewer ways), so a run on fewer ranks may
+        # need a larger stride to keep every rank inside its own range.
+        self.rank_seed_stride = int(
+            RANK_STREAM_STRIDE if rank_seed_stride is None else rank_seed_stride
+        )
+        if self.rank_seed_stride <= 0:
+            raise ValueError("rank_seed_stride must be positive")
+        self._step_seed_offset = (self.global_rank + 1) * self.rank_seed_stride
         self.noise_model = noise_model
         # Configured nominal p (mirrors the surface QCDataGeneratorTorch convention:
         # p_error if set, else p_max). Passed to the circuit so the precomputed
@@ -251,8 +261,8 @@ class ColorQCDataGeneratorTorch:
         (stride 2), which halves the budget.
         """
         if self._superbatch_interleave and self.superbatch_active():
-            return RANK_STREAM_STRIDE // 2
-        return RANK_STREAM_STRIDE
+            return self.rank_seed_stride // 2
+        return self.rank_seed_stride
 
     def check_step_budget(self, total_generator_steps: int) -> None:
         """Fail fast if a run would push this rank's seeds into the next rank's range.
@@ -269,8 +279,9 @@ class ColorQCDataGeneratorTorch:
             raise ValueError(
                 f"Training would take {int(total_generator_steps):,} generator steps, but with "
                 f"{mode} a rank's seed range holds only {limit:,}; beyond that its stream "
-                f"overlaps the next global rank's (stride {RANK_STREAM_STRIDE:,}). Reduce "
-                "epochs or samples per epoch, or enlarge the per-rank batch size."
+                f"overlaps the next global rank's (stride {self.rank_seed_stride:,}). Reduce "
+                "epochs or samples per epoch, enlarge the per-rank batch size, or raise "
+                "data.rank_seed_stride (changes every rank's data stream)."
             )
 
     def _generate_with_sim(self, sim, step: int, batch_size: int, *, seed: int | None = None):

@@ -1074,6 +1074,9 @@ def main(cfg: DictConfig) -> None:
             color_superbatch_interleave = bool(
                 OmegaConf.select(cfg, "data.superbatch_interleave_bases", default=False)
             )
+            color_rank_seed_stride = OmegaConf.select(cfg, "data.rank_seed_stride", default=None)
+            if color_rank_seed_stride is not None:
+                color_rank_seed_stride = int(color_rank_seed_stride)
             if dist.rank == 0 and color_superbatch_size > 0:
                 bases_mode = "interleaved X/Z" if color_superbatch_interleave else "basis-local"
                 print(
@@ -1103,6 +1106,7 @@ def main(cfg: DictConfig) -> None:
                 superbatch_size=color_superbatch_size,
                 superbatch_prefetch=color_superbatch_prefetch,
                 superbatch_interleave_bases=color_superbatch_interleave,
+                rank_seed_stride=color_rank_seed_stride,
             )
             # Validation generates directly: its steps are not contiguous with
             # training's, so a resident buffer would be discarded every call.
@@ -1127,6 +1131,7 @@ def main(cfg: DictConfig) -> None:
                 p_max=p_max_value,
                 superbatch_size=0,
                 superbatch_prefetch=False,
+                rank_seed_stride=color_rank_seed_stride,
             )
         else:
             # Surface code: Torch-only path (matches public/main).
