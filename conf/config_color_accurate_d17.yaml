@@ -64,6 +64,11 @@ data:
   superbatch_size: 1024
   superbatch_prefetch: true
   superbatch_interleave_bases: false
+  # Distance between consecutive ranks' seed ranges (null = 1,000,003, sized
+  # for 32 ranks). Fewer ranks take more generator steps each; training fails
+  # at start-up if a rank would leave its range. Raising this changes every
+  # rank's data stream.
+  rank_seed_stride: null
 
   # HE settings
   timelike_he: false
