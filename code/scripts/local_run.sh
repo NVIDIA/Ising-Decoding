@@ -91,7 +91,12 @@ else
 fi
 
 if [ "${WORKFLOW}" = "generate_stim_data" ]; then
+  # Serial CPU export: one process, never the distributed launcher, even inside
+  # a multi-node Slurm allocation (otherwise every node would start a writer and
+  # wait on a rendezvous that nothing needs).
   GPUS=1
+  NNODES=1
+  NODE_RANK=0
 else
   # GPU-only runs: require a visible GPU and nvidia-smi.
   if ! command -v nvidia-smi >/dev/null 2>&1; then
@@ -125,7 +130,13 @@ fi
 # and the local index. A Slurm launcher sets NNODES/NODE_RANK/MASTER_ADDR (e.g.
 # from SLURM_NNODES/SLURM_NODEID and the first host of SLURM_JOB_NODELIST).
 NNODES="${NNODES:-${SLURM_NNODES:-1}}"
-NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+if [ "${NNODES}" -gt 1 ]; then
+  NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+else
+  # A single-node launch (also inside a Slurm allocation, where SLURM_NODEID
+  # may be non-zero on the node that runs it) is always node rank 0.
+  NODE_RANK=0
+fi
 if [ "${NNODES}" -gt 1 ] && [ -z "${MASTER_ADDR:-}" ]; then
   if command -v scontrol >/dev/null 2>&1 && [ -n "${SLURM_JOB_NODELIST:-}" ]; then
     MASTER_ADDR="$(scontrol show hostnames "${SLURM_JOB_NODELIST}" | head -n 1)"
