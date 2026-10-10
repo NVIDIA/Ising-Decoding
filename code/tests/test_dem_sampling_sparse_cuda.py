@@ -95,3 +95,49 @@ def test_alternating_matrices_keep_their_own_samplers():
         dem.dem_sampling(H, p, 32, seed=step)
         assert dem._cached_sampler is (sx if step % 2 == 0 else sz)
     assert len(dem._sampler_cache) == 2
+
+
+def test_cache_is_bounded_and_drops_collected_matrices():
+    """Distinct H tensors from repeated runs must not accumulate GPU samplers."""
+    import gc
+    dem._reset_sampler_cache()
+    kept = []
+    for i in range(dem._SAMPLER_CACHE_MAX + 3):
+        H, p = _random_h(seed=100 + i)
+        dem.dem_sampling(H, p, 32, seed=i)
+        kept.append((H, p))
+    assert len(dem._sampler_cache) == dem._SAMPLER_CACHE_MAX
+    # LRU: the oldest three were evicted, the newest are present.
+    live = {id(h) for h, _ in kept[3:]}
+    assert set(dem._sampler_cache) == live
+    # A hit moves an entry to the most-recent end, so it survives the next insert.
+    H_old, p_old = kept[3]
+    dem.dem_sampling(H_old, p_old, 32, seed=1)
+    H_new, p_new = _random_h(seed=999)
+    dem.dem_sampling(H_new, p_new, 32, seed=2)
+    assert id(H_old) in dem._sampler_cache and id(kept[4][0]) not in dem._sampler_cache
+    # Dropping every reference to a matrix frees its entry on the next call.
+    gone = id(H_new)
+    del H_new, p_new
+    gc.collect()
+    dem.dem_sampling(H_old, p_old, 32, seed=3)
+    assert gone not in dem._sampler_cache
+
+
+def test_returned_outcomes_do_not_alias_the_sampler_buffer():
+    """The caller's tensor must survive the sampler's next call.
+
+    The sampler hands out CuPy-owned memory; if dem_sampling returned a view of
+    it, the next sample() (same seed or not) could overwrite or reuse that
+    block while the caller -- possibly a kernel queued on another stream -- is
+    still reading it.
+    """
+    dem._reset_sampler_cache()
+    H, p = _random_h(seed=7)
+    first = dem.dem_sampling(H, p, 64, seed=0)
+    snapshot = first.clone()
+    torch.cuda.synchronize()
+    for seed in (1, 2, 0, 3):
+        dem.dem_sampling(H, p, 64, seed=seed)
+    torch.cuda.synchronize()
+    assert torch.equal(first, snapshot)

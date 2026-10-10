@@ -25,6 +25,7 @@ to generate training batches from precomputed DEM matrices (H, p, A).
 from __future__ import annotations
 
 import time
+import weakref
 from collections import deque
 
 import torch
@@ -57,11 +58,14 @@ def _custab_available() -> bool:
 class _SamplerEntry:
     """Cached sampler state for one DEM matrix ``H`` (and the ``p`` it was built with)."""
 
-    __slots__ = ("H", "HT", "csr", "p", "sampler", "max_shots", "device_id", "seed")
+    __slots__ = ("_H_ref", "csr", "p", "sampler", "max_shots", "device_id", "seed")
 
     def __init__(self, H: torch.Tensor) -> None:
-        self.H = H  # keeps the tensor alive so id(H) stays unique
-        self.HT = H.T
+        # Weak: the cache must not keep a caller's matrix alive (a view such as
+        # ``H.T`` would, through its ``_base``). The sampler owns its own copy
+        # of the matrix (CSR on CUDA, numpy on CPU); once the caller drops H the
+        # entry is stale and evicted on the next call.
+        self._H_ref = weakref.ref(H)
         self.csr = None  # BitMatrixCSR of H^T, built once per H on the CUDA path
         self.p = None
         self.sampler = None
@@ -69,11 +73,38 @@ class _SamplerEntry:
         self.device_id = None
         self.seed = None
 
+    @property
+    def H(self) -> "torch.Tensor | None":
+        return self._H_ref()
+
 
 # One entry per DEM matrix, keyed by id(H). Mixed-basis training alternates two
 # simulators (X and Z, distinct H) every step; a single-slot cache rebuilt the
-# sampler on every basis switch.
+# sampler on every basis switch. Insertion order doubles as LRU order: a hit
+# re-inserts its entry at the end, and the cache is bounded so matrices from
+# earlier runs in the same process (tests, sweeps) do not pile up with their
+# GPU samplers. Entries whose H was garbage-collected are dropped on sight.
+_SAMPLER_CACHE_MAX = 8
 _sampler_cache: dict[int, _SamplerEntry] = {}
+
+
+def _evict_stale_sampler_entries() -> None:
+    """Drop entries whose matrix has been garbage-collected."""
+    for stale_key in [k for k, e in _sampler_cache.items() if e.H is None]:
+        del _sampler_cache[stale_key]
+
+
+def _touch_sampler_entry(H: torch.Tensor) -> _SamplerEntry:
+    """Return the live cache entry for ``H``, creating/evicting as needed."""
+    key = id(H)
+    entry = _sampler_cache.pop(key, None)
+    if entry is None or entry.H is not H:
+        entry = _SamplerEntry(H)
+    _evict_stale_sampler_entries()
+    _sampler_cache[key] = entry  # most recently used goes last
+    while len(_sampler_cache) > _SAMPLER_CACHE_MAX:
+        del _sampler_cache[next(iter(_sampler_cache))]
+    return entry
 # Most recently used entry, mirrored into module globals for introspection/tests.
 _cached_sampler = None
 _cached_H: "torch.Tensor | None" = None
@@ -199,10 +230,7 @@ def dem_sampling(
 
     gpu_native = _CUPY_AVAILABLE and H.is_cuda
 
-    entry = _sampler_cache.get(id(H))
-    if entry is None or entry.H is not H:
-        entry = _SamplerEntry(H)
-        _sampler_cache[id(H)] = entry
+    entry = _touch_sampler_entry(H)
 
     # CUDA: one sparse sampler per (H, p, device); a per-call seed goes to
     # ``sample`` and resets its RNG, so repeated calls with the same seed
@@ -219,7 +247,7 @@ def dem_sampling(
             import cupy as cp
             with cp.cuda.Device(device_id):
                 if entry.csr is None:
-                    entry.csr = _bit_matrix_csr_from_dense(entry.HT.detach())
+                    entry.csr = _bit_matrix_csr_from_dense(H.T.detach())
                 p_in = cp.from_dlpack(p.detach().to(torch.float64).contiguous())
                 entry.sampler = BitMatrixSampler(
                     entry.csr,
@@ -229,7 +257,7 @@ def dem_sampling(
                     options=Options(device_id=device_id)
                 )
         else:
-            H_in = entry.HT.detach().cpu().numpy().astype(np.uint8)
+            H_in = H.T.detach().cpu().numpy().astype(np.uint8)
             p_in = p.detach().cpu().numpy().astype(np.float64)
             bms_kwargs: dict = {"package": "numpy", "options": Options(device_id=device_id)}
             if seed is not None:
@@ -242,10 +270,13 @@ def dem_sampling(
 
     _cached_sampler = entry.sampler
     _cached_H = entry.H
-    _cached_HT = entry.HT
+    _cached_HT = H.T
     _cached_max_shots = entry.max_shots
     _cached_device_id = entry.device_id
     _cached_seed = entry.seed
+    # The mirrors above released their reference to the previous matrix; if
+    # that was its last one, its entry is stale now.
+    _evict_stale_sampler_entries()
 
     t0 = time.perf_counter()
     if gpu_native:
@@ -259,7 +290,16 @@ def dem_sampling(
     if isinstance(out, np.ndarray):
         out = torch.as_tensor(out, device=H.device).to(dtype=torch.uint8)
     else:
-        out = torch.from_dlpack(out).to(dtype=torch.uint8)
+        # ``out`` is CuPy-owned memory (the sampler's outcome buffer). Hand the
+        # caller a torch-owned copy and wait for that copy before the CuPy
+        # array is released: the sampler's next ``sample`` may reuse the same
+        # pool block on its own stream while kernels queued on the caller's
+        # stream (e.g. the superbatch producer) are still reading it. One
+        # stream sync per sampling call; the sample itself is far larger.
+        out_cp = out
+        out = torch.from_dlpack(out_cp).to(dtype=torch.uint8, copy=True)
+        torch.cuda.current_stream(out.device).synchronize()
+        del out_cp
     _DEM_TIMINGS_S.append(time.perf_counter() - t0)
 
     if not _custab_path_logged:
