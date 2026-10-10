@@ -56,6 +56,7 @@ except Exception:
     SummaryWriter = None
 
 from training.distributed import DistributedManager
+from data.seed_layout import VALIDATION_SEED_OFFSET
 
 from training.utils import (
     load_checkpoint, save_checkpoint, load_latest_best_checkpoint_metadata, create_directory,
@@ -1054,7 +1055,7 @@ def main(cfg: DictConfig) -> None:
         val_generator = MultiQCDataGeneratorTorch(
             mode='test',
             verbose=False,
-            base_seed=base_seed + 100_000_000,
+            base_seed=base_seed + VALIDATION_SEED_OFFSET,
             **_multi_common,
         )
     else:
@@ -1123,7 +1124,7 @@ def main(cfg: DictConfig) -> None:
                 use_coset_search=color_use_coset_search,
                 rank=dist.local_rank,
                 global_rank=dist.rank,
-                base_seed=base_seed + 100_000_000,
+                base_seed=base_seed + VALIDATION_SEED_OFFSET,
                 verbose=False,
                 noise_model=noise_model_obj,
                 p_error=p_error_value,
@@ -1405,9 +1406,15 @@ def main(cfg: DictConfig) -> None:
     # Per-rank data streams occupy a fixed seed range; a long run must not
     # walk out of its own range into the next rank's. The generator knows its
     # budget (it depends on whether superbatching is active) and fails fast.
+    # Generator step indices are absolute (cumulative from epoch 0, also when
+    # resuming from a checkpoint: see cumulative_steps_before_epoch), so the
+    # whole run's count is what must fit, not the epochs that remain.
     check_step_budget = getattr(train_generator, "check_step_budget", None)
     if callable(check_step_budget):
         check_step_budget(total_generator_steps)
+    check_seed_layout = getattr(train_generator, "check_seed_layout", None)
+    if callable(check_seed_layout):
+        check_seed_layout(world_size=dist.world_size)
 
     # Quick-validation guard: keep short runs from tripping scheduler constraints.
     # Full training runs keep the default warmup.

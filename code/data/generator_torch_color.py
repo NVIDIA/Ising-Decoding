@@ -39,13 +39,16 @@ from typing import Optional, Tuple, Union
 
 import torch
 
+from data.seed_layout import check_seed_layout as _check_seed_layout
 from data.superbatch import SuperbatchBuffer
 from qec.color_code.memory_circuit_torch import ColorMemoryCircuitTorch
 
 # Distance between the seed ranges of consecutive global ranks. Rank r draws
 # its step seeds from [base + (r+1)*STRIDE, base + (r+2)*STRIDE); a run whose
 # generator step count reaches the stride would silently continue into rank
-# r+1's range. ``check_step_budget`` guards that boundary at start-up.
+# r+1's range. ``check_step_budget`` guards that boundary at start-up;
+# ``check_seed_layout`` guards the other two (training vs validation ranges,
+# and the 2**31 seed modulus) once the world size is known.
 RANK_STREAM_STRIDE = 1_000_003
 
 
@@ -283,6 +286,16 @@ class ColorQCDataGeneratorTorch:
                 "epochs or samples per epoch, enlarge the per-rank batch size, or raise "
                 "data.rank_seed_stride (changes every rank's data stream)."
             )
+
+    def check_seed_layout(self, *, world_size: int) -> None:
+        """Fail fast if this stride makes ranks alias each other or the validation streams.
+
+        Complements ``check_step_budget`` (which only looks at one rank's own
+        range): with ``world_size`` ranks the training ranges must end below
+        the validation offset, and everything must fit under the 2**31 seed
+        modulus. See ``data.seed_layout``.
+        """
+        _check_seed_layout(int(world_size), self.rank_seed_stride)
 
     def _generate_with_sim(self, sim, step: int, batch_size: int, *, seed: int | None = None):
         if seed is None:
