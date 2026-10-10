@@ -20,7 +20,10 @@
 # no torch.compile, TF32 disabled, synchronized BatchNorm.
 
 exp_tag: color_accurate_d17r17
-output: /tmp/predecoder_${exp_tag}
+# Honors PREDECODER_BASE_OUTPUT_DIR (as the other configs do) so a multi-node
+# run can keep checkpoints on shared storage and every node resumes from the
+# same files; local_run.sh / cluster_train.sh export it.
+output: ${oc.env:PREDECODER_BASE_OUTPUT_DIR,outputs}/${exp_tag}
 resume_dir: ${output}/models
 
 hydra:
