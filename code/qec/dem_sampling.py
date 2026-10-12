@@ -105,6 +105,8 @@ def _touch_sampler_entry(H: torch.Tensor) -> _SamplerEntry:
     while len(_sampler_cache) > _SAMPLER_CACHE_MAX:
         del _sampler_cache[next(iter(_sampler_cache))]
     return entry
+
+
 # Most recently used entry, mirrored into module globals for introspection/tests.
 _cached_sampler = None
 _cached_H: "torch.Tensor | None" = None

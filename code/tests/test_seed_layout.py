@@ -39,9 +39,7 @@ class TestSeedLayout(unittest.TestCase):
     def test_training_rank_aliasing_validation_rank_is_rejected(self):
         stride = 10_000_000
         # The collision the check must name: training rank 10 vs validation rank 0.
-        self.assertEqual(
-            _seed(42, 0, 10, stride), _seed(42, VALIDATION_SEED_OFFSET, 0, stride)
-        )
+        self.assertEqual(_seed(42, 0, 10, stride), _seed(42, VALIDATION_SEED_OFFSET, 0, stride))
         with self.assertRaises(ValueError) as ctx:
             check_seed_layout(16, stride)
         self.assertIn("training rank 10", str(ctx.exception))

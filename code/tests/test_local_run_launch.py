@@ -37,37 +37,46 @@ class TestLocalRunLaunch(unittest.TestCase):
             bin_dir.mkdir()
             argv_log = tmp / "argv.log"
             _write_exe(
-                bin_dir / "python", "#!/usr/bin/env bash\n"
+                bin_dir / "python",
+                "#!/usr/bin/env bash\n"
                 f"printf '%s\\n' \"$@\" >> '{argv_log}'\n"
                 "cat >/dev/null\n"  # swallow heredoc scripts
                 "exit 0\n"
             )
             _write_exe(bin_dir / "nvidia-smi", "#!/usr/bin/env bash\necho GPU0\nexit 0\n")
             env = {
-                k: v for k, v in os.environ.items()
-                if not k.startswith(("SLURM_", "NNODES", "NODE_RANK", "MASTER_", "GPUS", "WORKFLOW"))
+                k: v for k, v in os.environ.items() if
+                not k.startswith(("SLURM_", "NNODES", "NODE_RANK", "MASTER_", "GPUS", "WORKFLOW"))
             }
-            env.update({
-                "PATH": f"{bin_dir}:{env.get('PATH', '')}",
-                "PYTHON_BIN": str(bin_dir / "python"),
-                "PREDECODER_BASE_OUTPUT_DIR": str(tmp / "out"),
-                "PREDECODER_LOG_BASE_DIR": str(tmp / "logs"),
-                "CONFIG_NAME": "config_public",
-                "EXPERIMENT_NAME": "launch_test",
-                "MASTER_ADDR": "127.0.0.1",
-                "MASTER_PORT": "29999",
-            })
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env.get('PATH', '')}",
+                    "PYTHON_BIN": str(bin_dir / "python"),
+                    "PREDECODER_BASE_OUTPUT_DIR": str(tmp / "out"),
+                    "PREDECODER_LOG_BASE_DIR": str(tmp / "logs"),
+                    "CONFIG_NAME": "config_public",
+                    "EXPERIMENT_NAME": "launch_test",
+                    "MASTER_ADDR": "127.0.0.1",
+                    "MASTER_PORT": "29999",
+                }
+            )
             env.update({k: str(v) for k, v in env_overrides.items()})
             proc = subprocess.run(
-                ["bash", str(LOCAL_RUN)], env=env, cwd=str(tmp),
-                capture_output=True, text=True, timeout=120,
+                ["bash", str(LOCAL_RUN)],
+                env=env,
+                cwd=str(tmp),
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             self.assertEqual(proc.returncode, 0, msg=proc.stdout + proc.stderr)
             return argv_log.read_text() if argv_log.exists() else ""
 
     def test_generate_stim_data_never_uses_the_distributed_launcher(self):
         argv = self._run({
-            "WORKFLOW": "generate_stim_data", "SLURM_NNODES": 4, "SLURM_NODEID": 2,
+            "WORKFLOW": "generate_stim_data",
+            "SLURM_NNODES": 4,
+            "SLURM_NODEID": 2,
         })
         self.assertIn("code/workflows/run.py", argv)
         self.assertNotIn("torch.distributed.run", argv)
@@ -75,7 +84,10 @@ class TestLocalRunLaunch(unittest.TestCase):
 
     def test_single_node_multi_gpu_in_a_slurm_allocation_is_node_rank_zero(self):
         argv = self._run({
-            "WORKFLOW": "inference", "GPUS": 2, "NNODES": 1, "SLURM_NODEID": 3,
+            "WORKFLOW": "inference",
+            "GPUS": 2,
+            "NNODES": 1,
+            "SLURM_NODEID": 3,
         })
         self.assertIn("torch.distributed.run", argv)
         self.assertIn("--nnodes=1", argv)
@@ -84,7 +96,10 @@ class TestLocalRunLaunch(unittest.TestCase):
 
     def test_multi_node_launch_forwards_the_slurm_node_rank(self):
         argv = self._run({
-            "WORKFLOW": "train", "GPUS": 4, "SLURM_NNODES": 2, "SLURM_NODEID": 1,
+            "WORKFLOW": "train",
+            "GPUS": 4,
+            "SLURM_NNODES": 2,
+            "SLURM_NODEID": 1,
         })
         self.assertIn("--nnodes=2", argv)
         self.assertIn("--node_rank=1", argv)
