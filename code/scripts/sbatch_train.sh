@@ -152,13 +152,17 @@ if command -v docker >/dev/null 2>&1 && docker image inspect "$DOCKER_IMAGE" >/d
     "${COMMON_ENV[@]}" \
     "$DOCKER_IMAGE" 2>&1
 elif command -v docker >/dev/null 2>&1 && docker run --rm --gpus all "$DOCKER_BASE_IMAGE" nvidia-smi -L >/dev/null 2>&1; then
-  log "Setting sticky bit on $SHARED_OUTPUT_DIR for NFS/Docker UID compatibility."
-  chmod 1777 "$SHARED_OUTPUT_DIR" 2>/dev/null || true
-  log "Using Docker base image $DOCKER_BASE_IMAGE (install + train)."
+  log "Using Docker base image $DOCKER_BASE_IMAGE (install as root, train as ${HOST_UID}:${HOST_GID})."
+  # The container starts as root to apt-get/pip install, then
+  # cluster_container_install_and_train.sh drops to HOST_UID:HOST_GID before
+  # training so files written to the shared output directory are owned by the
+  # submitting user (and NFS root-squash is not an issue).
   docker run --rm --gpus all \
     -v "${REPO_ROOT}:/app:ro" \
     -v "${SHARED_OUTPUT_DIR}:/data" \
     -e INSTALL_DIR=/opt/predecoder_env \
+    -e "HOST_UID=${HOST_UID}" \
+    -e "HOST_GID=${HOST_GID}" \
     "${COMMON_ENV[@]}" \
     "$DOCKER_BASE_IMAGE" \
     bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3.11 python3.11-venv python3.11-dev curl git coreutils build-essential cmake >/dev/null 2>&1; exec stdbuf -oL -eL bash /app/code/scripts/cluster_container_install_and_train.sh 2>&1'

@@ -296,8 +296,10 @@ $SHARED_OUTPUT_DIR/
 3. **Docker base image**: set `DOCKER_BASE_IMAGE` if your cluster uses a different CUDA runtime.
 
 4. **File systems**: `SHARED_OUTPUT_DIR` should be on a shared/persistent filesystem
-   visible from all nodes (NFS, Lustre, etc.). The sbatch script sets `chmod 1777` for
-   NFS compatibility when using Docker.
+   visible from all nodes (NFS, Lustre, etc.). When using Docker, the training
+   process runs as the submitting user's UID/GID (the base-image path installs
+   dependencies as root, then drops privileges), so no special directory
+   permissions are needed.
 
 5. **No Docker?** The scripts fall back to bare-metal install automatically.
    Ensure the node has internet access (for pip) or pre-install deps via `cluster_install_deps.sh`.

@@ -66,9 +66,24 @@ if [ -z "${PREDECODER_PYTHON:-}" ]; then
   [ -x "${INSTALL_DIR}/miniconda3/envs/predecoder/bin/python" ] && export PREDECODER_PYTHON="${INSTALL_DIR}/miniconda3/envs/predecoder/bin/python"
 fi
 log "PREDECODER_PYTHON=${PREDECODER_PYTHON:-<unset>}"
+
+# Drop privileges for training when the container was started as root on behalf
+# of a host user (HOST_UID/HOST_GID set by sbatch_train.sh). Installation above
+# needs root; training does not, and files written to the shared output
+# directory should be owned by the submitting user.
+RUN_AS=()
+if [ "$(id -u)" -eq 0 ] && [ -n "${HOST_UID:-}" ] && [ "${HOST_UID}" != "0" ] && command -v setpriv >/dev/null 2>&1; then
+  HOST_GID="${HOST_GID:-$HOST_UID}"
+  TRAIN_HOME="${TRAIN_HOME:-/tmp/predecoder-home}"
+  mkdir -p "$TRAIN_HOME" && chown "${HOST_UID}:${HOST_GID}" "$TRAIN_HOME"
+  export HOME="$TRAIN_HOME" USER="predecoder" LOGNAME="predecoder"
+  RUN_AS=(setpriv --reuid="$HOST_UID" --regid="$HOST_GID" --clear-groups --inh-caps=-all)
+  log "Training as uid:gid ${HOST_UID}:${HOST_GID} (HOME=$HOME)."
+fi
+
 if command -v stdbuf >/dev/null 2>&1; then
-  stdbuf -oL -eL bash "$REPO_ROOT/code/scripts/cluster_train.sh"
+  "${RUN_AS[@]}" stdbuf -oL -eL bash "$REPO_ROOT/code/scripts/cluster_train.sh"
 else
-  bash "$REPO_ROOT/code/scripts/cluster_train.sh"
+  "${RUN_AS[@]}" bash "$REPO_ROOT/code/scripts/cluster_train.sh"
 fi
 log "Done."
