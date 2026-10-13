@@ -196,6 +196,23 @@ def get_accumulate_steps(epoch, cfg):
     return min(max(unbounded_accumulate, 1), cfg.train.accumulate_steps)
 
 
+def _calculate_step_budgets(cfg, world_size, init_epoch):
+    """Keep the full LR schedule, but budget seeds only for this invocation."""
+    total_steps = 0
+    train_generator_steps = 0
+    max_val_generator_steps = 0
+    val_samples_per_rank = cfg.val.num_samples // world_size
+    for epoch in range(cfg.train.epochs):
+        per_device_bs = get_current_per_device_batch_size(epoch, cfg)
+        batches = compute_batches_per_epoch(cfg.train.num_samples, per_device_bs, world_size)
+        total_steps += max(1, math.ceil(batches / cfg.train.accumulate_steps))
+        if epoch >= init_epoch:
+            train_generator_steps += batches
+            val_batches = (val_samples_per_rank + per_device_bs - 1) // per_device_bs
+            max_val_generator_steps = max(max_val_generator_steps, val_batches)
+    return total_steps, train_generator_steps, max_val_generator_steps
+
+
 def maybe_convert_sync_batchnorm(model, enabled, world_size):
     """Convert BatchNorm modules when synchronized DDP statistics are enabled."""
     if not enabled or int(world_size) <= 1:
@@ -1393,25 +1410,27 @@ def main(cfg: DictConfig) -> None:
     if dist.rank == 0:
         print(f"Calculating total_steps with {effective_num_samples:,} samples per epoch")
 
-    total_steps = 0
-    total_generator_steps = 0
-    for epoch in range(cfg.train.epochs):
-        per_device_bs = get_current_per_device_batch_size(epoch, cfg)
-        acc = cfg.train.accumulate_steps
-        batches = compute_batches_per_epoch(effective_num_samples, per_device_bs, dist.world_size)
-        steps = max(1, math.ceil(batches / acc))
-        total_steps += steps
-        total_generator_steps += batches
+    total_steps, total_generator_steps, max_val_generator_steps = _calculate_step_budgets(
+        cfg, dist.world_size, init_epoch_temp
+    )
 
     # Per-rank data streams occupy a fixed seed range; a long run must not
     # walk out of its own range into the next rank's. The generator knows its
     # budget (it depends on whether superbatching is active) and fails fast.
-    # Generator step indices are absolute (cumulative from epoch 0, also when
-    # resuming from a checkpoint: see cumulative_steps_before_epoch), so the
-    # whole run's count is what must fit, not the epochs that remain.
+    # Generator steps restart at zero on resume, so only remaining epochs
+    # consume this invocation's seed range. The LR schedule still spans all epochs.
     check_step_budget = getattr(train_generator, "check_step_budget", None)
     if callable(check_step_budget):
         check_step_budget(total_generator_steps)
+    # Validation reuses the same steps each epoch. Its shared 10000 offset
+    # shifts every rank equally, so the longest pass's batch count must fit.
+    # Use the validation generator's direct budget, not training's interleaved one.
+    check_val_step_budget = getattr(val_generator, "check_step_budget", None)
+    if callable(check_val_step_budget):
+        try:
+            check_val_step_budget(max_val_generator_steps)
+        except ValueError as exc:
+            raise ValueError(f"Validation seed budget exceeded: {exc}") from exc
     check_seed_layout = getattr(train_generator, "check_seed_layout", None)
     if callable(check_seed_layout):
         check_seed_layout(world_size=dist.world_size)
