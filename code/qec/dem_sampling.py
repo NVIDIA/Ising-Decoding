@@ -24,6 +24,7 @@ to generate training batches from precomputed DEM matrices (H, p, A).
 
 from __future__ import annotations
 
+import threading
 import time
 import weakref
 from collections import deque
@@ -86,25 +87,30 @@ class _SamplerEntry:
 # GPU samplers. Entries whose H was garbage-collected are dropped on sight.
 _SAMPLER_CACHE_MAX = 8
 _sampler_cache: dict[int, _SamplerEntry] = {}
+# Sampler destruction can release the GIL while cache entries are removed.
+# Reentrant because touching an entry also evicts stale entries.
+_sampler_cache_lock = threading.RLock()
 
 
 def _evict_stale_sampler_entries() -> None:
     """Drop entries whose matrix has been garbage-collected."""
-    for stale_key in [k for k, e in _sampler_cache.items() if e.H is None]:
-        del _sampler_cache[stale_key]
+    with _sampler_cache_lock:
+        for stale_key in [k for k, e in _sampler_cache.items() if e.H is None]:
+            del _sampler_cache[stale_key]
 
 
 def _touch_sampler_entry(H: torch.Tensor) -> _SamplerEntry:
     """Return the live cache entry for ``H``, creating/evicting as needed."""
-    key = id(H)
-    entry = _sampler_cache.pop(key, None)
-    if entry is None or entry.H is not H:
-        entry = _SamplerEntry(H)
-    _evict_stale_sampler_entries()
-    _sampler_cache[key] = entry  # most recently used goes last
-    while len(_sampler_cache) > _SAMPLER_CACHE_MAX:
-        del _sampler_cache[next(iter(_sampler_cache))]
-    return entry
+    with _sampler_cache_lock:
+        key = id(H)
+        entry = _sampler_cache.pop(key, None)
+        if entry is None or entry.H is not H:
+            entry = _SamplerEntry(H)
+        _evict_stale_sampler_entries()
+        _sampler_cache[key] = entry  # most recently used goes last
+        while len(_sampler_cache) > _SAMPLER_CACHE_MAX:
+            del _sampler_cache[next(iter(_sampler_cache))]
+        return entry
 
 
 # Most recently used entry, mirrored into module globals for introspection/tests.
@@ -137,7 +143,8 @@ def _reset_sampler_cache() -> None:
     """Reset the module-level sampler cache."""
     global _cached_sampler, _cached_H, _cached_HT, _cached_max_shots
     global _cached_device_id, _cached_seed
-    _sampler_cache.clear()
+    with _sampler_cache_lock:
+        _sampler_cache.clear()
     _cached_sampler = None
     _cached_H = None
     _cached_HT = None
