@@ -86,7 +86,7 @@ def _load_checkpoint_if_requested(model: torch.nn.Module, checkpoint: str | None
         return "random_initialization"
 
     checkpoint_path = Path(checkpoint)
-    payload = torch.load(checkpoint_path, map_location="cpu")
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if isinstance(payload, dict):
         for key in ("model_state_dict", "model", "state_dict"):
             if key in payload and isinstance(payload[key], dict):

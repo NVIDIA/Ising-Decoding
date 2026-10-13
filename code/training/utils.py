@@ -48,6 +48,42 @@ scaler = GradScaler
 checkpoint_logging = PythonLogger("checkpoint")
 
 
+def _to_builtin_types(obj: Any) -> Any:
+    """Recursively convert numpy scalars/arrays to plain Python types.
+
+    Checkpoints are loaded with ``torch.load(..., weights_only=True)``, which only
+    accepts tensors and builtin containers/scalars. Metadata produced from numpy
+    (e.g. a LER value) would otherwise be rejected on resume."""
+    if isinstance(obj, dict):
+        return {k: _to_builtin_types(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_builtin_types(v) for v in obj)
+    if hasattr(obj, "item") and not torch.is_tensor(obj) and getattr(obj, "shape", None) == ():
+        return obj.item()  # numpy scalar
+    if hasattr(obj, "tolist") and not torch.is_tensor(obj):
+        return obj.tolist()  # numpy array
+    return obj
+
+
+def load_latest_best_checkpoint_metadata(best_model_path: str) -> Optional[Dict[str, Any]]:
+    """Return the ``metadata`` dict of the most recent ``checkpoint*.pt`` in
+    ``best_model_path``, or ``None`` if there is no such file or it carries no metadata.
+
+    The checkpoint is read with ``weights_only=True``; a file that cannot be
+    unpickled under that restriction raises rather than being executed."""
+    checkpoint_files = [
+        f for f in os.listdir(best_model_path) if f.endswith(".pt") and "checkpoint" in f
+    ]
+    if not checkpoint_files:
+        return None
+    latest = max(checkpoint_files, key=lambda f: os.path.getmtime(os.path.join(best_model_path, f)))
+    checkpoint_dict = torch.load(
+        os.path.join(best_model_path, latest), map_location="cpu", weights_only=True
+    )
+    metadata = checkpoint_dict.get("metadata") if isinstance(checkpoint_dict, dict) else None
+    return metadata if isinstance(metadata, dict) else None
+
+
 def create_directory(filepath):
     """Function to create directories"""
     if not os.path.exists(filepath):
@@ -363,7 +399,7 @@ def save_checkpoint(
     if epoch is not None:
         checkpoint_dict["epoch"] = epoch
     if metadata:
-        checkpoint_dict["metadata"] = metadata
+        checkpoint_dict["metadata"] = _to_builtin_types(metadata)
     if global_step is not None:
         checkpoint_dict["global_step"] = global_step
 
@@ -430,7 +466,7 @@ def load_checkpoint(
         checkpoint_logging.warning("Could not find valid checkpoint file, skipping load")
         return 0, 0
 
-    checkpoint_dict = torch.load(checkpoint_filename, map_location=device, weights_only=False)
+    checkpoint_dict = torch.load(checkpoint_filename, map_location=device, weights_only=True)
     if rank == 0:
         checkpoint_logging.success(f"Loaded checkpoint file {checkpoint_filename} to {device}")
 

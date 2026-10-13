@@ -699,7 +699,7 @@ def _load_state_dict_from_pt(model_path: str, device) -> dict:
     - {"state_dict": ...}
     Also strips the DDP "module." prefix if present.
     """
-    raw = torch.load(model_path, map_location=device, weights_only=False)
+    raw = torch.load(model_path, map_location=device, weights_only=True)
     if isinstance(raw, dict):
         if "model_state_dict" in raw:
             state_dict = raw["model_state_dict"]

@@ -57,8 +57,8 @@ except Exception:
 from training.distributed import DistributedManager
 
 from training.utils import (
-    load_checkpoint, save_checkpoint, create_directory, should_stop_due_to_time,
-    compare_receptive_field_with_window_data
+    load_checkpoint, save_checkpoint, load_latest_best_checkpoint_metadata, create_directory,
+    should_stop_due_to_time, compare_receptive_field_with_window_data
 )
 from model.factory import ModelFactory
 
@@ -1377,39 +1377,28 @@ def main(cfg: DictConfig) -> None:
     best_vloss = 1_000_000.0
     use_ler_for_early_stopping = getattr(cfg, 'validation_ler', False)
     try:
-        checkpoint_files = [
-            f for f in os.listdir(best_model_path) if f.endswith('.pt') and 'checkpoint' in f
-        ]
-        if checkpoint_files:
-            latest_checkpoint = max(
-                checkpoint_files, key=lambda f: os.path.getmtime(os.path.join(best_model_path, f))
-            )
-            checkpoint_dict = torch.load(
-                os.path.join(best_model_path, latest_checkpoint),
-                map_location="cpu",
-                weights_only=False
-            )
-            if 'metadata' in checkpoint_dict and 'best_vloss' in checkpoint_dict['metadata']:
-                saved_using_ler = checkpoint_dict['metadata'].get('using_ler', False)
-                # With PREDECODER_LER_FINAL_ONLY=1 the per-epoch metric is validation
-                # loss even when LER validation is enabled, so expect a loss-based best.
-                ler_final_only = os.environ.get("PREDECODER_LER_FINAL_ONLY", "0") == "1"
-                expect_ler_metric = use_ler_for_early_stopping and not ler_final_only
-                # Only restore best_vloss if the metric type matches (both LER or both loss)
-                if saved_using_ler == expect_ler_metric:
-                    best_vloss = checkpoint_dict['metadata']['best_vloss']
-                    if 'epochs_since_best' in checkpoint_dict['metadata']:
-                        epochs_since_best = checkpoint_dict['metadata']['epochs_since_best']
-                    if dist.rank == 0:
-                        metric_name = "LER" if expect_ler_metric else "validation loss"
-                        print(f"[Checkpoint] Restored best {metric_name}: {best_vloss:.6f}")
-                else:
-                    if dist.rank == 0:
-                        old_metric = "LER" if saved_using_ler else "validation loss"
-                        new_metric = "LER" if expect_ler_metric else "validation loss"
-                        print(
-                            f"[Checkpoint] Metric type changed ({old_metric} → {new_metric}), resetting best metric"
-                        )
+        best_metadata = load_latest_best_checkpoint_metadata(best_model_path)
+        if best_metadata is not None and 'best_vloss' in best_metadata:
+            saved_using_ler = best_metadata.get('using_ler', False)
+            # With PREDECODER_LER_FINAL_ONLY=1 the per-epoch metric is validation
+            # loss even when LER validation is enabled, so expect a loss-based best.
+            ler_final_only = os.environ.get("PREDECODER_LER_FINAL_ONLY", "0") == "1"
+            expect_ler_metric = use_ler_for_early_stopping and not ler_final_only
+            # Only restore best_vloss if the metric type matches (both LER or both loss)
+            if saved_using_ler == expect_ler_metric:
+                best_vloss = best_metadata['best_vloss']
+                if 'epochs_since_best' in best_metadata:
+                    epochs_since_best = best_metadata['epochs_since_best']
+                if dist.rank == 0:
+                    metric_name = "LER" if expect_ler_metric else "validation loss"
+                    print(f"[Checkpoint] Restored best {metric_name}: {best_vloss:.6f}")
+            else:
+                if dist.rank == 0:
+                    old_metric = "LER" if saved_using_ler else "validation loss"
+                    new_metric = "LER" if expect_ler_metric else "validation loss"
+                    print(
+                        f"[Checkpoint] Metric type changed ({old_metric} → {new_metric}), resetting best metric"
+                    )
     except Exception:
         pass
 
