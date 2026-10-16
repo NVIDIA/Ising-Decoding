@@ -121,7 +121,7 @@ bash code/scripts/cluster_train.sh
 | `conf/config_color_model_1_s_LR3e-4.yaml` | Color | Model 1-shaped | 9 | Superdense color-code circuit (`p_min/p_max ≈ 0.003`) |
 | `conf/config_color_threshold_model_1_d13.yaml` | Color | n/a (eval) | 13 | Threshold sweep against a trained color checkpoint |
 | `conf/config_inference_color_model_5.yaml` | Color | n/a (inference) | 9 | Inference with a trained Model-5-shaped color checkpoint via `workflow.task=inference` (set `model_checkpoint_file`) |
-| `conf/config_color_accurate_d17.yaml` | Color | Cascade, 25.4M parameters | 17 | Large-model reference recipe (`p ≈ 0.004`, 400 epochs, 8 nodes × 4 GPUs); uses superbatching, SyncBatchNorm and bf16 autocast, see [Large training runs](#large-training-runs-superbatching-syncbatchnorm-multi-node) |
+| `conf/config_color_accurate_d17.yaml` | Color | Cascade, 25.4M parameters | 17 | Superdense color-code circuit (`p ≈ 0.004`). Reference recipe for 8 nodes × 4 GPUs with superbatching, SyncBatchNorm and bf16 autocast, see [Large training runs](#large-training-runs-superbatching-syncbatchnorm-multi-node) |
 
 Select a config by setting `CONFIG_NAME` (without the `.yaml` extension):
 ```bash
@@ -262,46 +262,46 @@ increase GPU count by factor `k`, new milestones are `[m1*k, m2*k, m3*k]`.
 
 ## Large training runs (superbatching, SyncBatchNorm, multi-node)
 
-These options are off by default; existing configs behave as before unless you
-enable them. `conf/config_color_accurate_d17.yaml` is a complete example that
-uses all of them.
+These options are off by default. Existing configs behave as before unless you
+enable them. `conf/config_color_accurate_d17.yaml` uses all of them.
 
 ### Superbatching (color generator)
 
 Direct generation produces one minibatch per step. Superbatching generates a
-large batch per basis on the GPU once and serves minibatches from it, with the
-next superbatch built in a background thread. Measured on one node with 4 GPUs,
-per microbatch: 3.0× faster for the Model-1-shaped color config, 1.26× for the
-25.4M-parameter cascade (where the forward/backward pass dominates).
+large batch per basis on the GPU and serves minibatches from it. The next
+superbatch is built in a background thread while the current one is consumed.
 
-```yaml
-data:
-  superbatch_size: 1024        # 0 = direct generation (default); must be a multiple of the per-device batch size
-  superbatch_prefetch: true    # build the next superbatch while the current one is consumed
-  superbatch_interleave_bases: false   # keep false to reproduce direct generation's basis schedule
-```
+| Config key | Default | Description |
+|------------|---------|-------------|
+| `data.superbatch_size` | `0` | Samples per superbatch. `0` keeps direct generation. Must be a multiple of the per-device batch size. |
+| `data.superbatch_prefetch` | `false` | Build the next superbatch in the background. |
+| `data.superbatch_interleave_bases` | `false` | Serve half-X/half-Z minibatches. Keep `false` to reproduce the basis schedule of direct generation. |
 
-Buffers are per basis, so every minibatch stays single-basis exactly as with
-direct generation; with `superbatch_size == batch_size` the samples are
-identical. The surface-code generator does not have this path.
+Buffers are per basis, so every minibatch stays single-basis as with direct
+generation. With `superbatch_size` equal to the batch size the samples are
+identical to direct generation. Speed-up per microbatch on one node with 4 GPUs:
+3.0× for the Model-1-shaped color config and 1.26× for the 25.4M-parameter
+cascade, where the forward and backward passes take most of the step. The
+surface-code generator does not have this path.
 
 ### SyncBatchNorm
 
-Under DDP each rank normalizes with its own BatchNorm statistics by default and
-the checkpoint carries rank 0's running statistics. Set `sync_batchnorm: true`
-to synchronize them across all ranks (converted before the DDP wrap; state-dict
-keys do not change, so checkpoints stay interchangeable with single-GPU runs).
+Under DDP each rank normalizes with its own BatchNorm statistics, and the
+checkpoint carries the running statistics of rank 0 only. `sync_batchnorm: true`
+synchronizes them across all ranks. The conversion happens before the DDP wrap
+and does not change state-dict keys, so checkpoints stay interchangeable with
+single-GPU runs.
 
 ### Mixed precision
 
-`enable_bf16: true` (or `enable_fp16`) applies autocast to the forward pass
-only; parameters, BatchNorm statistics and optimizer state stay in fp32.
+`enable_bf16: true` or `enable_fp16: true` applies autocast to the forward pass
+only. Parameters, BatchNorm statistics and optimizer state stay in fp32.
 
 ### Multi-node training
 
-`local_run.sh` runs one `torch.distributed.run` per node. Launch one task per
-node and give every task the node count, its node rank and a shared master
-address; inside a SLURM allocation these default to `SLURM_NNODES`,
+`local_run.sh` starts one `torch.distributed.run` per node. Launch one task per
+node. Every task needs the node count, its own node rank and a shared master
+address. Inside a SLURM allocation these default to `SLURM_NNODES`,
 `SLURM_NODEID` and the first host of `SLURM_JOB_NODELIST`:
 
 ```bash
@@ -312,20 +312,26 @@ srun --export=ALL bash -c '
   bash code/scripts/local_run.sh'
 ```
 
-Outside SLURM set `NNODES`, `NODE_RANK` and `MASTER_ADDR` (and `MASTER_PORT`,
-default 29500) explicitly. `generate_stim_data` always runs as a single serial
-process, and a single-node launch is always node rank 0, even inside a
-multi-node allocation. Keep `output` on shared storage (or set
-`PREDECODER_BASE_OUTPUT_DIR`) so every node resumes from the same checkpoints.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NNODES` | `SLURM_NNODES`, else `1` | Number of nodes. |
+| `NODE_RANK` | `SLURM_NODEID`, else `0` | Rank of this node. Always `0` when `NNODES=1`. |
+| `MASTER_ADDR` | first host of `SLURM_JOB_NODELIST` | Rendezvous host. Required outside SLURM when `NNODES > 1`. |
+| `MASTER_PORT` | `29500` for multi-node | Rendezvous port. |
 
-Per-rank data streams are keyed on the global rank and each rank owns a fixed
-seed range (`data.rank_seed_stride`, default 1,000,003 generator steps).
-Training fails at start-up if the run would leave that range (for example many
-epochs on few ranks: fewer ranks take more steps each), if the training ranges
-would reach the validation generator's seeds, or if they would wrap at 2**31.
-The error message says which limit was hit; raise `data.rank_seed_stride` for
-long runs on few ranks (this changes every rank's data stream), or reduce
-epochs or samples per epoch. On resume only the remaining epochs are budgeted.
+`generate_stim_data` always runs as one serial process. Keep `output` on shared
+storage, or set `PREDECODER_BASE_OUTPUT_DIR`, so every node resumes from the
+same checkpoints.
+
+Per-rank data streams are keyed on the global rank. Each rank owns a fixed range
+of seeds, `data.rank_seed_stride` generator steps long, default 1,000,003.
+Training fails at start-up in three cases: the run would leave its range, the
+training ranges would reach the seeds of the validation generator, or the
+ranges would wrap at 2**31. The error message names the limit. Few ranks take
+more steps each, so a long run on few ranks may need a larger
+`data.rank_seed_stride`. Changing it changes the data stream of every rank.
+Reducing epochs or samples per epoch is the alternative. On resume only the
+remaining epochs are budgeted.
 
 ## Resuming training
 
