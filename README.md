@@ -732,6 +732,11 @@ GPUS=4 bash code/scripts/local_run.sh
 CUDA_VISIBLE_DEVICES=4,5,6,7 GPUS=4 bash code/scripts/local_run.sh
 ```
 
+- **Several nodes**: run `local_run.sh` once per node with `NNODES`, `NODE_RANK`
+  and `MASTER_ADDR` (defaulting to the SLURM variables inside an allocation).
+  Multi-node launch, superbatched color data generation and SyncBatchNorm are
+  described in [TRAINING.md](TRAINING.md#large-training-runs-superbatching-syncbatchnorm-multi-node).
+
 ### Public configuration (`conf/config_public.yaml`)
 
 External users should only edit `conf/config_public.yaml`.
