@@ -775,8 +775,11 @@ def _load_model(cfg, dist):
         _record_resolved_model_path(cfg, safetensors_path)
         return model
 
-    # Direct file path override (for named pretrained models without epoch numbers)
-    model_checkpoint_file = getattr(cfg, 'model_checkpoint_file', None)
+    # Direct file path override (for named pretrained models without epoch numbers).
+    # PREDECODER_MODEL_CHECKPOINT_FILE takes precedence over cfg.model_checkpoint_file.
+    model_checkpoint_file = os.environ.get("PREDECODER_MODEL_CHECKPOINT_FILE", "").strip()
+    if not model_checkpoint_file:
+        model_checkpoint_file = getattr(cfg, 'model_checkpoint_file', None)
     if model_checkpoint_file:
         model_checkpoint_file = _resolve_dir(str(model_checkpoint_file))
         if not os.path.exists(model_checkpoint_file):

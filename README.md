@@ -223,6 +223,9 @@ Inference note:
     PREDECODER_MODEL_CHECKPOINT_FILE=path/to/Ising-Decoder-SurfaceCode-1-Accurate.pt \
       WORKFLOW=inference bash code/scripts/local_run.sh
     ```
+    `PREDECODER_MODEL_CHECKPOINT_FILE` takes precedence over
+    `model_checkpoint_file` in the config; `PREDECODER_SAFETENSORS_CHECKPOINT`,
+    when set, takes precedence over both.
 
 ## Inference (pre-trained models)
 
