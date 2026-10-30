@@ -595,9 +595,20 @@ WORKFLOW=inference bash code/scripts/local_run.sh
 ```
 
 Ising pre-decoder followed by PyMatching — **requires a model checkpoint.**
-Point `PREDECODER_MODEL_CHECKPOINT_FILE` (or `model_checkpoint_file` in the
-config) at one of the released models, or run training under the same
-`EXPERIMENT_NAME` first:
+With a released model from Hugging Face, point
+`PREDECODER_SAFETENSORS_CHECKPOINT` at the downloaded file (its name carries
+the release version); its model and precision are read from the file metadata:
+
+```bash
+PREDECODER_STIM_SAMPLES_DIR=outputs/offline_stim_run/stim_samples \
+PREDECODER_DECODE_MODE=ising_decoding_pymatching \
+PREDECODER_SAFETENSORS_CHECKPOINT=models/ising_decoder_surface_code_1_fast_r9_v1.0.77_fp16.safetensors \
+WORKFLOW=inference bash code/scripts/local_run.sh
+```
+
+For a `.pt` checkpoint (for example one you trained), point
+`model_checkpoint_file` in the config at it instead, or run training under the
+same `EXPERIMENT_NAME` first:
 
 ```bash
 PREDECODER_STIM_SAMPLES_DIR=outputs/offline_stim_run/stim_samples \
@@ -638,7 +649,9 @@ code/scripts/offline_smoketest.sh
 
 The script defaults `EXPERIMENT_NAME=offline_stim_run` (matching the example
 paths above), generates Stim files, decodes with `pymatching_only`, and (if
-`models/Ising-Decoder-SurfaceCode-1-Fast.pt` is on disk) decodes again with
+`models/Ising-Decoder-SurfaceCode-1-Fast.pt` or a Hugging Face file matching
+`models/ising_decoder_surface_code_1_fast_r9_*_fp16.safetensors` is on disk, the
+newest version first, or `MODEL_CHECKPOINT` points at a checkpoint) decodes again with
 `ising_decoding_pymatching`. It then parses a structured
 `[Inference Summary]` JSON marker that the inference loop emits on the last
 line of its summary block. The marker is **off by default** to keep

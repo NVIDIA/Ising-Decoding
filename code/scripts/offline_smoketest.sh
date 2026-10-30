@@ -20,7 +20,19 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-offline_stim_run}"
-MODEL_CHECKPOINT="${MODEL_CHECKPOINT:-${REPO_ROOT}/models/Ising-Decoder-SurfaceCode-1-Fast.pt}"
+# Default model: the .pt checkpoint, else the newest fp16 SafeTensors file
+# distributed via Hugging Face (nvidia/Ising-Decoder-SurfaceCode-1-Fast). The
+# published file name carries the release version, so it is matched by pattern.
+if [ -z "${MODEL_CHECKPOINT:-}" ]; then
+  MODEL_CHECKPOINT="${REPO_ROOT}/models/Ising-Decoder-SurfaceCode-1-Fast.pt"
+  if [ ! -f "${MODEL_CHECKPOINT}" ]; then
+    # "|| true": with no match, ls fails and set -euo pipefail would abort the script.
+    HF_CHECKPOINT="$(ls -1 "${REPO_ROOT}"/models/ising_decoder_surface_code_1_fast_r9_*_fp16.safetensors 2>/dev/null | sort -V | tail -n 1 || true)"
+    if [ -n "${HF_CHECKPOINT}" ]; then
+      MODEL_CHECKPOINT="${HF_CHECKPOINT}"
+    fi
+  fi
+fi
 PYTHON_BIN="${PREDECODER_PYTHON:-}"
 if [ -z "${PYTHON_BIN}" ]; then
   if [ -x "${REPO_ROOT}/.venv_gpu/bin/python" ]; then
@@ -59,14 +71,24 @@ WORKFLOW=inference \
 bash code/scripts/local_run.sh
 
 if [ -f "${MODEL_CHECKPOINT}" ]; then
+  # A SafeTensors file records its model_id and precision, so it goes through
+  # PREDECODER_SAFETENSORS_CHECKPOINT; a .pt checkpoint through model_checkpoint_file.
+  SAFETENSORS_CHECKPOINT=""
+  MODEL_PARAMS=""
+  if [[ "${MODEL_CHECKPOINT}" == *.safetensors ]]; then
+    SAFETENSORS_CHECKPOINT="${MODEL_CHECKPOINT}"
+  else
+    MODEL_PARAMS="++model_checkpoint_file=${MODEL_CHECKPOINT}${MODEL_ID:+ ++model_id=${MODEL_ID}}"
+  fi
   PREDECODER_PYTHON="${PYTHON_BIN}" \
   PREDECODER_STIM_SAMPLES_DIR="${SAMPLES_DIR}" \
   PREDECODER_DECODE_MODE=ising_decoding_pymatching \
   PREDECODER_EMIT_INFERENCE_SUMMARY=1 \
+  PREDECODER_SAFETENSORS_CHECKPOINT="${SAFETENSORS_CHECKPOINT}" \
   EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
   GPUS=1 \
   WORKFLOW=inference \
-  EXTRA_PARAMS="++model_checkpoint_file=${MODEL_CHECKPOINT}${MODEL_ID:+ ++model_id=${MODEL_ID}}" \
+  EXTRA_PARAMS="${MODEL_PARAMS}" \
   bash code/scripts/local_run.sh
 else
   echo "[offline_smoketest.sh] Model not found; skipped ising_decoding_pymatching:"
