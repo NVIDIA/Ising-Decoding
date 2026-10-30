@@ -28,6 +28,7 @@ _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
     sys.path.insert(0, str(_repo_code))
 
+from export.safetensors_utils import _build_minimal_cfg, save_safetensors
 from model.factory import ModelFactory
 from training.distributed import DistributedManager
 from workflows.config_validator import apply_public_defaults_and_model, validate_public_config
@@ -98,6 +99,25 @@ class TestModelCheckpointFileEnv(unittest.TestCase):
         env = {"PREDECODER_MODEL_CHECKPOINT_FILE": str(env_path)}
         with patch.dict(os.environ, env):
             os.environ.pop("PREDECODER_SAFETENSORS_CHECKPOINT", None)  # restored by patch.dict
+            model = _load_model(self.cfg, self.dist)
+        self._assert_weights_equal(model, expected)
+
+    def test_safetensors_env_var_overrides_both(self):
+        torch.manual_seed(1)
+        model = ModelFactory.create_model(_build_minimal_cfg(self.cfg.model_id))
+        safetensors_path = self.tmp / "from_safetensors.safetensors"
+        save_safetensors(model, str(safetensors_path), model_id=self.cfg.model_id)
+        expected = model.state_dict()
+        env_path = self.tmp / "from_env.pt"
+        cfg_path = self.tmp / "from_cfg.pt"
+        _save_random_checkpoint(self.cfg, env_path, seed=2)
+        _save_random_checkpoint(self.cfg, cfg_path, seed=3)
+        self.cfg.model_checkpoint_file = str(cfg_path)
+        env = {
+            "PREDECODER_SAFETENSORS_CHECKPOINT": str(safetensors_path),
+            "PREDECODER_MODEL_CHECKPOINT_FILE": str(env_path),
+        }
+        with patch.dict(os.environ, env):
             model = _load_model(self.cfg, self.dist)
         self._assert_weights_equal(model, expected)
 
