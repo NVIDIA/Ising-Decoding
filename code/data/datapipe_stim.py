@@ -240,6 +240,10 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             ``sha256()`` is compared against ``metadata['noise_model_sha256']``.
         strict_noise: ``True`` (default) raises on noise-fingerprint drift;
             ``False`` downgrades the failure to a :class:`UserWarning`.
+        rank, world_size: Distributed shard of the file to expose. Every rank
+            reads the same file, so each rank keeps its own contiguous block of
+            ``min(num_samples, file_shots // world_size)`` shots and no shot is
+            decoded twice. The defaults (``0``, ``1``) keep the whole file.
     """
 
     def __init__(
@@ -254,6 +258,8 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
         code_rotation='XV',
         noise_model=None,
         strict_noise: bool = True,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         self.distance = int(distance)
         self.n_rounds = max(int(n_rounds), 1)
@@ -310,8 +316,21 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             noise_model_label=noise_label,
             strict_noise=bool(strict_noise),
         )
+        # Callers pass the per-rank shot count (num_samples // world_size), and
+        # every rank opens the same file: give each rank a disjoint block.
+        world_size = max(int(world_size), 1)
+        rank = int(rank)
+        if not 0 <= rank < world_size:
+            raise ValueError(f"rank={rank} is out of range for world_size={world_size}")
+        shots_per_rank = dets_and_obs.shape[0] // world_size
         if self.requested_num_samples > 0:
-            dets_and_obs = dets_and_obs[:self.requested_num_samples]
+            shots_per_rank = min(shots_per_rank, self.requested_num_samples)
+        if world_size > 1 and shots_per_rank == 0:
+            raise ValueError(
+                f"Stim sample file {samples_path} has {dets_and_obs.shape[0]} shots, "
+                f"too few to give each of {world_size} ranks at least one shot"
+            )
+        dets_and_obs = dets_and_obs[rank * shots_per_rank:(rank + 1) * shots_per_rank]
 
         self.samples_path = samples_path
         self.metadata_path = metadata_path

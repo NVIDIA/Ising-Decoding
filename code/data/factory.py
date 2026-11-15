@@ -93,8 +93,10 @@ class DatapipeFactory:
             try:
                 import torch.distributed as dist
                 rank = dist.get_rank() if dist.is_initialized() else 0
+                world_size = dist.get_world_size() if dist.is_initialized() else 1
             except:
                 rank = 0
+                world_size = 1
 
             if rank == 0:
                 print(
@@ -121,6 +123,9 @@ class DatapipeFactory:
             if stim_samples_dir:
                 dataset_cls = QCDataPipePreDecoder_Memory_from_stim_file
                 dataset_kwargs["stim_samples_dir"] = stim_samples_dir
+                # Every rank reads the same file; shard it so ranks decode disjoint shots.
+                dataset_kwargs["rank"] = rank
+                dataset_kwargs["world_size"] = world_size
                 # PREDECODER_STIM_STRICT_NOISE=0 downgrades the noise-fingerprint
                 # mismatch from an error to a UserWarning. Default is strict.
                 strict_env = os.environ.get("PREDECODER_STIM_STRICT_NOISE", "").strip().lower()

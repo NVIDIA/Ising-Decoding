@@ -14,12 +14,14 @@
 # limitations under the License.
 """Tests for offline decoding from Stim detector-sample files."""
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pymatching
@@ -34,6 +36,7 @@ from data.datapipe_stim import (
     QCDataPipePreDecoder_Memory_from_stim_file,
     QCDataPipePreDecoder_Memory_inference,
 )
+from data.factory import DatapipeFactory
 from data.predecoder_transform import dets_to_predecoder_inputs
 from evaluation.logical_error_rate import count_logical_errors_with_errorbar
 from qec.noise_model import NoiseModel
@@ -888,6 +891,116 @@ class TestOfflineStimLER(unittest.TestCase):
             self.assertNotIn("Z", result)
             observed = float(result["X"]["logical error ratio (pymatch mean)"])
             self.assertEqual(observed, artifact.ler)
+
+
+def _distributed_ler_cfg(num_samples: int, p_error: float, basis: str):
+    return SimpleNamespace(
+        code="surface",
+        datapipe="memory",
+        distance=3,
+        n_rounds=3,
+        data=SimpleNamespace(
+            error_mode="circuit_level_surface_custom",
+            code_rotation="XV",
+        ),
+        test=SimpleNamespace(
+            num_samples=num_samples,
+            n_rounds=3,
+            p_error=p_error,
+            meas_basis_test=basis,
+            noise_model="none",
+            latency_num_samples=0,
+            th_data=0.0,
+            th_syn=0.0,
+            sampling_mode="threshold",
+            temperature=1.0,
+            dataloader={
+                "batch_size": 16,
+                "num_workers": 0,
+                "persistent_workers": False,
+            },
+        ),
+    )
+
+
+def _distributed_ler_worker(rank, world_size, init_file, root, shots, result_path):
+    torch.distributed.init_process_group(
+        backend="gloo", init_method=f"file://{init_file}", rank=rank, world_size=world_size
+    )
+    try:
+        os.environ["PREDECODER_STIM_SAMPLES_DIR"] = root
+        os.environ["PREDECODER_TORCH_COMPILE"] = "0"
+        os.environ["PREDECODER_INFERENCE_NUM_WORKERS"] = "0"
+        dist = SimpleNamespace(rank=rank, world_size=world_size, device=torch.device("cpu"))
+        results = {}
+        for decode_mode, model in (
+            ("pymatching_only", _UnusedModel()),
+            ("ising_decoding_pymatching", _ZeroCorrectionModel()),
+        ):
+            os.environ["PREDECODER_DECODE_MODE"] = decode_mode
+            results[decode_mode] = count_logical_errors_with_errorbar(
+                model, dist.device, dist, _distributed_ler_cfg(shots, 0.02, "both")
+            )
+        if rank == 0:
+            Path(result_path).write_text(json.dumps(results))
+    finally:
+        torch.distributed.destroy_process_group()
+
+
+class TestOfflineStimDistributed(unittest.TestCase):
+    """Under torchrun every rank opens the same ``.dets`` file. The LER loop
+    asks each rank for ``num_samples // world_size`` shots and all-reduces the
+    counts, so each rank must decode its own block of the file."""
+
+    def _shard(self, root: Path, num_samples: int, rank: int, world_size: int):
+        with mock.patch.dict(os.environ, {"PREDECODER_STIM_SAMPLES_DIR": str(root)}), \
+                mock.patch("torch.distributed.is_initialized", return_value=True), \
+                mock.patch("torch.distributed.get_rank", return_value=rank), \
+                mock.patch("torch.distributed.get_world_size", return_value=world_size):
+            cfg = _distributed_ler_cfg(num_samples, 0.02, "X")
+            return DatapipeFactory.create_datapipe_inference(cfg).dets_and_obs
+
+    def test_ranks_get_disjoint_blocks_of_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            full = torch.from_numpy(
+                _write_artifact(root, basis="X", shots=64, p_error=0.02).dets_and_obs
+            )
+            shards = [self._shard(root, num_samples=32, rank=r, world_size=2) for r in range(2)]
+            self.assertTrue(torch.equal(shards[0], full[:32]))
+            self.assertTrue(torch.equal(shards[1], full[32:]))
+
+    def test_file_shorter_than_requested_is_split_across_ranks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            full = torch.from_numpy(
+                _write_artifact(root, basis="X", shots=10, p_error=0.02).dets_and_obs
+            )
+            shards = [self._shard(root, num_samples=1000, rank=r, world_size=2) for r in range(2)]
+            self.assertTrue(torch.equal(torch.cat(shards), full))
+
+    def test_two_rank_gloo_ler_matches_whole_file(self):
+        shots = 256
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            expected = {
+                basis: _write_artifact(root, basis=basis, shots=shots, p_error=0.02).errors
+                for basis in ("X", "Z")
+            }
+            result_path = root / "results.json"
+            torch.multiprocessing.spawn(
+                _distributed_ler_worker,
+                args=(2, str(root / "rendezvous"), str(root), shots, str(result_path)),
+                nprocs=2,
+                join=True,
+            )
+            results = json.loads(result_path.read_text())
+            for decode_mode, result in results.items():
+                for basis in ("X", "Z"):
+                    with self.subTest(decode_mode=decode_mode, basis=basis):
+                        self.assertEqual(result[basis]["num shots"], shots)
+                        self.assertEqual(result[basis]["pymatch flips"], expected[basis])
+                        self.assertEqual(result[basis]["logical errors"], expected[basis])
 
 
 if __name__ == "__main__":

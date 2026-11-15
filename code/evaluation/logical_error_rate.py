@@ -1063,6 +1063,14 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         _save_decode_array(decode_output_dir, basis, "pymatching_predictions", baseline_pred)
 
     if decode_mode == "pymatching_only":
+        num_shots = int(stim_obs.shape[0])
+        if dist.world_size > 1:
+            t_pymatch = torch.tensor(num_pymatch_errors, device=device, dtype=torch.long)
+            t_n = torch.tensor(num_shots, device=device, dtype=torch.long)
+            torch.distributed.all_reduce(t_pymatch, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(t_n, op=torch.distributed.ReduceOp.SUM)
+            num_pymatch_errors = int(t_pymatch.item())
+            num_shots = int(t_n.item())
         if dist.rank == 0:
             LAST_DEM_TIMING.update(
                 {
@@ -1076,8 +1084,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 f"[DEM Timing] build={dem_build_s:.2f}s decode={dem_decode_s:.2f}s "
                 f"(basis={basis}, decode_mode=pymatching_only)"
             )
-        return num_pymatch_errors, int(stim_obs.shape[0]
-                                      ), num_pymatch_errors, float("nan"), float("nan")
+        return num_pymatch_errors, num_shots, num_pymatch_errors, float("nan"), float("nan")
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
