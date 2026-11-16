@@ -140,7 +140,8 @@ export TORCH_CUDA=cu130
 # Inference-only (training install is a superset)
 pip install -r code/requirements_public_inference.txt
 
-# Training (includes inference deps, adjust to cu13 as appropriate)
+# Training (includes inference deps, adjust to cu13 as appropriate).
+# The cu12 file takes PyTorch from the cu128 wheel index.
 pip install -r code/requirements_public_train-cu12.txt
 
 bash code/scripts/check_python_compat.sh
