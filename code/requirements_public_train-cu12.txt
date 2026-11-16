@@ -16,6 +16,12 @@
 # Public training requirements (Torch-only pipeline).
 # Install a PyTorch build compatible with your Python/CUDA stack.
 # Target Python versions: 3.11, 3.12, 3.13
+#
+# Take PyTorch from the cu128 wheel index. Current PyPI torch releases require
+# cuda-bindings 13.x, which cuquantum-python-cu12 does not accept; with PyPI
+# alone pip falls back to torch 2.10.0, whose cuda-bindings==12.9.4 pin is too
+# old for cuda-core>=1.3 (import fails in the cuStabilizer backend).
+--extra-index-url https://download.pytorch.org/whl/cu128
 -r requirements_public_inference.txt
 cuquantum-python-cu12>=26.03.0
 tensorboard
