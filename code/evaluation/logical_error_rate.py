@@ -150,6 +150,25 @@ def _save_decode_array(output_dir: Optional[Path], basis: str, name: str, arr) -
     np.save(output_dir / f"{basis}_{name}.npy", np.asarray(arr))
 
 
+def _gather_decode_rows(dist, arr):
+    """Collect a per-rank decode-output array on rank 0, in rank order.
+
+    Every rank decodes its own block of shots and the counts are all-reduced, so
+    the saved arrays must cover all ranks' shots too. ``arr`` may be ``None`` on a
+    rank that decoded nothing. This is a collective: call it on every rank. Returns
+    the concatenated rows on rank 0 (``None`` if no rank had any) and ``None`` on
+    the other ranks.
+    """
+    if dist.world_size <= 1:
+        return arr
+    parts = [None] * dist.world_size if dist.rank == 0 else None
+    torch.distributed.gather_object(arr, parts, dst=0)
+    if dist.rank != 0:
+        return None
+    parts = [part for part in parts if part is not None]
+    return np.concatenate(parts, axis=0) if parts else None
+
+
 def _parse_quant_format(rank: int = 0) -> str:
     """Read and validate the QUANT_FORMAT environment variable.
 
@@ -1009,7 +1028,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         # Create datapipe with reduced sample count per GPU
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
-        test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
+        test_dataset = DatapipeFactory.create_datapipe_inference(
+            cfg_copy, file_shot_limit=total_samples
+        )
     finally:
         # Restore random states
         torch.set_rng_state(torch_state)
@@ -1058,11 +1079,24 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
 
     baseline_pred = np.asarray(baseline_pred, dtype=np.uint8).reshape(-1, circuit.num_observables)
     num_pymatch_errors = int((baseline_pred != stim_obs).sum())
-    if dist.rank == 0:
-        _save_decode_array(decode_output_dir, basis, "observables", stim_obs)
-        _save_decode_array(decode_output_dir, basis, "pymatching_predictions", baseline_pred)
+    if decode_output_dir is not None:
+        all_obs = _gather_decode_rows(dist, stim_obs)
+        all_baseline_pred = _gather_decode_rows(dist, baseline_pred)
+        if dist.rank == 0:
+            _save_decode_array(decode_output_dir, basis, "observables", all_obs)
+            _save_decode_array(
+                decode_output_dir, basis, "pymatching_predictions", all_baseline_pred
+            )
 
     if decode_mode == "pymatching_only":
+        num_shots = int(stim_obs.shape[0])
+        if dist.world_size > 1:
+            t_pymatch = torch.tensor(num_pymatch_errors, device=device, dtype=torch.long)
+            t_n = torch.tensor(num_shots, device=device, dtype=torch.long)
+            torch.distributed.all_reduce(t_pymatch, op=torch.distributed.ReduceOp.SUM)
+            torch.distributed.all_reduce(t_n, op=torch.distributed.ReduceOp.SUM)
+            num_pymatch_errors = int(t_pymatch.item())
+            num_shots = int(t_n.item())
         if dist.rank == 0:
             LAST_DEM_TIMING.update(
                 {
@@ -1076,8 +1110,7 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
                 f"[DEM Timing] build={dem_build_s:.2f}s decode={dem_decode_s:.2f}s "
                 f"(basis={basis}, decode_mode=pymatching_only)"
             )
-        return num_pymatch_errors, int(stim_obs.shape[0]
-                                      ), num_pymatch_errors, float("nan"), float("nan")
+        return num_pymatch_errors, num_shots, num_pymatch_errors, float("nan"), float("nan")
 
     # --- DataLoader: NO DistributedSampler - each GPU processes ALL of its own samples ---
     test_loader_kwargs = dict(cfg.test.dataloader)
@@ -1381,8 +1414,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
     ) / stim_dets.size if stim_dets.size > 0 else 0.0
     floor_time_per_round = None
     detector_shape = None
-    final_prediction_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
-    residual_rows = [] if dist.rank == 0 and decode_output_dir is not None else None
+    # Collected on every rank; gathered on rank 0 in rank order before saving.
+    final_prediction_rows = [] if decode_output_dir is not None else None
+    residual_rows = [] if decode_output_dir is not None else None
 
     t_start = time.perf_counter()
     t_model_time = 0.0
@@ -1576,21 +1610,30 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         total_samples = int(t_n.item())
         num_pymatch_errors = int(t_pymatch.item())
 
-    if dist.rank == 0:
-        if final_prediction_rows:
-            _save_decode_array(
-                decode_output_dir,
-                basis,
-                "ising_decoding_pymatching_predictions",
-                np.concatenate(final_prediction_rows, axis=0),
-            )
-        if residual_rows:
-            _save_decode_array(
-                decode_output_dir,
-                basis,
-                "predecoder_residual_detectors",
-                np.concatenate(residual_rows, axis=0),
-            )
+    if decode_output_dir is not None:
+        all_final_predictions = _gather_decode_rows(
+            dist,
+            np.concatenate(final_prediction_rows, axis=0) if final_prediction_rows else None,
+        )
+        all_residuals = _gather_decode_rows(
+            dist,
+            np.concatenate(residual_rows, axis=0) if residual_rows else None,
+        )
+        if dist.rank == 0:
+            if all_final_predictions is not None:
+                _save_decode_array(
+                    decode_output_dir,
+                    basis,
+                    "ising_decoding_pymatching_predictions",
+                    all_final_predictions,
+                )
+            if all_residuals is not None:
+                _save_decode_array(
+                    decode_output_dir,
+                    basis,
+                    "predecoder_residual_detectors",
+                    all_residuals,
+                )
 
     # Latency: single-shot (batch_size=1, matcher.decode) on a small subset on rank 0 only,
     # timed after the main loop for a clean CPU state.
@@ -1700,7 +1743,9 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         from copy import deepcopy
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
-        test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
+        test_dataset = DatapipeFactory.create_datapipe_inference(
+            cfg_copy, file_shot_limit=total_samples
+        )
 
         if rank == 0:
             print(f"[Syndrome Density] Each GPU processes {len(test_dataset)} samples")

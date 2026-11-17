@@ -645,6 +645,20 @@ With that set, `pymatching_only` writes:
 The directory is created lazily on the first write, so it is safe to point at
 a path that does not yet exist.
 
+**Multiple GPUs.** `local_run.sh` uses every visible GPU, and every rank
+reads the same files. Each rank decodes its own contiguous block of shots, in
+rank order, and the reported counts and LER are summed over all ranks:
+
+* A positive `test.num_samples` limits the total number of shots per file.
+  Each rank decodes an equal share of the selected prefix, with one extra
+  shot on each of the first ranks when the total is uneven.
+* The selected prefix must have at least one shot per rank. Use fewer GPUs
+  for smaller samples.
+
+The `PREDECODER_DECODE_OUTPUT_DIR` arrays are gathered on rank 0 in rank
+order before they are written, so each array has one row per decoded shot, in
+file order, and covers the same shots as the reported counts.
+
 #### Smoke script
 
 ```bash
@@ -1195,7 +1209,7 @@ Key scalars (as shown in TensorBoard):
 - **`Metrics/LER`**: Logical Error Rate on the evaluation target (computed during training-time evaluation). Lower is better.
   - Averaging: computed over `cfg.test.num_samples` Monte Carlo shots **per basis** (X and Z).
   - Default: `cfg.test.num_samples = 262144` (hardcoded for the current public release).
-  - Distributed: each rank uses `cfg.test.num_samples // world_size` shots per basis (any remainder is dropped).
+  - Distributed on generated samples: each rank uses `cfg.test.num_samples // world_size` shots per basis (any remainder is dropped).
 - **`Metrics/LER_Reduction_Factor`**: Ratio of post-predecoder LER to baseline LER (a “relative improvement” factor). `>1` means improvement. If both are 0, we log `1.0`.
   - Averaging: derived from the same LER evaluation run (same shot count as `Metrics/LER`).
 - **`Metrics/PyMatching_Speedup`**: Average PyMatching speedup from the pre-decoder: `latency_baseline / latency_after`. `>1` means faster decoding of PyMatching after pre-decoding.

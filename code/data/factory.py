@@ -41,10 +41,10 @@ class DatapipeFactory:
             raise ValueError("Invalid datapipe code")
 
     @staticmethod
-    def create_datapipe_inference(cfg):
+    def create_datapipe_inference(cfg, *, file_shot_limit=None):
         """Create datapipe for inference using Stim."""
         if cfg.code == "surface":
-            return DatapipeFactory._create_surface_datapipe_inference(cfg)
+            return DatapipeFactory._create_surface_datapipe_inference(cfg, file_shot_limit)
         elif cfg.code == "color":
             return DatapipeFactory._create_color_datapipe_inference(cfg)
         else:
@@ -74,7 +74,7 @@ class DatapipeFactory:
             raise ValueError(f"Datapipe not implemented: {cfg.datapipe}")
 
     @staticmethod
-    def _create_surface_datapipe_inference(cfg):
+    def _create_surface_datapipe_inference(cfg, file_shot_limit=None):
         """
         Datapipe for inference using Stim.
         """
@@ -93,8 +93,10 @@ class DatapipeFactory:
             try:
                 import torch.distributed as dist
                 rank = dist.get_rank() if dist.is_initialized() else 0
+                world_size = dist.get_world_size() if dist.is_initialized() else 1
             except:
                 rank = 0
+                world_size = 1
 
             if rank == 0:
                 print(
@@ -117,10 +119,16 @@ class DatapipeFactory:
                 # shapes because they only depend on (distance, n_rounds).
                 measure_basis = "X"
 
+            num_samples = cfg.test.num_samples
             dataset_kwargs: dict = {}
             if stim_samples_dir:
+                if file_shot_limit is not None:
+                    num_samples = file_shot_limit
                 dataset_cls = QCDataPipePreDecoder_Memory_from_stim_file
                 dataset_kwargs["stim_samples_dir"] = stim_samples_dir
+                # Every rank reads the same file; shard it so ranks decode disjoint shots.
+                dataset_kwargs["rank"] = rank
+                dataset_kwargs["world_size"] = world_size
                 # PREDECODER_STIM_STRICT_NOISE=0 downgrades the noise-fingerprint
                 # mismatch from an error to a UserWarning. Default is strict.
                 strict_env = os.environ.get("PREDECODER_STIM_STRICT_NOISE", "").strip().lower()
@@ -132,7 +140,7 @@ class DatapipeFactory:
             test_dataset = dataset_cls(
                 distance=cfg.distance,
                 n_rounds=cfg.n_rounds,
-                num_samples=cfg.test.num_samples,
+                num_samples=num_samples,
                 error_mode=error_mode_value,
                 p_error=cfg.test.p_error,
                 measure_basis=measure_basis,

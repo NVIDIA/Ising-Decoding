@@ -214,6 +214,31 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             )
 
 
+def _stim_file_shard(
+    *, file_shots: int, requested_total: int, rank: int, world_size: int, samples_path
+) -> tuple:
+    """Return the ``[start, stop)`` rows of a Stim sample file that ``rank`` decodes.
+
+    Apply the global shot limit before splitting the selected prefix of the file.
+    The first ranks take one extra row when the total is uneven.
+    """
+    world_size = max(int(world_size), 1)
+    rank = int(rank)
+    if not 0 <= rank < world_size:
+        raise ValueError(f"rank={rank} is out of range for world_size={world_size}")
+    total = min(requested_total, file_shots) if requested_total > 0 else file_shots
+    if world_size > 1 and total < world_size:
+        raise ValueError(
+            f"Stim sample file {samples_path} has {total} selected shots, "
+            f"too few to give each of {world_size} ranks at least one shot"
+        )
+    if rank == 0 and world_size > 1 and total < file_shots:
+        print(f"[Stim samples] Decoding {total} of {file_shots} shots in {samples_path}")
+    count, remainder = divmod(total, world_size)
+    start = rank * count + min(rank, remainder)
+    return start, start + count + int(rank < remainder)
+
+
 class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
     """
     Datapipe for offline inference from Stim detector-sample files.
@@ -240,6 +265,10 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             ``sha256()`` is compared against ``metadata['noise_model_sha256']``.
         strict_noise: ``True`` (default) raises on noise-fingerprint drift;
             ``False`` downgrades the failure to a :class:`UserWarning`.
+        rank, world_size: Distributed shard of the file to expose. Every rank
+            reads the same file and keeps its own contiguous block, in rank
+            order. A positive ``num_samples`` limits the total across all ranks.
+            The first ranks receive one extra row when the split is uneven.
     """
 
     def __init__(
@@ -254,6 +283,8 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
         code_rotation='XV',
         noise_model=None,
         strict_noise: bool = True,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         self.distance = int(distance)
         self.n_rounds = max(int(n_rounds), 1)
@@ -310,8 +341,14 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             noise_model_label=noise_label,
             strict_noise=bool(strict_noise),
         )
-        if self.requested_num_samples > 0:
-            dets_and_obs = dets_and_obs[:self.requested_num_samples]
+        start, stop = _stim_file_shard(
+            file_shots=int(dets_and_obs.shape[0]),
+            requested_total=self.requested_num_samples,
+            rank=rank,
+            world_size=world_size,
+            samples_path=samples_path,
+        )
+        dets_and_obs = dets_and_obs[start:stop]
 
         self.samples_path = samples_path
         self.metadata_path = metadata_path
