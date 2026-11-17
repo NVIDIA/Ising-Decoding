@@ -215,36 +215,28 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
 
 
 def _stim_file_shard(
-    *, file_shots: int, requested_per_rank: int, rank: int, world_size: int, samples_path
+    *, file_shots: int, requested_total: int, rank: int, world_size: int, samples_path
 ) -> tuple:
     """Return the ``[start, stop)`` rows of a Stim sample file that ``rank`` decodes.
 
-    Callers pass the per-rank shot count (``num_samples // world_size``) and every
-    rank opens the same file, so each rank gets a disjoint contiguous block, in rank
-    order. If the request does not cap the block, the whole file is split and the
-    first ``file_shots % world_size`` ranks take one extra shot; otherwise every rank
-    takes ``requested_per_rank`` shots from the front of the file. The checks only
-    depend on values that are equal on every rank, so all ranks raise together.
+    Apply the global shot limit before splitting the selected prefix of the file.
+    The first ranks take one extra row when the total is uneven.
     """
     world_size = max(int(world_size), 1)
     rank = int(rank)
     if not 0 <= rank < world_size:
         raise ValueError(f"rank={rank} is out of range for world_size={world_size}")
-    if world_size > 1 and file_shots < world_size:
+    total = min(requested_total, file_shots) if requested_total > 0 else file_shots
+    if world_size > 1 and total < world_size:
         raise ValueError(
-            f"Stim sample file {samples_path} has {file_shots} shots, "
+            f"Stim sample file {samples_path} has {total} selected shots, "
             f"too few to give each of {world_size} ranks at least one shot"
         )
-    base, remainder = divmod(file_shots, world_size)
-    if requested_per_rank <= 0 or requested_per_rank >= base:
-        start = rank * base + min(rank, remainder)
-        return start, start + base + (1 if rank < remainder else 0)
-    if rank == 0 and world_size > 1:
-        print(
-            f"[Stim samples] Decoding {requested_per_rank * world_size} of {file_shots} "
-            f"shots in {samples_path} ({requested_per_rank} per rank on {world_size} ranks)"
-        )
-    return rank * requested_per_rank, (rank + 1) * requested_per_rank
+    if rank == 0 and world_size > 1 and total < file_shots:
+        print(f"[Stim samples] Decoding {total} of {file_shots} shots in {samples_path}")
+    count, remainder = divmod(total, world_size)
+    start = rank * count + min(rank, remainder)
+    return start, start + count + int(rank < remainder)
 
 
 class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
@@ -275,12 +267,8 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             ``False`` downgrades the failure to a :class:`UserWarning`.
         rank, world_size: Distributed shard of the file to expose. Every rank
             reads the same file and keeps its own contiguous block, in rank
-            order, so no shot is decoded twice. ``num_samples`` is the per-rank
-            count. When it is at least ``file_shots // world_size`` (or not
-            positive), the whole file is split: the first
-            ``file_shots % world_size`` ranks take one extra shot. Otherwise each
-            rank takes ``num_samples`` shots from the front of the file. The
-            defaults (``0``, ``1``) keep the previous single-process behaviour.
+            order. A positive ``num_samples`` limits the total across all ranks.
+            The first ranks receive one extra row when the split is uneven.
     """
 
     def __init__(
@@ -355,7 +343,7 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
         )
         start, stop = _stim_file_shard(
             file_shots=int(dets_and_obs.shape[0]),
-            requested_per_rank=self.requested_num_samples,
+            requested_total=self.requested_num_samples,
             rank=rank,
             world_size=world_size,
             samples_path=samples_path,

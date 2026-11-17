@@ -649,16 +649,11 @@ a path that does not yet exist.
 reads the same files. Each rank decodes its own contiguous block of shots, in
 rank order, and the reported counts and LER are summed over all ranks:
 
-* If `test.num_samples // world_size` is at least `file shots // world_size`
-  (for example when `test.num_samples` is the file size or larger), the whole
-  file is decoded. The remainder `file shots % world_size` goes to the first
-  ranks, one extra shot each. When `test.num_samples` is at least the file
-  size, the result therefore matches a single-GPU run on the same file.
-* Otherwise each rank decodes `test.num_samples // world_size` shots from the
-  front of the file, and rank 0 prints how many of the file's shots are
-  decoded.
-* A file with fewer shots than ranks is rejected; run with fewer GPUs
-  (`GPUS=1`).
+* A positive `test.num_samples` limits the total number of shots per file.
+  Each rank decodes an equal share of the selected prefix, with one extra
+  shot on each of the first ranks when the total is uneven.
+* The selected prefix must have at least one shot per rank. Use fewer GPUs
+  for smaller samples.
 
 The `PREDECODER_DECODE_OUTPUT_DIR` arrays are gathered on rank 0 in rank
 order before they are written, so each array has one row per decoded shot, in
@@ -1214,7 +1209,7 @@ Key scalars (as shown in TensorBoard):
 - **`Metrics/LER`**: Logical Error Rate on the evaluation target (computed during training-time evaluation). Lower is better.
   - Averaging: computed over `cfg.test.num_samples` Monte Carlo shots **per basis** (X and Z).
   - Default: `cfg.test.num_samples = 262144` (hardcoded for the current public release).
-  - Distributed: each rank uses `cfg.test.num_samples // world_size` shots per basis (any remainder is dropped).
+  - Distributed on generated samples: each rank uses `cfg.test.num_samples // world_size` shots per basis (any remainder is dropped).
 - **`Metrics/LER_Reduction_Factor`**: Ratio of post-predecoder LER to baseline LER (a “relative improvement” factor). `>1` means improvement. If both are 0, we log `1.0`.
   - Averaging: derived from the same LER evaluation run (same shot count as `Metrics/LER`).
 - **`Metrics/PyMatching_Speedup`**: Average PyMatching speedup from the pre-decoder: `latency_baseline / latency_after`. `>1` means faster decoding of PyMatching after pre-decoding.

@@ -920,7 +920,7 @@ def _distributed_ler_worker(rank, world_size, init_file, root, shots, result_pat
 
 class TestOfflineStimDistributed(unittest.TestCase):
     """Under torchrun every rank opens the same ``.dets`` file. The LER loop
-    asks each rank for ``num_samples // world_size`` shots and all-reduces the
+    splits the requested shots across ranks and all-reduces the
     counts, so each rank must decode its own block of the file."""
 
     def _shard(self, root: Path, num_samples: int, rank: int, world_size: int):
@@ -937,7 +937,7 @@ class TestOfflineStimDistributed(unittest.TestCase):
             full = torch.from_numpy(
                 _write_artifact(root, basis="X", shots=64, p_error=0.02).dets_and_obs
             )
-            shards = [self._shard(root, num_samples=32, rank=r, world_size=2) for r in range(2)]
+            shards = [self._shard(root, num_samples=64, rank=r, world_size=2) for r in range(2)]
             self.assertTrue(torch.equal(shards[0], full[:32]))
             self.assertTrue(torch.equal(shards[1], full[32:]))
 
@@ -957,7 +957,7 @@ class TestOfflineStimDistributed(unittest.TestCase):
             full = torch.from_numpy(
                 _write_artifact(root, basis="X", shots=10, p_error=0.02).dets_and_obs
             )
-            for num_samples in (10 // 4, 1000):
+            for num_samples in (10, 1000):
                 with self.subTest(num_samples=num_samples):
                     shards = [
                         self._shard(root, num_samples=num_samples, rank=r, world_size=4)
@@ -966,14 +966,21 @@ class TestOfflineStimDistributed(unittest.TestCase):
                     self.assertEqual([len(shard) for shard in shards], [3, 3, 2, 2])
                     self.assertTrue(torch.equal(torch.cat(shards), full))
 
-    def test_capped_request_takes_equal_blocks_from_the_front(self):
+    def test_global_cap_is_applied_before_sharding(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             full = torch.from_numpy(
-                _write_artifact(root, basis="X", shots=64, p_error=0.02).dets_and_obs
+                _write_artifact(root, basis="X", shots=11, p_error=0.02).dets_and_obs
             )
-            shards = [self._shard(root, num_samples=8, rank=r, world_size=2) for r in range(2)]
-            self.assertTrue(torch.equal(torch.cat(shards), full[:16]))
+            for cap, sizes in ((10, [5, 5]), (9, [5, 4]), (0, [6, 5])):
+                with self.subTest(cap=cap):
+                    shards = [
+                        self._shard(root, num_samples=cap, rank=r, world_size=2) for r in range(2)
+                    ]
+                    self.assertEqual([len(shard) for shard in shards], sizes)
+                    self.assertTrue(torch.equal(torch.cat(shards), full[:sum(sizes)]))
+            with self.assertRaisesRegex(ValueError, "too few"):
+                self._shard(root, num_samples=1, rank=0, world_size=2)
 
     def test_rank_out_of_range_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

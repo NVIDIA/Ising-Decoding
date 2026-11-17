@@ -1028,7 +1028,9 @@ def run_inference_and_decode_pre_decoder_memory(model, device, dist, cfg) -> dic
         # Create datapipe with reduced sample count per GPU
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
-        test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
+        test_dataset = DatapipeFactory.create_datapipe_inference(
+            cfg_copy, file_shot_limit=total_samples
+        )
     finally:
         # Restore random states
         torch.set_rng_state(torch_state)
@@ -1741,7 +1743,9 @@ def compute_syndrome_density_reduction(model, device, dist, cfg) -> dict:
         from copy import deepcopy
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
-        test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
+        test_dataset = DatapipeFactory.create_datapipe_inference(
+            cfg_copy, file_shot_limit=total_samples
+        )
 
         if rank == 0:
             print(f"[Syndrome Density] Each GPU processes {len(test_dataset)} samples")

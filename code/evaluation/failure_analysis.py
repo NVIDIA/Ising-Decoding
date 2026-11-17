@@ -932,7 +932,9 @@ def decoder_ablation_study(model, device, dist, cfg):
         cfg_copy = deepcopy(cfg)
         cfg_copy.test.num_samples = samples_per_gpu
         cfg_copy.test.meas_basis_test = basis
-        test_dataset = DatapipeFactory.create_datapipe_inference(cfg_copy)
+        test_dataset = DatapipeFactory.create_datapipe_inference(
+            cfg_copy, file_shot_limit=total_samples
+        )
     finally:
         torch.set_rng_state(torch_state)
         if cuda_state is not None:
