@@ -645,6 +645,25 @@ With that set, `pymatching_only` writes:
 The directory is created lazily on the first write, so it is safe to point at
 a path that does not yet exist.
 
+**Multiple GPUs.** `local_run.sh` uses every visible GPU, and every rank
+reads the same files. Each rank decodes its own contiguous block of shots, in
+rank order, and the reported counts and LER are summed over all ranks:
+
+* If `test.num_samples // world_size` is at least `file shots // world_size`
+  (for example when `test.num_samples` is the file size or larger), the whole
+  file is decoded. The remainder `file shots % world_size` goes to the first
+  ranks, one extra shot each. When `test.num_samples` is at least the file
+  size, the result therefore matches a single-GPU run on the same file.
+* Otherwise each rank decodes `test.num_samples // world_size` shots from the
+  front of the file, and rank 0 prints how many of the file's shots are
+  decoded.
+* A file with fewer shots than ranks is rejected; run with fewer GPUs
+  (`GPUS=1`).
+
+The `PREDECODER_DECODE_OUTPUT_DIR` arrays are gathered on rank 0 in rank
+order before they are written, so each array has one row per decoded shot, in
+file order, and covers the same shots as the reported counts.
+
 #### Smoke script
 
 ```bash

@@ -772,36 +772,37 @@ class TestStimSampleFileContract(unittest.TestCase):
                     self.assertTrue(torch.all(train_x[:, 2] == 0))
 
 
-class TestOfflineStimLER(unittest.TestCase):
-
-    def _base_cfg(self, num_samples: int):
-        return SimpleNamespace(
-            code="surface",
-            datapipe="memory",
-            distance=3,
+def _base_cfg(num_samples: int, p_error: float = 0.003, meas_basis_test: str = "both"):
+    return SimpleNamespace(
+        code="surface",
+        datapipe="memory",
+        distance=3,
+        n_rounds=3,
+        data=SimpleNamespace(
+            error_mode="circuit_level_surface_custom",
+            code_rotation="XV",
+        ),
+        test=SimpleNamespace(
+            num_samples=num_samples,
             n_rounds=3,
-            data=SimpleNamespace(
-                error_mode="circuit_level_surface_custom",
-                code_rotation="XV",
-            ),
-            test=SimpleNamespace(
-                num_samples=num_samples,
-                n_rounds=3,
-                p_error=0.003,
-                meas_basis_test="both",
-                noise_model="none",
-                latency_num_samples=0,
-                th_data=0.0,
-                th_syn=0.0,
-                sampling_mode="threshold",
-                temperature=1.0,
-                dataloader={
-                    "batch_size": 16,
-                    "num_workers": 0,
-                    "persistent_workers": False,
-                },
-            ),
-        )
+            p_error=p_error,
+            meas_basis_test=meas_basis_test,
+            noise_model="none",
+            latency_num_samples=0,
+            th_data=0.0,
+            th_syn=0.0,
+            sampling_mode="threshold",
+            temperature=1.0,
+            dataloader={
+                "batch_size": 16,
+                "num_workers": 0,
+                "persistent_workers": False,
+            },
+        ),
+    )
+
+
+class TestOfflineStimLER(unittest.TestCase):
 
     def _run_file_ler(self, root: Path, *, decode_mode: str, model: nn.Module, cfg):
         old_env = {
@@ -834,7 +835,7 @@ class TestOfflineStimLER(unittest.TestCase):
                 root,
                 decode_mode="pymatching_only",
                 model=_UnusedModel(),
-                cfg=self._base_cfg(96),
+                cfg=_base_cfg(96),
             )
 
             for basis in ("X", "Z"):
@@ -858,7 +859,7 @@ class TestOfflineStimLER(unittest.TestCase):
                 root,
                 decode_mode="ising_decoding_pymatching",
                 model=_ZeroCorrectionModel(),
-                cfg=self._base_cfg(32),
+                cfg=_base_cfg(32),
             )
 
             for basis in ("X", "Z"):
@@ -877,8 +878,7 @@ class TestOfflineStimLER(unittest.TestCase):
             root = Path(tmp)
             artifact = _write_artifact(root, basis="X", shots=64)
 
-            cfg = self._base_cfg(64)
-            cfg.test.meas_basis_test = "X"
+            cfg = _base_cfg(64, meas_basis_test="X")
 
             result = self._run_file_ler(
                 root,
@@ -891,36 +891,6 @@ class TestOfflineStimLER(unittest.TestCase):
             self.assertNotIn("Z", result)
             observed = float(result["X"]["logical error ratio (pymatch mean)"])
             self.assertEqual(observed, artifact.ler)
-
-
-def _distributed_ler_cfg(num_samples: int, p_error: float, basis: str):
-    return SimpleNamespace(
-        code="surface",
-        datapipe="memory",
-        distance=3,
-        n_rounds=3,
-        data=SimpleNamespace(
-            error_mode="circuit_level_surface_custom",
-            code_rotation="XV",
-        ),
-        test=SimpleNamespace(
-            num_samples=num_samples,
-            n_rounds=3,
-            p_error=p_error,
-            meas_basis_test=basis,
-            noise_model="none",
-            latency_num_samples=0,
-            th_data=0.0,
-            th_syn=0.0,
-            sampling_mode="threshold",
-            temperature=1.0,
-            dataloader={
-                "batch_size": 16,
-                "num_workers": 0,
-                "persistent_workers": False,
-            },
-        ),
-    )
 
 
 def _distributed_ler_worker(rank, world_size, init_file, root, shots, result_path):
@@ -938,8 +908,9 @@ def _distributed_ler_worker(rank, world_size, init_file, root, shots, result_pat
             ("ising_decoding_pymatching", _ZeroCorrectionModel()),
         ):
             os.environ["PREDECODER_DECODE_MODE"] = decode_mode
+            os.environ["PREDECODER_DECODE_OUTPUT_DIR"] = str(Path(root) / "out" / decode_mode)
             results[decode_mode] = count_logical_errors_with_errorbar(
-                model, dist.device, dist, _distributed_ler_cfg(shots, 0.02, "both")
+                model, dist.device, dist, _base_cfg(shots, p_error=0.02)
             )
         if rank == 0:
             Path(result_path).write_text(json.dumps(results))
@@ -957,7 +928,7 @@ class TestOfflineStimDistributed(unittest.TestCase):
                 mock.patch("torch.distributed.is_initialized", return_value=True), \
                 mock.patch("torch.distributed.get_rank", return_value=rank), \
                 mock.patch("torch.distributed.get_world_size", return_value=world_size):
-            cfg = _distributed_ler_cfg(num_samples, 0.02, "X")
+            cfg = _base_cfg(num_samples, p_error=0.02, meas_basis_test="X")
             return DatapipeFactory.create_datapipe_inference(cfg).dets_and_obs
 
     def test_ranks_get_disjoint_blocks_of_the_file(self):
@@ -979,14 +950,78 @@ class TestOfflineStimDistributed(unittest.TestCase):
             shards = [self._shard(root, num_samples=1000, rank=r, world_size=2) for r in range(2)]
             self.assertTrue(torch.equal(torch.cat(shards), full))
 
-    def test_two_rank_gloo_ler_matches_whole_file(self):
-        shots = 256
+    def test_remainder_shots_go_to_the_first_ranks(self):
+        """10 shots on 4 ranks: 3, 3, 2, 2 in file order, nothing dropped."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            expected = {
-                basis: _write_artifact(root, basis=basis, shots=shots, p_error=0.02).errors
+            full = torch.from_numpy(
+                _write_artifact(root, basis="X", shots=10, p_error=0.02).dets_and_obs
+            )
+            for num_samples in (10 // 4, 1000):
+                with self.subTest(num_samples=num_samples):
+                    shards = [
+                        self._shard(root, num_samples=num_samples, rank=r, world_size=4)
+                        for r in range(4)
+                    ]
+                    self.assertEqual([len(shard) for shard in shards], [3, 3, 2, 2])
+                    self.assertTrue(torch.equal(torch.cat(shards), full))
+
+    def test_capped_request_takes_equal_blocks_from_the_front(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            full = torch.from_numpy(
+                _write_artifact(root, basis="X", shots=64, p_error=0.02).dets_and_obs
+            )
+            shards = [self._shard(root, num_samples=8, rank=r, world_size=2) for r in range(2)]
+            self.assertTrue(torch.equal(torch.cat(shards), full[:16]))
+
+    def test_rank_out_of_range_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_artifact(root, basis="X", shots=16, p_error=0.02)
+            for rank in (2, -1):
+                with self.subTest(rank=rank):
+                    with self.assertRaisesRegex(ValueError, "out of range for world_size=2"):
+                        self._shard(root, num_samples=8, rank=rank, world_size=2)
+
+    def test_fewer_shots_than_ranks_raises_on_every_rank(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_artifact(root, basis="X", shots=3, p_error=0.02)
+            for rank in range(4):
+                with self.subTest(rank=rank):
+                    with self.assertRaisesRegex(ValueError, "too few to give each of 4 ranks"):
+                        self._shard(root, num_samples=1000, rank=rank, world_size=4)
+
+    def test_two_rank_gloo_ler_matches_whole_file(self):
+        """Two gloo ranks must report the same counts and write the same decode-output
+        arrays as one process on the same files. An odd shot count checks that the
+        remainder shot is decoded."""
+        shots = 257
+        decode_modes = (
+            ("pymatching_only", _UnusedModel()),
+            ("ising_decoding_pymatching", _ZeroCorrectionModel()),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifacts = {
+                basis: _write_artifact(root, basis=basis, shots=shots, p_error=0.02)
                 for basis in ("X", "Z")
             }
+            single = {}
+            for decode_mode, model in decode_modes:
+                env = {
+                    "PREDECODER_STIM_SAMPLES_DIR": str(root),
+                    "PREDECODER_TORCH_COMPILE": "0",
+                    "PREDECODER_INFERENCE_NUM_WORKERS": "0",
+                    "PREDECODER_DECODE_MODE": decode_mode,
+                    "PREDECODER_DECODE_OUTPUT_DIR": str(root / "single" / decode_mode),
+                }
+                with mock.patch.dict(os.environ, env):
+                    single[decode_mode] = count_logical_errors_with_errorbar(
+                        model, torch.device("cpu"), _DummyDist(), _base_cfg(shots, p_error=0.02)
+                    )
+
             result_path = root / "results.json"
             torch.multiprocessing.spawn(
                 _distributed_ler_worker,
@@ -995,12 +1030,36 @@ class TestOfflineStimDistributed(unittest.TestCase):
                 join=True,
             )
             results = json.loads(result_path.read_text())
+            self.assertEqual(set(results), {mode for mode, _ in decode_modes})
+            array_names = {
+                "pymatching_only": ("observables", "pymatching_predictions"),
+                "ising_decoding_pymatching":
+                    (
+                        "observables",
+                        "pymatching_predictions",
+                        "ising_decoding_pymatching_predictions",
+                        "predecoder_residual_detectors",
+                    ),
+            }
             for decode_mode, result in results.items():
                 for basis in ("X", "Z"):
                     with self.subTest(decode_mode=decode_mode, basis=basis):
+                        expected = single[decode_mode][basis]
                         self.assertEqual(result[basis]["num shots"], shots)
-                        self.assertEqual(result[basis]["pymatch flips"], expected[basis])
-                        self.assertEqual(result[basis]["logical errors"], expected[basis])
+                        for key in ("num shots", "pymatch flips", "logical errors"):
+                            self.assertEqual(result[basis][key], expected[key])
+                        for name in array_names[decode_mode]:
+                            arr = np.load(root / "out" / decode_mode / f"{basis}_{name}.npy")
+                            self.assertEqual(arr.shape[0], shots)
+                            np.testing.assert_array_equal(
+                                arr,
+                                np.load(root / "single" / decode_mode / f"{basis}_{name}.npy"),
+                            )
+                        num_obs = artifacts[basis].predictions.shape[1]
+                        np.testing.assert_array_equal(
+                            np.load(root / "out" / decode_mode / f"{basis}_observables.npy"),
+                            artifacts[basis].dets_and_obs[:, -num_obs:],
+                        )
 
 
 if __name__ == "__main__":

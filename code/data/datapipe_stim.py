@@ -214,6 +214,39 @@ class QCDataPipePreDecoder_Memory_inference(Dataset):
             )
 
 
+def _stim_file_shard(
+    *, file_shots: int, requested_per_rank: int, rank: int, world_size: int, samples_path
+) -> tuple:
+    """Return the ``[start, stop)`` rows of a Stim sample file that ``rank`` decodes.
+
+    Callers pass the per-rank shot count (``num_samples // world_size``) and every
+    rank opens the same file, so each rank gets a disjoint contiguous block, in rank
+    order. If the request does not cap the block, the whole file is split and the
+    first ``file_shots % world_size`` ranks take one extra shot; otherwise every rank
+    takes ``requested_per_rank`` shots from the front of the file. The checks only
+    depend on values that are equal on every rank, so all ranks raise together.
+    """
+    world_size = max(int(world_size), 1)
+    rank = int(rank)
+    if not 0 <= rank < world_size:
+        raise ValueError(f"rank={rank} is out of range for world_size={world_size}")
+    if world_size > 1 and file_shots < world_size:
+        raise ValueError(
+            f"Stim sample file {samples_path} has {file_shots} shots, "
+            f"too few to give each of {world_size} ranks at least one shot"
+        )
+    base, remainder = divmod(file_shots, world_size)
+    if requested_per_rank <= 0 or requested_per_rank >= base:
+        start = rank * base + min(rank, remainder)
+        return start, start + base + (1 if rank < remainder else 0)
+    if rank == 0 and world_size > 1:
+        print(
+            f"[Stim samples] Decoding {requested_per_rank * world_size} of {file_shots} "
+            f"shots in {samples_path} ({requested_per_rank} per rank on {world_size} ranks)"
+        )
+    return rank * requested_per_rank, (rank + 1) * requested_per_rank
+
+
 class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
     """
     Datapipe for offline inference from Stim detector-sample files.
@@ -241,9 +274,13 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
         strict_noise: ``True`` (default) raises on noise-fingerprint drift;
             ``False`` downgrades the failure to a :class:`UserWarning`.
         rank, world_size: Distributed shard of the file to expose. Every rank
-            reads the same file, so each rank keeps its own contiguous block of
-            ``min(num_samples, file_shots // world_size)`` shots and no shot is
-            decoded twice. The defaults (``0``, ``1``) keep the whole file.
+            reads the same file and keeps its own contiguous block, in rank
+            order, so no shot is decoded twice. ``num_samples`` is the per-rank
+            count. When it is at least ``file_shots // world_size`` (or not
+            positive), the whole file is split: the first
+            ``file_shots % world_size`` ranks take one extra shot. Otherwise each
+            rank takes ``num_samples`` shots from the front of the file. The
+            defaults (``0``, ``1``) keep the previous single-process behaviour.
     """
 
     def __init__(
@@ -316,21 +353,14 @@ class QCDataPipePreDecoder_Memory_from_stim_file(Dataset):
             noise_model_label=noise_label,
             strict_noise=bool(strict_noise),
         )
-        # Callers pass the per-rank shot count (num_samples // world_size), and
-        # every rank opens the same file: give each rank a disjoint block.
-        world_size = max(int(world_size), 1)
-        rank = int(rank)
-        if not 0 <= rank < world_size:
-            raise ValueError(f"rank={rank} is out of range for world_size={world_size}")
-        shots_per_rank = dets_and_obs.shape[0] // world_size
-        if self.requested_num_samples > 0:
-            shots_per_rank = min(shots_per_rank, self.requested_num_samples)
-        if world_size > 1 and shots_per_rank == 0:
-            raise ValueError(
-                f"Stim sample file {samples_path} has {dets_and_obs.shape[0]} shots, "
-                f"too few to give each of {world_size} ranks at least one shot"
-            )
-        dets_and_obs = dets_and_obs[rank * shots_per_rank:(rank + 1) * shots_per_rank]
+        start, stop = _stim_file_shard(
+            file_shots=int(dets_and_obs.shape[0]),
+            requested_per_rank=self.requested_num_samples,
+            rank=rank,
+            world_size=world_size,
+            samples_path=samples_path,
+        )
+        dets_and_obs = dets_and_obs[start:stop]
 
         self.samples_path = samples_path
         self.metadata_path = metadata_path
