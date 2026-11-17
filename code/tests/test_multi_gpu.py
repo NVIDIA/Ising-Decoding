@@ -19,15 +19,19 @@ Uses torch.multiprocessing.spawn to launch 2 ranks and validates:
   - NCCL process group initialization and all_reduce
   - DDP forward + backward pass with the predecoder model
   - QCDataGeneratorTorch generating data on the correct device per rank
+  - Offline decoding from Stim sample files: counts and saved per-shot arrays
+    gathered across ranks match a single-process run
 
 All classes are gated with @unittest.skipUnless(torch.cuda.device_count() >= 2).
 """
 
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _repo_code = Path(__file__).resolve().parent.parent
 if str(_repo_code) not in sys.path:
@@ -47,6 +51,10 @@ def _setup_sys_path():
     code_root = str(Path(__file__).resolve().parent.parent)
     if code_root not in sys.path:
         sys.path.insert(0, code_root)
+    # Helpers shared with test_offline_stim_decoding.py live next to this file.
+    tests_root = str(Path(__file__).resolve().parent)
+    if tests_root not in sys.path:
+        sys.path.insert(0, tests_root)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +161,70 @@ def _worker_data_generator(rank, world_size, init_file):
     dist.destroy_process_group()
 
 
+_OFFLINE_DECODE_MODES = ("pymatching_only", "ising_decoding_pymatching")
+_OFFLINE_ARRAY_NAMES = {
+    "pymatching_only": ("observables", "pymatching_predictions"),
+    "ising_decoding_pymatching":
+        (
+            "observables",
+            "pymatching_predictions",
+            "ising_decoding_pymatching_predictions",
+            "predecoder_residual_detectors",
+        ),
+}
+
+
+def _offline_decode_env(samples_dir, out_dir, decode_mode):
+    return {
+        "PREDECODER_STIM_SAMPLES_DIR": str(samples_dir),
+        "PREDECODER_DECODE_OUTPUT_DIR": str(Path(out_dir) / decode_mode),
+        "PREDECODER_DECODE_MODE": decode_mode,
+        "PREDECODER_TORCH_COMPILE": "0",
+        "PREDECODER_INFERENCE_NUM_WORKERS": "0",
+    }
+
+
+def _run_offline_decode(device, dist_info, samples_dir, out_dir, shots):
+    """Run both offline decode modes on ``device`` and return their LER results."""
+    _setup_sys_path()
+    from evaluation.logical_error_rate import count_logical_errors_with_errorbar
+    from test_offline_stim_decoding import _UnusedModel, _ZeroCorrectionModel, _base_cfg
+
+    models = {
+        "pymatching_only": _UnusedModel(),
+        "ising_decoding_pymatching": _ZeroCorrectionModel().to(device),
+    }
+    results = {}
+    for decode_mode in _OFFLINE_DECODE_MODES:
+        with mock.patch.dict(os.environ, _offline_decode_env(samples_dir, out_dir, decode_mode)):
+            results[decode_mode] = count_logical_errors_with_errorbar(
+                models[decode_mode], device, dist_info, _base_cfg(shots, p_error=0.02)
+            )
+    return results
+
+
+def _worker_offline_stim_decode(rank, world_size, init_file, samples_dir, out_dir, shots):
+    """Offline decoding on NCCL: rank 0 saves the arrays gathered from all ranks."""
+    _setup_sys_path()
+    from types import SimpleNamespace
+
+    torch.cuda.set_device(rank)
+    dist.init_process_group(
+        backend="nccl",
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        device = torch.device(f"cuda:{rank}")
+        dist_info = SimpleNamespace(rank=rank, world_size=world_size, device=device)
+        results = _run_offline_decode(device, dist_info, samples_dir, out_dir, shots)
+        if rank == 0:
+            (Path(out_dir) / "results.json").write_text(json.dumps(results))
+    finally:
+        dist.destroy_process_group()
+
+
 # ---------------------------------------------------------------------------
 # Helper: create a fresh rendezvous file path (must not exist before init)
 # ---------------------------------------------------------------------------
@@ -195,6 +267,66 @@ class TestMultiGPUDataGenerator(unittest.TestCase):
     def test_per_rank_tensors_on_correct_device(self):
         init_file = _fresh_rendezvous_file()
         mp.spawn(_worker_data_generator, args=(2, init_file), nprocs=2, join=True)
+
+
+@_require_multi_gpu
+class TestOfflineStimDecodeNCCL(unittest.TestCase):
+    """Offline decoding from Stim sample files on 2 NCCL ranks reports the same
+    counts and writes the same ``PREDECODER_DECODE_OUTPUT_DIR`` arrays as one
+    process on the same files."""
+
+    def test_counts_and_saved_arrays_match_single_process(self):
+        import numpy as np
+        from types import SimpleNamespace
+        from test_offline_stim_decoding import _write_artifact
+
+        shots = 257  # odd: the remainder shot goes to rank 0
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            samples_dir = root / "samples"
+            samples_dir.mkdir()
+            artifacts = {
+                basis: _write_artifact(samples_dir, basis=basis, shots=shots, p_error=0.02)
+                for basis in ("X", "Z")
+            }
+
+            single_dir = root / "single"
+            cpu = torch.device("cpu")
+            single = _run_offline_decode(
+                cpu, SimpleNamespace(rank=0, world_size=1, device=cpu), samples_dir, single_dir,
+                shots
+            )
+
+            multi_dir = root / "multi"
+            multi_dir.mkdir()
+            mp.spawn(
+                _worker_offline_stim_decode,
+                args=(2, _fresh_rendezvous_file(), str(samples_dir), str(multi_dir), shots),
+                nprocs=2,
+                join=True,
+            )
+            multi = json.loads((multi_dir / "results.json").read_text())
+
+            self.assertEqual(set(multi), set(_OFFLINE_DECODE_MODES))
+            for decode_mode in _OFFLINE_DECODE_MODES:
+                for basis in ("X", "Z"):
+                    with self.subTest(decode_mode=decode_mode, basis=basis):
+                        self.assertEqual(multi[decode_mode][basis]["num shots"], shots)
+                        for key in ("num shots", "pymatch flips", "logical errors"):
+                            self.assertEqual(
+                                multi[decode_mode][basis][key], single[decode_mode][basis][key]
+                            )
+                        for name in _OFFLINE_ARRAY_NAMES[decode_mode]:
+                            arr = np.load(multi_dir / decode_mode / f"{basis}_{name}.npy")
+                            self.assertEqual(arr.shape[0], shots)
+                            np.testing.assert_array_equal(
+                                arr, np.load(single_dir / decode_mode / f"{basis}_{name}.npy")
+                            )
+                        num_obs = artifacts[basis].predictions.shape[1]
+                        np.testing.assert_array_equal(
+                            np.load(multi_dir / decode_mode / f"{basis}_observables.npy"),
+                            artifacts[basis].dets_and_obs[:, -num_obs:],
+                        )
 
 
 if __name__ == "__main__":
