@@ -149,11 +149,11 @@ the learned values exactly.
 
 ## Notes
 
-- **Parameter names.** In the surface-code circuits of this repository `p_prep_Z` and
-  `p_meas_Z` are the failure probabilities of a Z-basis preparation and measurement (an X
-  flip). `cudaq_qec`'s `p25` helpers name the same parameters by the applied Pauli
-  (`p_prep_X`, `p_meas_X`). The `swap` step in the example converts between the two and is
-  specific to the surface-code circuits; without it `p25.design_map` rejects the circuit.
+- **Parameter names.** In the circuits of this repository `p_prep_Z` and `p_meas_Z` are the
+  failure probabilities of a Z-basis preparation and measurement (an X flip). `cudaq_qec`'s
+  `p25` helpers name the same parameters by the applied Pauli (`p_prep_X`, `p_meas_X`). The
+  `swap` step in the example converts between the two; without it `p25.design_map` rejects
+  the circuit.
   The `cudaq_qec.plugins.nv_qldpc.cli.learn_physical_params` command-line tool rejects a tag
   circuit built by `MemoryCircuit` from unswapped tags, and with swapped tags its `--yaml`
   output has the four prep/meas keys exchanged for this repository.
@@ -181,5 +181,4 @@ the learned values exactly.
   rate per error mechanism, which a decoder can use as a prior but which cannot be written as
   `data.noise_model`.
 - **Surface code only.** The example covers the surface-code memory circuits of this
-  repository. The color-code circuits read the four prep/meas keys the other way, so the
-  `swap` step does not carry over to them.
+  repository. It has not been run on the color-code circuits.
