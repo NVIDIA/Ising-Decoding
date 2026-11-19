@@ -16,10 +16,11 @@ documentation:
 
 ## Workflow
 
-1. Run surface-code memory experiments on the device (X and Z basis) and record the detector
-   data.
-2. Learn the 25 parameters from that data with `learn_noise(mode="parametric")`.
-3. Write them as a `data.noise_model` block.
+1. Run the surface-code memory circuits of this repository on the device, in the X and in the
+   Z basis, and record the detector data.
+2. Learn from each basis with `learn_noise(mode="parametric")`.
+3. Fit the one set of 25 parameters that agrees with both results and write it as a
+   `data.noise_model` block.
 4. Train the pre-decoder with that block (`README.md`, "Quick start").
 
 ## Requirements
@@ -43,11 +44,19 @@ that the result can be compared with the truth. For a device, replace `dets` wit
 data: a `uint8` array of shape `[shots, detectors]`, with detectors in the order of the
 circuit built by `MemoryCircuit` for the same distance, rounds, basis and orientation.
 
+The device must have run that same circuit, not only produced detectors in the same order:
+the CNOT order, the idle locations, and ancilla preparation and measurement in the X basis
+for X stabilizers and in the Z basis for Z stabilizers. The parameters are assigned by fault
+location in that circuit, so data from a different schedule still gives 25 numbers, but they
+do not describe the device.
+
 ```python
 import sys
 
 import numpy as np
 import yaml
+from scipy.optimize import lsq_linear
+from scipy.sparse import csr_matrix
 
 sys.path.insert(0, "code")  # run from the repository root
 from qec.noise_model import NoiseModel
@@ -58,8 +67,8 @@ from cudaq_qec.plugins.nv_qldpc import p25, tying
 DISTANCE, ROUNDS, ROTATION = 7, 7, "XV"  # XV/XH/ZV/ZH = O1/O2/O3/O4
 SHOTS = 262144
 
-# cudaq-qec names a prep/meas parameter by the Pauli that is applied, this
-# repository by the basis that fails; the four keys are exchanged at the boundary.
+# cudaq-qec names a prep/meas parameter by the Pauli that is applied, the surface-code
+# circuits of this repository by the basis that fails; the four keys are exchanged.
 SWAP = {"p_prep_X": "p_prep_Z", "p_prep_Z": "p_prep_X",
         "p_meas_X": "p_meas_Z", "p_meas_Z": "p_meas_X"}
 
@@ -77,13 +86,19 @@ def memory_circuit(noise, basis):
     return c.stim_circuit
 
 
+def design_matrix(design):
+    """Matrix A with mechanism rates = A @ parameters."""
+    return csr_matrix((design["mult"], design["param_idx"], design["col_ptr"]),
+                      shape=(len(design["col_ptr"]) - 1, design["n_params"])).toarray()
+
+
 # Stand-in for the device: a noise model the learning step never sees.
 rng = np.random.default_rng(7)
 true_noise = {k: float(v * rng.uniform(0.5, 2.0))
               for k, v in NoiseModel.from_single_p(0.003).to_config_dict().items()}
 
 tags = p25.tag_noise_model()
-learned, identifiable = {}, {}
+matrices, rates = [], []
 tcbp_model = None
 for basis in ("Z", "X"):
     # Any valid noise model gives the same detector error matrix H; only its structure is used.
@@ -97,21 +112,19 @@ for basis in ("Z", "X"):
     device = memory_circuit(true_noise, basis)
     dets = device.compile_detector_sampler(seed=1).sample(SHOTS).astype(np.uint8)
 
-    _, report = nv_qldpc.learn_noise(H, dets, tcbp_model, mode="parametric",
-                                     design=design, passes=16, tol=0)
-    learned[basis] = swap(p25.export_p25(report["q_hat"], design["names"]))
-    identifiable[basis] = swap(dict(zip(design["names"], report["q_identifiable"])))
+    mechanism_rates, report = nv_qldpc.learn_noise(H, dets, tcbp_model, mode="parametric",
+                                                   design=design, passes=16, tol=0)
+    matrices.append(design_matrix(design))
+    rates.append(mechanism_rates)
     print(f"{basis} memory: rank {report['design_rank']} of {report['n_params']}")
 
-# Preparation and measurement parameters come from the experiment in their own basis,
-# every other parameter from the runs that identify it on its own.
-noise_model = {}
-for k in p25.P25_PARAM_NAMES:
-    if k in SWAP:
-        runs = [k[-1]]
-    else:
-        runs = [b for b in learned if identifiable[b][k]] or list(learned)
-    noise_model[k] = float(np.mean([learned[b][k] for b in runs]))
+# Neither experiment fixes all 25 parameters; together they do. Fit the one set of parameters
+# that reproduces the mechanism rates learned in both (least squares on the relative error).
+A, r = np.vstack(matrices), np.concatenate(rates)
+print(f"both bases: rank {np.linalg.matrix_rank(A)} of {A.shape[1]}")
+fit = lsq_linear(A / r[:, None], np.ones(len(r)), bounds=(0, 1))
+fitted = swap(p25.export_p25(fit.x, design["names"]))
+noise_model = {k: fitted[k] for k in p25.P25_PARAM_NAMES}
 
 NoiseModel.from_config_dict(noise_model)  # validates the 25 keys
 with open("learned_noise_model.yaml", "w") as f:
@@ -136,21 +149,28 @@ the learned values exactly.
 
 ## Notes
 
-- **Parameter names.** In this repository `p_prep_Z` and `p_meas_Z` are the failure
-  probabilities of a Z-basis preparation and measurement (an X flip). `cudaq_qec`'s `p25`
-  helpers name the same parameters by the applied Pauli (`p_prep_X`, `p_meas_X`). The `swap`
-  step in the example converts between the two; without it `p25.design_map` rejects the
-  circuit. Because of this, the `--tag-circuit` and `--yaml` options of the
-  `cudaq_qec.plugins.nv_qldpc.cli.learn_physical_params` command-line tool write the four
-  prep/meas keys exchanged for this repository.
+- **Parameter names.** In the surface-code circuits of this repository `p_prep_Z` and
+  `p_meas_Z` are the failure probabilities of a Z-basis preparation and measurement (an X
+  flip). `cudaq_qec`'s `p25` helpers name the same parameters by the applied Pauli
+  (`p_prep_X`, `p_meas_X`). The `swap` step in the example converts between the two and is
+  specific to the surface-code circuits; without it `p25.design_map` rejects the circuit.
+  The `cudaq_qec.plugins.nv_qldpc.cli.learn_physical_params` command-line tool rejects a tag
+  circuit built by `MemoryCircuit` from unswapped tags, and with swapped tags its `--yaml`
+  output has the four prep/meas keys exchanged for this repository.
 - **Use both bases.** One memory basis fixes 23 of the 25 parameter combinations.
-  `report["q_identifiable"]` marks the parameters that one experiment does not determine on
-  their own: the four preparation and measurement parameters and two CNOT parameters, a
-  different pair in each basis. A Z-basis experiment sees `p_prep_X` and `p_meas_X` only as
-  a sum and returns the same value for both; an X-basis experiment does the same for
-  `p_prep_Z` and `p_meas_Z`. The example therefore takes each preparation and measurement
-  parameter from the experiment in its own basis, and every other parameter from the runs
-  that identify it.
+  `report["q_identifiable"]` marks the six parameters that one experiment does not determine
+  on their own. In a Z-basis experiment `p_prep_Z` and `p_meas_Z` are fixed only together
+  with `p_cnot_XI` and `p_cnot_XX`, and `p_prep_X` and `p_meas_X` only as a sum; an X-basis
+  experiment mirrors this with `p_cnot_IZ` and `p_cnot_ZZ`. The values learned from one
+  basis reproduce the detector statistics of that basis, but those six are not the device's
+  individual rates: do not use them to generate data for the other basis, and do not quote
+  them as a characterization of the device.
+- **One noise model for both bases.** Training generates data in both bases from the same
+  `data.noise_model`, so it needs one set of values that is right for both. The two
+  experiments together fix all 25 parameters, and the example fits that set to both results
+  at once. Do not combine the two results parameter by parameter (for example, preparation
+  and measurement from one run and CNOT from the other): each run's values are consistent
+  only as a set, and the mixture matches neither basis.
 - **Shots.** Accuracy improves with the number of shots. The CNOT parameters are the smallest
   and need the most data. In the example (distance 7, 262,144 shots per basis) the
   preparation, measurement and idle parameters come out within 3% of the true values and 14
@@ -161,4 +181,5 @@ the learned values exactly.
   rate per error mechanism, which a decoder can use as a prior but which cannot be written as
   `data.noise_model`.
 - **Surface code only.** The example covers the surface-code memory circuits of this
-  repository.
+  repository. The color-code circuits read the four prep/meas keys the other way, so the
+  `swap` step does not carry over to them.
