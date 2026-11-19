@@ -552,18 +552,18 @@ class Circuit:
 
         # Apply preparation errors
         if self.noise_model is not None:
-            # Use 22-parameter noise model: explicit X_ERROR and Z_ERROR
-            # For Z-basis prep (|0>): X error flips to |1>
-            # For X-basis prep (|+>): Z error flips to |->
-            if basis == 'Z' and self.noise_model.p_prep_X > 0:
+            # Basis-labeled semantics (same as the surface-code builder):
+            # - Z-basis prep (|0>): X flips to |1> -> use p_prep_Z (Z-basis prep failure)
+            # - X-basis prep (|+>): Z flips to |-> -> use p_prep_X (X-basis prep failure)
+            if basis == 'Z' and self.noise_model.p_prep_Z > 0:
                 c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_X
+                c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_Z
                 for q in qubits:
                     c += '%d ' % q
                 c += '\n'
-            elif basis == 'X' and self.noise_model.p_prep_Z > 0:
+            elif basis == 'X' and self.noise_model.p_prep_X > 0:
                 c += self.margin
-                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_prep_Z
+                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_prep_X
                 for q in qubits:
                     c += '%d ' % q
                 c += '\n'
@@ -585,10 +585,13 @@ class Circuit:
         """Add a single-qubit error (X or Z) to specified qubits."""
         # Determine error probability
         if self.noise_model is not None:
+            # Basis-labeled semantics:
+            # - Applying X corresponds to Z-basis prep failure -> p_prep_Z
+            # - Applying Z corresponds to X-basis prep failure -> p_prep_X
             if error_type == 'X':
-                error_prob = self.noise_model.p_prep_X
-            elif error_type == 'Z':
                 error_prob = self.noise_model.p_prep_Z
+            elif error_type == 'Z':
+                error_prob = self.noise_model.p_prep_X
             else:
                 error_prob = 0.
         else:
@@ -776,9 +779,10 @@ class Circuit:
 
         # Measurement error (before measurement)
         if self.noise_model is not None:
-            if self.noise_model.p_meas_X > 0:
+            # Z-basis measurement failure is modeled as a pre-measurement X flip.
+            if self.noise_model.p_meas_Z > 0:
                 c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_X
+                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_Z
                 for q in qubits:
                     c += '%d ' % q
                 c += '\n'
@@ -798,9 +802,10 @@ class Circuit:
         # Reset error (after reset, if not error-free)
         if not error_free_reset:
             if self.noise_model is not None:
-                if self.noise_model.p_prep_X > 0:
+                # Z-basis reset failure is modeled as a post-reset X flip.
+                if self.noise_model.p_prep_Z > 0:
                     c += self.margin
-                    c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_X
+                    c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_Z
                     for q in qubits:
                         c += '%d ' % q
                     c += '\n'
@@ -831,9 +836,9 @@ class Circuit:
         When NoiseModel is set, uses explicit X_ERROR/Z_ERROR with measurement probabilities.
         Otherwise uses spam_error for backwards compatibility.
         
-        Convention:
-        - Z-basis measurement: X error before measurement flips the outcome
-        - X-basis measurement: Z error before measurement flips the outcome
+        Convention (basis-labeled, same as the surface-code builder):
+        - Z-basis measurement: X error before measurement flips the outcome (p_meas_Z)
+        - X-basis measurement: Z error before measurement flips the outcome (p_meas_X)
         """
         basis = basis.upper()
 
@@ -841,15 +846,15 @@ class Circuit:
         # Apply measurement errors (before measurement)
         if self.noise_model is not None:
             # Use 22-parameter noise model: explicit X_ERROR or Z_ERROR
-            if basis == 'Z' and self.noise_model.p_meas_X > 0:
+            if basis == 'Z' and self.noise_model.p_meas_Z > 0:
                 c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_X
+                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_Z
                 for q in qubits:
                     c += '%d ' % q
                 c += '\n'
-            elif basis == 'X' and self.noise_model.p_meas_Z > 0:
+            elif basis == 'X' and self.noise_model.p_meas_X > 0:
                 c += self.margin
-                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_meas_Z
+                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_meas_X
                 for q in qubits:
                     c += '%d ' % q
                 c += '\n'
@@ -1326,8 +1331,10 @@ class MemoryCircuit(Circuit):
         if not state_prep:
             if logical_measurement and orig_noise_model is not None:
                 # Inject ONLY a "fake data-measurement SPAM" error on data qubits.
+                # - X-basis data measurement failure -> apply Z with prob p_meas_X
+                # - Z-basis data measurement failure -> apply X with prob p_meas_Z
                 if self.basis.upper() == 'X':
-                    p_fake = float(orig_noise_model.p_meas_Z)
+                    p_fake = float(orig_noise_model.p_meas_X)
                     if p_fake > 0:
                         c = self.margin + 'Z_ERROR(%.10f) ' % p_fake
                         for q in self.code.data_qubits:
@@ -1335,7 +1342,7 @@ class MemoryCircuit(Circuit):
                         c += '\n'
                         self.circuit += c
                 else:  # 'Z'
-                    p_fake = float(orig_noise_model.p_meas_X)
+                    p_fake = float(orig_noise_model.p_meas_Z)
                     if p_fake > 0:
                         c = self.margin + 'X_ERROR(%.10f) ' % p_fake
                         for q in self.code.data_qubits:
