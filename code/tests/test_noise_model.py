@@ -442,6 +442,24 @@ class TestNoiseModel(unittest.TestCase):
             )
 
 
+class TestNoiseModelSpamProbability(unittest.TestCase):
+    """NoiseModel.spam_probability maps (operation, basis) to the basis-labeled key."""
+
+    def test_returns_key_named_by_failing_basis(self):
+        nm = NoiseModel(p_prep_X=0.011, p_prep_Z=0.022, p_meas_X=0.033, p_meas_Z=0.044)
+        self.assertEqual(nm.spam_probability('prep', 'X'), 0.011)
+        self.assertEqual(nm.spam_probability('prep', 'Z'), 0.022)
+        self.assertEqual(nm.spam_probability('meas', 'X'), 0.033)
+        self.assertEqual(nm.spam_probability('meas', 'Z'), 0.044)
+
+    def test_rejects_unknown_kind_or_basis(self):
+        nm = NoiseModel(p_prep_X=0.011, p_prep_Z=0.022, p_meas_X=0.033, p_meas_Z=0.044)
+        for kind, basis in (('reset', 'Z'), ('prep', 'Y'), ('meas', 'z'), ('', '')):
+            with self.subTest(kind=kind, basis=basis):
+                with self.assertRaises(ValueError):
+                    nm.spam_probability(kind, basis)
+
+
 class TestNoiseModelUpscaling(unittest.TestCase):
     """Tests for surface-code training noise model upscaling (get_training_upscaled_noise_model)."""
 

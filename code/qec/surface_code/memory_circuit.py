@@ -403,6 +403,27 @@ class Circuit:
         self.circuit += c
         return c
 
+    def _spam_probability(self, kind, basis):
+        """Failure probability of a 'prep' or 'meas' operation in ``basis`` ('X' or 'Z')."""
+        if self.noise_model is not None:
+            return self.noise_model.spam_probability(kind, basis)
+        return self.spam_error
+
+    def _flip_error(self, qubits, basis, probability):
+        """
+        Instruction that flips a ``basis`` prep/meas outcome on ``qubits``.
+
+        A Z-basis outcome is flipped by X_ERROR, an X-basis outcome by Z_ERROR.
+        Returns '' when the probability is zero. Does not append to the circuit.
+        """
+        if not probability > 0.:
+            return ''
+        c = self.margin
+        c += ('X_ERROR(%.10f) ' if basis == 'Z' else 'Z_ERROR(%.10f) ') % probability
+        for q in qubits:
+            c += '%d ' % q
+        return c + '\n'
+
     def add_reset(self, qubits, basis='Z'):
         basis = basis.upper()
 
@@ -415,65 +436,20 @@ class Circuit:
             c += '%d ' % q
         c += '\n'
 
-        # Apply preparation errors (basis-labeled semantics):
-        # - Z-basis prep (|0>): X flips outcome -> use p_prep_Z (Z-basis prep failure)
-        # - X-basis prep (|+>): Z flips outcome -> use p_prep_X (X-basis prep failure)
-        if self.noise_model is not None:
-            # Use explicit X_ERROR/Z_ERROR with the appropriate basis-labeled probability.
-            if basis == 'Z' and self.noise_model.p_prep_Z > 0:
-                c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_Z
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
-            elif basis == 'X' and self.noise_model.p_prep_X > 0:
-                c += self.margin
-                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_prep_X
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
-        elif self.spam_error > 0.:
-            # Fallback to simple mode
-            c += self.margin
-            if basis == 'Z':
-                c += 'X_ERROR(%.10f) ' % self.spam_error
-            elif basis == 'X':
-                c += 'Z_ERROR(%.10f) ' % self.spam_error
-            for q in qubits:
-                c += '%d ' % q
-            c += '\n'
+        # Preparation error: a flip of the freshly prepared state.
+        c += self._flip_error(qubits, basis, self._spam_probability('prep', basis))
 
         self.circuit += c
         return c
 
     def add_single_error(self, qubits, error_type):
-        """Add a single-qubit error (X or Z) to specified qubits."""
-        # Determine error probability
-        if self.noise_model is not None:
-            # Basis-labeled semantics:
-            # - Applying X corresponds to Z-basis prep failure -> p_prep_Z
-            # - Applying Z corresponds to X-basis prep failure -> p_prep_X
-            if error_type == 'X':
-                error_prob = self.noise_model.p_prep_Z
-            elif error_type == 'Z':
-                error_prob = self.noise_model.p_prep_X
-            else:
-                error_prob = 0.
-        else:
-            error_prob = self.spam_error
-
-        if error_prob == 0.:
+        """Add a prep-like single-qubit error (X or Z) to specified qubits."""
+        # An X error is a Z-basis prep failure, a Z error an X-basis prep failure.
+        basis = {'X': 'Z', 'Z': 'X'}.get(error_type)
+        if basis is None:
             return ''
 
-        c = self.margin
-        if error_type == 'X':
-            c += 'X_ERROR(%.10f) ' % error_prob
-        elif error_type == 'Z':
-            c += 'Z_ERROR(%.10f) ' % error_prob
-        for q in qubits:
-            c += '%d ' % q
-        c += '\n'
-
+        c = self._flip_error(qubits, basis, self._spam_probability('prep', basis))
         self.circuit += c
         return c
 
@@ -640,23 +616,8 @@ class Circuit:
         
         When NoiseModel is set, uses explicit measurement and prep error probabilities.
         """
-        c = ''
-
         # Measurement error (before measurement)
-        if self.noise_model is not None:
-            # Z-basis measurement failure is modeled as a pre-measurement X flip.
-            if self.noise_model.p_meas_Z > 0:
-                c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_Z
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
-        elif self.spam_error > 0.:
-            c += self.margin
-            c += 'X_ERROR(%.10f) ' % self.spam_error
-            for q in qubits:
-                c += '%d ' % q
-            c += '\n'
+        c = self._flip_error(qubits, 'Z', self._spam_probability('meas', 'Z'))
 
         c += self.margin
         c += 'MR '  # Measure and reset to |0>
@@ -666,20 +627,7 @@ class Circuit:
 
         # Reset error (after reset, if not error-free)
         if not error_free_reset:
-            if self.noise_model is not None:
-                # Z-basis reset failure is modeled as a post-reset X flip.
-                if self.noise_model.p_prep_Z > 0:
-                    c += self.margin
-                    c += 'X_ERROR(%.10f) ' % self.noise_model.p_prep_Z
-                    for q in qubits:
-                        c += '%d ' % q
-                    c += '\n'
-            elif self.spam_error > 0.:
-                c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.spam_error
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
+            c += self._flip_error(qubits, 'Z', self._spam_probability('prep', 'Z'))
 
         self.circuit += c
         return c
@@ -707,34 +655,8 @@ class Circuit:
         """
         basis = basis.upper()
 
-        c = ''
-        # Apply measurement errors (before measurement)
-        if self.noise_model is not None:
-            # Basis-labeled semantics:
-            # - Z-basis measurement failure -> apply X with prob p_meas_Z
-            # - X-basis measurement failure -> apply Z with prob p_meas_X
-            if basis == 'Z' and self.noise_model.p_meas_Z > 0:
-                c += self.margin
-                c += 'X_ERROR(%.10f) ' % self.noise_model.p_meas_Z
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
-            elif basis == 'X' and self.noise_model.p_meas_X > 0:
-                c += self.margin
-                c += 'Z_ERROR(%.10f) ' % self.noise_model.p_meas_X
-                for q in qubits:
-                    c += '%d ' % q
-                c += '\n'
-        elif self.spam_error > 0.:
-            # Fallback to simple mode
-            c += self.margin
-            if basis == 'Z':
-                c += 'X_ERROR(%.10f) ' % self.spam_error
-            elif basis == 'X':
-                c += 'Z_ERROR(%.10f) ' % self.spam_error
-            for q in qubits:
-                c += '%d ' % q
-            c += '\n'
+        # Measurement error (before measurement)
+        c = self._flip_error(qubits, basis, self._spam_probability('meas', basis))
 
         c += self.margin
 
@@ -1144,22 +1066,9 @@ class MemoryCircuit(Circuit):
                 # Basis-labeled semantics:
                 # - X-basis data measurement failure -> apply Z with prob p_meas_X
                 # - Z-basis data measurement failure -> apply X with prob p_meas_Z
-                if self.basis.upper() == 'X':
-                    p_fake = float(orig_noise_model.p_meas_X)
-                    if p_fake > 0:
-                        c = self.margin + 'Z_ERROR(%.10f) ' % p_fake
-                        for q in self.code.data_qubits:
-                            c += '%d ' % q
-                        c += '\n'
-                        self.circuit += c
-                else:  # 'Z'
-                    p_fake = float(orig_noise_model.p_meas_Z)
-                    if p_fake > 0:
-                        c = self.margin + 'X_ERROR(%.10f) ' % p_fake
-                        for q in self.code.data_qubits:
-                            c += '%d ' % q
-                        c += '\n'
-                        self.circuit += c
+                data_basis = 'X' if self.basis.upper() == 'X' else 'Z'
+                p_fake = float(orig_noise_model.spam_probability('meas', data_basis))
+                self.circuit += self._flip_error(self.code.data_qubits, data_basis, p_fake)
             else:
                 if self.noise_model is not None:
                     # NoiseModel semantics (drift/decomposition): IGNORE data-idle during ancilla prep/reset.
