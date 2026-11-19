@@ -911,6 +911,7 @@ LOGICAL Z (lz):
 - `data.noise_model`: a **25-parameter circuit-level** noise model (SPAM, idles, and CNOT Pauli channels).
 - The shipped configs use a **uniform circuit-level depolarizing** mapping, where all 25 values are derived from a single physical error rate `p` (for example `p_prep_{X,Z}=2*p/3`, `p_idle_cnot_{X,Y,Z}=p/3`, and `p_cnot_*=p/15`).
 - You may edit `data.noise_model` to train on a non-uniform/custom 25-parameter model. In that case the Torch training generator refreshes the sampling probability vector from the active 25p model instead of collapsing back to the scalar uniform-depolarizing path.
+- To estimate the 25 parameters from detector data recorded on a device, using CUDA-Q QEC noise learning, see [NOISE_LEARNING.md](NOISE_LEARNING.md).
 
 #### Training noise upscaling
 
