@@ -92,11 +92,11 @@ def test_color_precompute_p_vector_uses_25p_values(basis):
         "data_prep_probability",
     ),
     [
-        ("X", "Z", 0.0044, "Z", 0.0022),
-        ("Z", "X", 0.0033, "X", 0.0011),
+        ("X", "Z", 0.0033, "Z", 0.0011),
+        ("Z", "X", 0.0044, "X", 0.0022),
     ],
 )
-def test_color_single_qubit_noise_probabilities_follow_pauli_labels(
+def test_color_single_qubit_noise_probabilities_follow_basis_labels(
     basis,
     final_error_type,
     final_probability,
@@ -157,10 +157,10 @@ def test_color_single_qubit_noise_probabilities_follow_pauli_labels(
     np.testing.assert_allclose(
         probabilities[7:11],
         [
-            noise_model.p_prep_Z,
-            noise_model.p_meas_Z,
             noise_model.p_prep_X,
             noise_model.p_meas_X,
+            noise_model.p_prep_Z,
+            noise_model.p_meas_Z,
         ],
         rtol=0.0,
         atol=1e-9,
@@ -277,8 +277,8 @@ def test_color_noiseless_context_restores_noise_state_normally():
         "final_probability",
     ),
     [
-        ("X", "Z_ERROR", "Z", 0.023, 0.047),
-        ("Z", "X_ERROR", "X", 0.019, 0.031),
+        ("X", "Z_ERROR", "Z", 0.019, 0.031),
+        ("Z", "X_ERROR", "X", 0.023, 0.047),
     ],
 )
 def test_color_stim_and_dem_data_noise_locations_match(
@@ -359,10 +359,10 @@ def test_color_stim_and_dem_data_noise_locations_match(
         sorted([data_prep_probability, final_probability])
     )
     assert sorted(stim_xcheck_error_ops) == pytest.approx(
-        sorted([noise_model.p_prep_Z, noise_model.p_meas_Z] * (n_rounds - 1))
+        sorted([noise_model.p_prep_X, noise_model.p_meas_X] * (n_rounds - 1))
     )
     assert sorted(stim_zcheck_error_ops) == pytest.approx(
-        sorted([noise_model.p_prep_X, noise_model.p_meas_X] * (n_rounds - 1))
+        sorted([noise_model.p_prep_Z, noise_model.p_meas_Z] * (n_rounds - 1))
     )
 
     layout = _extract_color_round_layout(

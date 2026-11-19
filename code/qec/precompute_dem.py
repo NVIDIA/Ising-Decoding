@@ -1651,20 +1651,23 @@ def build_single_p_marginal_color_code(
                 if len(err_type) == 2:
                     p_err[int(eidx)] = nm_cnot.get(err_type, 0.0)
                 elif len(err_type) == 1:
+                    # Basis-labeled keys, as in the surface-code path and in the
+                    # color MemoryCircuit: basis 0 is X (Z fault, p_*_X), basis 1 is
+                    # Z (X fault, p_*_Z).
                     if is_ancilla_prep:
                         prep_basis = int(prep_basis_map[(round_idx, q)])
-                        p_err[int(eidx)] = p_prep_Z_nm if prep_basis == 0 else p_prep_X_nm
+                        p_err[int(eidx)] = p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm
                     elif is_ancilla_meas:
                         meas_basis = int(meas_basis_map[(round_idx, q)])
-                        p_err[int(eidx)] = p_meas_Z_nm if meas_basis == 0 else p_meas_X_nm
+                        p_err[int(eidx)] = p_meas_X_nm if meas_basis == 0 else p_meas_Z_nm
                     elif is_data_prep:
                         prep_basis = int(prep_basis_map[(round_idx, q)])
                         if is_final_round:
                             # The final perfect round models noisy data readout with a
                             # fake Pauli error at tt=0 (see MemoryCircuit).
-                            p_err[int(eidx)] = (p_meas_Z_nm if prep_basis == 0 else p_meas_X_nm)
+                            p_err[int(eidx)] = (p_meas_X_nm if prep_basis == 0 else p_meas_Z_nm)
                         else:
-                            p_err[int(eidx)] = (p_prep_Z_nm if prep_basis == 0 else p_prep_X_nm)
+                            p_err[int(eidx)] = (p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm)
                     elif is_data_spam_idle:
                         p_err[int(eidx)] = nm_idle_spam.get(err_type, 0.0)
                     else:

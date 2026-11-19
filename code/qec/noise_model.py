@@ -171,10 +171,12 @@ class NoiseModel:
     25-Parameter Noise Model for circuit-level noise simulation.
     
     Attributes:
-        p_prep_X: X error probability after state preparation
-        p_prep_Z: Z error probability after state preparation
-        p_meas_X: X error probability before measurement
-        p_meas_Z: Z error probability before measurement
+        p_prep_X: X-basis (|+>) state-preparation failure probability (applied as Z after reset)
+        p_prep_Z: Z-basis (|0>) state-preparation failure probability (applied as X after reset)
+        p_meas_X: X-basis measurement failure probability (applied as Z before measurement)
+        p_meas_Z: Z-basis measurement failure probability (applied as X before measurement)
+                  The four keys above are named by the failing basis, not by the applied
+                  Pauli, in both the surface-code and the color-code circuits.
         p_idle_cnot_X/Y/Z: Idle Pauli errors during bulk/CNOT layers (single-qubit Pauli channel)
         p_idle_spam_X/Y/Z: Idle Pauli errors on data qubits during ancilla prep/reset window.
                            NOTE: In noise-model mode we intentionally do NOT apply data-qubit
