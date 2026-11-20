@@ -992,7 +992,8 @@ def _make_mock_trt_module(num_detectors):
             return (B_holder[0], 1 + num_detectors)
 
         def execute_v2(self, bindings):
-            pass  # output tensor remains zeroed — valid binary values
+            # Output tensor remains zeroed — valid binary values.
+            mock_trt.execute_v2_calls += 1
 
         @property
         def _engine(self):
@@ -1013,6 +1014,9 @@ def _make_mock_trt_module(num_detectors):
 
     class _Logger:
         WARNING = 1
+
+        def __init__(self, severity=None):
+            pass
 
     class _BuilderFlag:
         FP16 = 0
@@ -1060,6 +1064,7 @@ def _make_mock_trt_module(num_detectors):
             return b""
 
     mock_trt = types.ModuleType("tensorrt")
+    mock_trt.execute_v2_calls = 0
     mock_trt.Logger = _Logger
     mock_trt.Runtime = lambda logger: _Runtime()
     mock_trt.Builder = lambda logger: _Builder()
@@ -1384,7 +1389,15 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
+        cls._execute_v2_calls = getattr(cls, "_execute_v2_calls", {})
+        cls._execute_v2_calls[basis] = mock_trt.execute_v2_calls
         return result
+
+    def test_trt_path_runs_the_engine(self):
+        # A failed engine load falls back to PyTorch and still returns a
+        # well-formed result, so check that the TRT context was used.
+        self.assertGreater(self._execute_v2_calls["X"], 0)
+        self.assertGreater(self._execute_v2_calls["Z"], 0)
 
     def test_trt_path_returns_correct_sample_count(self):
         self.assertEqual(self._result_x["total_samples"], self._N)
@@ -1473,7 +1486,13 @@ class TestDecoderAblationStudyExportAndBuildTRT(unittest.TestCase):
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
+        cls._execute_v2_calls = mock_trt.execute_v2_calls
         return result
+
+    def test_export_and_build_runs_the_engine(self):
+        # A failed engine build falls back to PyTorch and still returns a
+        # well-formed result, so check that the TRT context was used.
+        self.assertGreater(self._execute_v2_calls, 0)
 
     def test_export_and_build_returns_correct_sample_count(self):
         self.assertEqual(self._result["total_samples"], self._N)
