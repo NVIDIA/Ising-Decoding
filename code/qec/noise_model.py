@@ -608,6 +608,33 @@ class NoiseModel:
         """Args (p_X,p_Y,p_Z) for PAULI_CHANNEL_1 during SPAM-window data-idle (ancilla prep/reset)."""
         return (self.p_idle_spam_X, self.p_idle_spam_Y, self.p_idle_spam_Z)
 
+    def spam_probability(self, kind: str, basis: str) -> float:
+        """
+        Failure probability of a state preparation or a measurement in a given basis.
+
+        The four prep/meas keys are named by the basis that fails, not by the Pauli
+        that is applied: a Z-basis failure is an X flip, an X-basis failure a Z flip.
+        This is the single place that maps (operation, basis) to a key.
+
+        Args:
+            kind: 'prep' (state preparation / reset) or 'meas' (measurement)
+            basis: 'X' or 'Z'
+
+        Raises:
+            ValueError: if ``kind`` or ``basis`` is not one of the values above.
+        """
+        probabilities = {
+            ('prep', 'X'): self.p_prep_X,
+            ('prep', 'Z'): self.p_prep_Z,
+            ('meas', 'X'): self.p_meas_X,
+            ('meas', 'Z'): self.p_meas_Z,
+        }
+        if (kind, basis) not in probabilities:
+            raise ValueError(
+                f"Expected kind in ('prep', 'meas') and basis in ('X', 'Z'), got {kind!r}, {basis!r}"
+            )
+        return probabilities[(kind, basis)]
+
     def to_stim_pauli_channel_2_args(self) -> Tuple[float, ...]:
         """
         Get arguments for Stim's PAULI_CHANNEL_2 instruction.

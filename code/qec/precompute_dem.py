@@ -594,10 +594,12 @@ def build_single_p_marginal(
             "IX", "IY", "IZ", "XI", "XX", "XY", "XZ", "YI", "YX", "YY", "YZ", "ZI", "ZX", "ZY", "ZZ"
         ]:
             _nm_cnot[ab] = float(getattr(nm, f"p_cnot_{ab}"))
-        p_prep_X = float(nm.p_prep_X)
-        p_prep_Z = float(nm.p_prep_Z)
-        p_meas_X = float(nm.p_meas_X)
-        p_meas_Z = float(nm.p_meas_Z)
+        # Prep/meas failure probabilities and the Pauli that causes the failure,
+        # indexed by basis code: 0 is the X basis (flipped by Z), 1 the Z basis
+        # (flipped by X).
+        p_prep = tuple(float(nm.spam_probability("prep", b)) for b in "XZ")
+        p_meas = tuple(float(nm.spam_probability("meas", b)) for b in "XZ")
+        flip_pauli = ("Z", "X")
     else:
         spam_error = float(p_scalar) * 2.0 / 3.0
         combined_meas_error = 2.0 * spam_error * (1.0 - spam_error)
@@ -651,42 +653,20 @@ def build_single_p_marginal(
                     # fault channel, consistent with get_grouped_totals' "X/Z prep
                     # and measurement are separate one-Pauli fault channels" rule
                     # and with linear behaviour under uniform noise upscaling.
-                    prep_basis = int(prep_basis_map[(r, q)])
-                    if prep_basis == 0:
-                        allowed = (et == "Z")
-                    else:
-                        allowed = (et == "X")
-                    p_err[eidx] = float(
-                        p_prep_X if prep_basis == 0 else p_prep_Z
-                    ) if allowed else 0.0
+                    b = int(prep_basis_map[(r, q)] != 0)
+                    p_err[eidx] = p_prep[b] if et == flip_pauli[b] else 0.0
                 elif is_ancilla_meas:
-                    meas_basis = int(meas_basis_map[(r, q)])
-                    if meas_basis == 0:
-                        allowed = (et == "Z")
-                    else:
-                        allowed = (et == "X")
-                    p_err[eidx] = float(
-                        p_meas_X if meas_basis == 0 else p_meas_Z
-                    ) if allowed else 0.0
+                    b = int(meas_basis_map[(r, q)] != 0)
+                    p_err[eidx] = p_meas[b] if et == flip_pauli[b] else 0.0
                 elif is_data_prep:
-                    prep_basis = int(prep_basis_map[(r, q)])
-                    if prep_basis == 0:
-                        allowed = (et == "Z")
-                    else:
-                        allowed = (et == "X")
-                    if is_final_round:
-                        # The circuit represents noisy data readout as a fake
-                        # data-measurement flip injected at the start of the final
-                        # perfect round, at the *measurement* rates: Z_ERROR(p_meas_X)
-                        # for X-basis readout, X_ERROR(p_meas_Z) for Z-basis (see
-                        # MemoryCircuit's logical_measurement injection).
-                        p_err[eidx] = float(
-                            p_meas_X if prep_basis == 0 else p_meas_Z
-                        ) if allowed else 0.0
-                    else:
-                        p_err[eidx] = float(
-                            p_prep_X if prep_basis == 0 else p_prep_Z
-                        ) if allowed else 0.0
+                    # The circuit represents noisy data readout as a fake
+                    # data-measurement flip injected at the start of the final
+                    # perfect round, at the *measurement* rates: Z_ERROR(p_meas_X)
+                    # for X-basis readout, X_ERROR(p_meas_Z) for Z-basis (see
+                    # MemoryCircuit's logical_measurement injection).
+                    b = int(prep_basis_map[(r, q)] != 0)
+                    p_spam = p_meas if is_final_round else p_prep
+                    p_err[eidx] = p_spam[b] if et == flip_pauli[b] else 0.0
                 elif is_data_spam_idle:
                     if is_final_round:
                         p_err[eidx] = 0.0
@@ -1574,10 +1554,10 @@ def build_single_p_marginal_color_code(
                 "ZZ"
             ]
         }
-        p_prep_X_nm = float(nm.p_prep_X)
-        p_prep_Z_nm = float(nm.p_prep_Z)
-        p_meas_X_nm = float(nm.p_meas_X)
-        p_meas_Z_nm = float(nm.p_meas_Z)
+        # Prep/meas failure probabilities indexed by basis code: 0 is the X basis
+        # (Z fault), 1 the Z basis (X fault).
+        p_prep_nm = tuple(float(nm.spam_probability("prep", b)) for b in "XZ")
+        p_meas_nm = tuple(float(nm.spam_probability("meas", b)) for b in "XZ")
     else:
         p_scalar = float(p_scalar)
         spam_error = p_scalar * 2.0 / 3.0
@@ -1651,23 +1631,15 @@ def build_single_p_marginal_color_code(
                 if len(err_type) == 2:
                     p_err[int(eidx)] = nm_cnot.get(err_type, 0.0)
                 elif len(err_type) == 1:
-                    # Basis-labeled keys, as in the surface-code path and in the
-                    # color MemoryCircuit: basis 0 is X (Z fault, p_*_X), basis 1 is
-                    # Z (X fault, p_*_Z).
                     if is_ancilla_prep:
-                        prep_basis = int(prep_basis_map[(round_idx, q)])
-                        p_err[int(eidx)] = p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm
+                        p_err[int(eidx)] = p_prep_nm[int(prep_basis_map[(round_idx, q)])]
                     elif is_ancilla_meas:
-                        meas_basis = int(meas_basis_map[(round_idx, q)])
-                        p_err[int(eidx)] = p_meas_X_nm if meas_basis == 0 else p_meas_Z_nm
+                        p_err[int(eidx)] = p_meas_nm[int(meas_basis_map[(round_idx, q)])]
                     elif is_data_prep:
-                        prep_basis = int(prep_basis_map[(round_idx, q)])
-                        if is_final_round:
-                            # The final perfect round models noisy data readout with a
-                            # fake Pauli error at tt=0 (see MemoryCircuit).
-                            p_err[int(eidx)] = (p_meas_X_nm if prep_basis == 0 else p_meas_Z_nm)
-                        else:
-                            p_err[int(eidx)] = (p_prep_X_nm if prep_basis == 0 else p_prep_Z_nm)
+                        # The final perfect round models noisy data readout with a
+                        # fake Pauli error at tt=0 (see MemoryCircuit).
+                        p_spam = p_meas_nm if is_final_round else p_prep_nm
+                        p_err[int(eidx)] = p_spam[int(prep_basis_map[(round_idx, q)])]
                     elif is_data_spam_idle:
                         p_err[int(eidx)] = nm_idle_spam.get(err_type, 0.0)
                     else:
