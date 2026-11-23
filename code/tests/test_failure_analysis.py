@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes
 import sys
 import tempfile
 import types
@@ -978,8 +979,10 @@ def _make_mock_trt_module(num_detectors):
     Build a minimal tensorrt mock whose execution context produces an all-zero
     L_and_residual_dets tensor of shape (B, 1 + num_detectors).
 
-    execute_v2 is a no-op; the pre-allocated output tensor stays at zero, which
-    is a valid (all-correct pre-decoder) output for testing purposes.
+    execute_v2 writes zeros to the output binding, which is a valid (all-correct
+    pre-decoder) output for testing purposes.  The caller allocates the output
+    with torch.empty, so it must be written explicitly.  With the mock device the
+    binding is a CPU address.
     """
     B_holder = [None]
 
@@ -992,7 +995,8 @@ def _make_mock_trt_module(num_detectors):
             return (B_holder[0], 1 + num_detectors)
 
         def execute_v2(self, bindings):
-            # Output tensor remains zeroed — valid binary values.
+            # The output is a uint8 tensor of shape (B, 1 + num_detectors).
+            ctypes.memset(bindings[1], 0, B_holder[0] * (1 + num_detectors))
             mock_trt.execute_v2_calls += 1
 
         @property
@@ -1086,13 +1090,16 @@ def _patch_tensor_to_for_mock_cuda():
     torch.device cannot be subclassed, so _MockCUDADevice is a plain Python
     object.  PyTorch's C layer rejects it in every tensor-creation call, so we
     patch all relevant entry points to redirect _MockCUDADevice -> cpu before
-    the C layer sees it.  torch.cuda.synchronize is stubbed to a no-op.
+    the C layer sees it.  torch.cuda.synchronize is stubbed to a no-op, and
+    torch.Tensor.pin_memory returns the tensor itself, since pinning needs an
+    accelerator.
 
     Functions patched:
       - torch.Tensor.to        (Tensor moves)
       - torch.nn.Module.to     (model moves)
       - torch.zeros/ones/empty/arange/full/rand/randn/randint/as_tensor/tensor
       - torch.cuda.synchronize (no GPU available)
+      - torch.Tensor.pin_memory (no accelerator available)
     """
     from contextlib import contextmanager, ExitStack
 
@@ -1133,6 +1140,9 @@ def _patch_tensor_to_for_mock_cuda():
             stack.enter_context(patch.object(torch.Tensor, "to", _patched_tensor_to))
             stack.enter_context(patch.object(torch.nn.Module, "to", _patched_module_to))
             stack.enter_context(patch("torch.cuda.synchronize"))
+            stack.enter_context(
+                patch.object(torch.Tensor, "pin_memory", lambda self, *args, **kwargs: self)
+            )
             for _name in _FACTORY_NAMES:
                 stack.enter_context(
                     patch.object(torch, _name, _make_factory_patch(getattr(torch, _name)))
