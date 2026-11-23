@@ -12,6 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ctypes
 import sys
 import tempfile
 import types
@@ -978,8 +979,10 @@ def _make_mock_trt_module(num_detectors):
     Build a minimal tensorrt mock whose execution context produces an all-zero
     L_and_residual_dets tensor of shape (B, 1 + num_detectors).
 
-    execute_v2 is a no-op; the pre-allocated output tensor stays at zero, which
-    is a valid (all-correct pre-decoder) output for testing purposes.
+    execute_v2 writes zeros to the output binding, which is a valid (all-correct
+    pre-decoder) output for testing purposes.  The caller allocates the output
+    with torch.empty, so it must be written explicitly.  With the mock device the
+    binding is a CPU address.
     """
     B_holder = [None]
 
@@ -992,7 +995,9 @@ def _make_mock_trt_module(num_detectors):
             return (B_holder[0], 1 + num_detectors)
 
         def execute_v2(self, bindings):
-            pass  # output tensor remains zeroed — valid binary values
+            # The output is a uint8 tensor of shape (B, 1 + num_detectors).
+            ctypes.memset(bindings[1], 0, B_holder[0] * (1 + num_detectors))
+            mock_trt.execute_v2_calls += 1
 
         @property
         def _engine(self):
@@ -1013,6 +1018,9 @@ def _make_mock_trt_module(num_detectors):
 
     class _Logger:
         WARNING = 1
+
+        def __init__(self, severity=None):
+            pass
 
     class _BuilderFlag:
         FP16 = 0
@@ -1060,6 +1068,7 @@ def _make_mock_trt_module(num_detectors):
             return b""
 
     mock_trt = types.ModuleType("tensorrt")
+    mock_trt.execute_v2_calls = 0
     mock_trt.Logger = _Logger
     mock_trt.Runtime = lambda logger: _Runtime()
     mock_trt.Builder = lambda logger: _Builder()
@@ -1081,13 +1090,16 @@ def _patch_tensor_to_for_mock_cuda():
     torch.device cannot be subclassed, so _MockCUDADevice is a plain Python
     object.  PyTorch's C layer rejects it in every tensor-creation call, so we
     patch all relevant entry points to redirect _MockCUDADevice -> cpu before
-    the C layer sees it.  torch.cuda.synchronize is stubbed to a no-op.
+    the C layer sees it.  torch.cuda.synchronize is stubbed to a no-op, and
+    torch.Tensor.pin_memory returns the tensor itself, since pinning needs an
+    accelerator.
 
     Functions patched:
       - torch.Tensor.to        (Tensor moves)
       - torch.nn.Module.to     (model moves)
       - torch.zeros/ones/empty/arange/full/rand/randn/randint/as_tensor/tensor
       - torch.cuda.synchronize (no GPU available)
+      - torch.Tensor.pin_memory (no accelerator available)
     """
     from contextlib import contextmanager, ExitStack
 
@@ -1128,6 +1140,9 @@ def _patch_tensor_to_for_mock_cuda():
             stack.enter_context(patch.object(torch.Tensor, "to", _patched_tensor_to))
             stack.enter_context(patch.object(torch.nn.Module, "to", _patched_module_to))
             stack.enter_context(patch("torch.cuda.synchronize"))
+            stack.enter_context(
+                patch.object(torch.Tensor, "pin_memory", lambda self, *args, **kwargs: self)
+            )
             for _name in _FACTORY_NAMES:
                 stack.enter_context(
                     patch.object(torch, _name, _make_factory_patch(getattr(torch, _name)))
@@ -1384,7 +1399,15 @@ class TestDecoderAblationStudyTRTExecution(unittest.TestCase):
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
+        cls._execute_v2_calls = getattr(cls, "_execute_v2_calls", {})
+        cls._execute_v2_calls[basis] = mock_trt.execute_v2_calls
         return result
+
+    def test_trt_path_runs_the_engine(self):
+        # A failed engine load falls back to PyTorch and still returns a
+        # well-formed result, so check that the TRT context was used.
+        self.assertGreater(self._execute_v2_calls["X"], 0)
+        self.assertGreater(self._execute_v2_calls["Z"], 0)
 
     def test_trt_path_returns_correct_sample_count(self):
         self.assertEqual(self._result_x["total_samples"], self._N)
@@ -1473,7 +1496,13 @@ class TestDecoderAblationStudyExportAndBuildTRT(unittest.TestCase):
                  _patch_tensor_to_for_mock_cuda():
                 mf.create_datapipe_inference.return_value = real_ds
                 result = decoder_ablation_study(_ZeroModel(), mock_device, _DummyDist(), cfg)
+        cls._execute_v2_calls = mock_trt.execute_v2_calls
         return result
+
+    def test_export_and_build_runs_the_engine(self):
+        # A failed engine build falls back to PyTorch and still returns a
+        # well-formed result, so check that the TRT context was used.
+        self.assertGreater(self._execute_v2_calls, 0)
 
     def test_export_and_build_returns_correct_sample_count(self):
         self.assertEqual(self._result["total_samples"], self._N)

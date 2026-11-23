@@ -698,6 +698,8 @@ def _setup_trt_for_ablation(model, cfg, dist, device, basis, D, half, stim_dets)
     Returns ``(trt_context, onnx_workflow)`` where *trt_context* is either a
     ``(execution_context, engine)`` pair or ``None`` (PyTorch fallback).
     """
+    import time as _time
+
     trt_context = None
     onnx_workflow = OnnxWorkflow.TORCH_ONLY
     try:
